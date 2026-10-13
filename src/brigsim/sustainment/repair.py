@@ -2,7 +2,11 @@
 
 机制（粗版，参数均为占位，后续轮次标定/扩展）：
 - 每方一个 simpy.Resource 抢修组（容量 = repair_teams）；
-- 战斗受损与自然故障共用同一条抢修通道：送修延迟 -> 排队 -> 维修（指数 MTTR）-> 归建；
+- 战斗受损与自然故障共用同一条抢修通道：送修延迟 -> 备件请领 -> 排队 ->
+  维修（指数 MTTR）-> 归建；
+- M3 备件供应链：可选库存（spare_stock），每次维修消耗 1 件，
+  缺货时维修挂起等待周期性补给（resupply_interval/qty）；备件在抢修组
+  之前请领，等件不占用抢修组；
 - 自然故障按指数 MTBF 抽样（战斗损毁 killed 不可修，进程直接终止）；
 - 唯一状态真相是 SimState 列存（damaged/under_repair），本模块只在 DES 回调里改列，
   不持有装备状态对象，保持 M4 向量化/GPU 后端的可迁移性。
@@ -34,6 +38,17 @@ class SustainmentModel:
             side: (simpy.Resource(self.env, capacity=n) if n > 0 else None)
             for side, n in ((RED, spec.repair_teams["red"]), (BLUE, spec.repair_teams["blue"]))
         }
+        # 备件库存：None = 无限备件（不启用供应链约束）
+        self.parts: dict[int, simpy.Container] | None = None
+        if spec.spare_stock is not None:
+            self.parts = {
+                side: simpy.Container(
+                    self.env, init=int(spec.spare_stock[name]), capacity=float("inf")
+                )
+                for side, name in ((RED, "red"), (BLUE, "blue"))
+            }
+            for side in (RED, BLUE):
+                self.env.process(self._resupply_loop(side))
         for i in range(state.n):
             self.env.process(self._failure_loop(i))
 
@@ -69,18 +84,46 @@ class SustainmentModel:
         s.under_repair[i] = True
         self.env.process(self._repair_process(i))
 
+    def _resupply_loop(self, side: int):
+        """周期补给：每隔 interval tick 向该方库存投送 qty 件备件。"""
+        env = self.env
+        spec = self.scenario.sustainment
+        while True:
+            yield env.timeout(float(spec.resupply_interval_ticks))
+            yield self.parts[side].put(spec.resupply_qty)
+
     def _repair_process(self, i: int):
         env, s = self.env, self.state
+        side = int(s.side[i])
+
+        def _abort(return_part: bool) -> None:
+            if return_part:
+                self.parts[side].put(1)
+            s.under_repair[i] = False
+
         if self.repair_delay > 0:
             yield env.timeout(float(self.repair_delay))
-        team = self.teams[int(s.side[i])]
+        if not s.alive[i]:
+            _abort(False)
+            return
+        # 备件请领（在占用抢修组之前）：缺货则挂起等补给
+        parts = self.parts[side] if self.parts is not None else None
+        if parts is not None:
+            yield parts.get(1)
+            if not s.alive[i]:
+                _abort(True)
+                return
+        team = self.teams[side]
         if team is None:
             yield env.event()  # 无抢修组：永久排队，进程挂起
             return
         with team.request() as req:
             yield req
+            if not s.alive[i]:  # 排队期间被战毁：返还备件
+                _abort(parts is not None)
+                return
             yield env.timeout(float(self.rng.exponential(s.mttr[i])))
-        # 维修期间被战毁则不归建；标志位无论如何都要清
+        # 维修期间被战毁则不归建；备件已消耗不返还，标志位无论如何都要清
         if s.alive[i]:
             s.damaged[i] = False
         s.under_repair[i] = False

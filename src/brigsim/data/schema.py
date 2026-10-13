@@ -76,15 +76,22 @@ class Mission(BaseModel):
 
 
 class SustainmentSpec(BaseModel):
-    """装备保障配置（M1 粗版：抢修组并发资源 + 平均修复时长）。
+    """装备保障配置（M1 粗版：抢修组并发资源 + 平均修复时长；
+    M3：备件库存与周期补给）。
 
     战斗受损与自然故障共用抢修队列；战毁（killed）不可修。
-    备件供应链在后续轮次扩展（接口预留）。
+    spare_stock=None 表示备件无限（不启用供应链约束）；否则每次维修消耗
+    1 件备件，库存耗尽后维修挂起，等待周期性补给投送。
     """
 
     repair_teams: dict[str, int] = {"red": 1, "blue": 1}
     # 受损后送修延迟（tick，确定性常量；后续改为分布抽样）
     repair_delay_ticks: int = 0
+    # M3 备件供应链：各方初始库存（None=无限备件，保持旧行为）
+    spare_stock: dict[str, int] | None = None
+    # 周期补给：每隔 interval tick 各方收到 qty 件备件
+    resupply_interval_ticks: int = Field(40, gt=0)
+    resupply_qty: int = Field(4, ge=1)
 
 
 class PlatformTypeSpec(BaseModel):

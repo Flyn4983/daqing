@@ -49,6 +49,10 @@ platform_types:
 sustainment:
   repair_teams: {red: 3, blue: 2}
   repair_delay_ticks: 0
+  # M3 备件供应链：初始基数有限，每 30 tick 补给 4 件（缺货维修挂起）
+  spare_stock: {red: 8, blue: 5}
+  resupply_interval_ticks: 30
+  resupply_qty: 4
 
 # ---- 红方：重型合成1营（2 坦克连 + 2 装步连 + 火力连反坦克排 = 44 台）----
 force_templates:
