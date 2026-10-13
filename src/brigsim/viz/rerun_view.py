@@ -55,6 +55,7 @@ def visualize(
 
     info = _unit_info(scenario)
     _log_terrain(terrain)
+    _log_passability(terrain)
     _log_static_units(info, terrain)
     _log_objective(scenario, terrain)
     _log_weather_header(scenario)
@@ -228,6 +229,63 @@ def _log_terrain(t: HeightField) -> None:
         ),
         static=True,
     )
+
+
+def _pass_quads(t: HeightField, mask: np.ndarray, color, deck: bool):
+    """把 mask 选中的通行性栅格节点构造成贴地四边形贴片。
+
+    deck=True 时 z 抬到水面以上（桥梁板面），否则贴地形面 0.6m（道路）。
+    """
+    cell = t.size[0] / (t.n - 1)
+    half = cell / 2
+    js, is_ = np.where(mask)
+    if is_.size == 0:
+        return None
+    cx, cy = is_ * cell, js * cell
+    ground = t.heights[js, is_]
+    cz = np.maximum(ground, t.water_level) + 0.8 if deck else ground + 0.6
+    offs = [(-half, -half), (half, -half), (half, half), (-half, half)]
+    verts = np.stack(
+        [np.column_stack([cx + dx, cy + dy, cz]) for dx, dy in offs], axis=1
+    ).reshape(-1, 3)
+    base = (np.arange(is_.size) * 4)[:, None, None]
+    tris = (base + np.array([[0, 1, 2], [0, 2, 3]])[None, :, :]).reshape(-1, 3)
+    colors = np.tile(np.array(color, dtype=np.uint8), (verts.shape[0], 1))
+    return rr.Mesh3D(
+        vertex_positions=verts,
+        triangle_indices=tris,
+        vertex_colors=colors,
+    )
+
+
+def _dilate4(m: np.ndarray) -> np.ndarray:
+    """4 邻域一像素膨胀（边界 np.roll 回绕，道路/桥均不在边界，可接受）。"""
+    return (
+        m
+        | np.roll(m, 1, 0) | np.roll(m, -1, 0)
+        | np.roll(m, 1, 1) | np.roll(m, -1, 1)
+    )
+
+
+def _log_passability(t: HeightField) -> None:
+    """通行性叠加层：只显式标绘道路/桥梁（p>0.95；普通地表 0.6/0.9 不上色，
+    否则整个地形都会被贴片覆盖）。水面上的为桥梁（灰褐），旱地为公路（土黄）。"""
+    if np.allclose(t.passability, 1.0):
+        return  # 无通行性栅格（默认全 1），不画
+    p, h = t.passability, t.heights
+    wet = h < t.water_level + 1.0
+    # 道路在旱地中唯一 p 接近 1；桥梁经降采样后峰值约 0.8（河面中位约 0.28），
+    # 用相对河面的高值阈值识别。细线降采样后会断，做 1 格膨胀连成线
+    road_hi = p > 0.95
+    bridge_hi = wet & (p > 0.45)
+    roads = _dilate4(road_hi) & ~wet
+    bridges = _dilate4(bridge_hi) & wet
+    mesh = _pass_quads(t, roads, (205, 180, 110, 210), deck=False)
+    if mesh is not None:
+        rr.log("world/passability/roads", mesh, static=True)
+    mesh = _pass_quads(t, bridges, (140, 126, 104, 235), deck=True)
+    if mesh is not None:
+        rr.log("world/passability/bridges", mesh, static=True)
 
 
 def _log_static_units(info, terrain: HeightField) -> None:
