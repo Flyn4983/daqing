@@ -95,3 +95,39 @@
 - M1：Mesa 重写交战内核、SimPy 故障-抢修-备件（事件日志/可视化 schema 保持不变）
 - M3：GeoTIFF 真实地形接入（沿用 HeightField 接口）、参数标定、旅级规模
 
+## 2026-10-13 | trae + 用户 | M2.1 写实资产升级：地表纹理 + PBR 悍马
+
+### 完成内容
+- 地形细节：程序生成 1024² OpenSimplex 双尺度泥地斑驳灰度纹理（UV 0..1 覆盖
+  全战场），配合顶点法线（中心差分）产生坡向方向光明暗；纹理与高程分层顶点色
+  相乘，草地/林地/岩石/积雪配色保留，地表不再是塑料平面
+- 装备升级：步战（ifv）替换为 CesiumJS 示例资产 GroundVehicle（6×6 悍马，
+  PBR 沙褐迷彩贴图），编队近景截图确认车体写实质感、接地与朝向正确
+- 同名替换机制升级：`ground_offset(type)` 读取 GLB 实际世界包围盒（含节点变换）
+  自动计算接地高度并缓存，任意新素材替换文件即可，放置代码零改动
+- 坦克（tank）、反坦克组（atgm_team）暂保留程序模型，待真实/专有素材替换
+
+### 资产来源与加工（可复现）
+- 源：CesiumJS 仓库 `Apps/SampleData/models/GroundVehicle/GroundVehicle.glb`
+  （Apache-2.0，6.1MB；原始下载留存 assets/models/_inbox/，已 gitignore）
+- 加工脚本：`outputs/build_humvee.py`
+  - 删除 GroundVehicleMesh / _1 两个低 LOD 车身（rerun 不识别 Cesium LOD
+    扩展，会三重叠加）
+  - 根节点写入单一矩阵：Y-up/+z 车头 → z-up/+x 车头，再按世界包围盒接地
+    （初版误用 scene.apply_transform 导致几何与节点双重变换、车体悬空 3.7m，
+    改为只改 scene graph 后修复；最终世界包围盒 7.26×2.67，底面 z=0）
+  - 材质强制 metallicFactor=0 / roughnessFactor=0.9：glTF 默认金属度 1 在
+    rerun 无环境贴图时车身只反射暗色天空、渲染近黑，哑光漆面后贴图正常
+
+### 用户指示
+- 本项目为原型软件，专有军仿软件（VBS4 / Steel Beasts 等）的素材允许直接使用；
+  用户如有本机素材包可直接放入 assets/models 同名替换
+
+### 验证
+- ruff check / format、pytest 全绿；近景截图 outputs/shot_h9.png（沙褐 6×6
+  纹理清晰、四轮可见、贴地、朝向正确）；GTX 1650 Ti 回放流畅
+
+### 下一步
+- 等待/接入用户提供的写实坦克与反坦克组素材（GLB/FBX/OBJ 均可，trimesh 转换）
+- M1：Mesa 重写交战内核、SimPy 保障模型
+

@@ -19,7 +19,7 @@ import rerun.blueprint as rrb
 
 from ..data.schema import Scenario
 from ..kernel.terrain import HeightField
-from .models import ensure_model
+from .models import ensure_model, ground_offset
 
 SIDE_COLOR = {0: (214, 69, 55), 1: (64, 132, 240)}
 SIDE_COLOR_A = {0: (214, 69, 55, 22), 1: (64, 132, 240, 22)}
@@ -63,6 +63,8 @@ def visualize(
         (int(t), uid): (float(x), float(y))
         for t, uid, x, y in snapshots[["tick", "unit_id", "x", "y"]].itertuples(False)
     }
+    # 各型装备的接地高度（按实际 GLB 包围盒，支持同名资产无缝替换）
+    z_off = {typ: ground_offset(typ) for typ in {v[0] for v in info.values()}}
     model_state: dict[str, str] = {}
 
     for tick, grp in snapshots.groupby("tick", sort=True):
@@ -81,8 +83,12 @@ def visualize(
             rr.log(
                 ent,
                 rr.Transform3D(
-                    # 模型履带最低点在本地 z=-0.5，抬高 0.5 使其恰好接地
-                    translation=[float(xs[k]), float(ys[k]), float(zs[k]) + 0.5],
+                    # 按模型实际包围盒接地
+                    translation=[
+                        float(xs[k]),
+                        float(ys[k]),
+                        float(zs[k]) + z_off[info[uid][0]],
+                    ],
                     rotation=rr.RotationAxisAngle(
                         axis=[0, 0, 1], radians=float(cur.at[uid, "heading"])
                     ),
@@ -118,10 +124,32 @@ def _unit_info(scenario: Scenario) -> dict[str, tuple[str, int, str, float]]:
     return out
 
 
+def _ground_texture(size: int = 1024, seed: int = 11) -> np.ndarray:
+    """中性灰度地表细节纹理（泥地斑驳+碎石颗粒），与顶点色相乘保留高程分层配色。"""
+    from opensimplex import OpenSimplex
+
+    coarse = np.zeros((size, size))
+    lin = np.linspace(0.0, 26.0, size, endpoint=False)
+    amp, freq, total = 1.0, 1.0, 0.0
+    noise = OpenSimplex(seed=seed)
+    for _ in range(4):
+        coarse += amp * np.asarray(noise.noise2array(lin * freq, lin * freq))
+        total += amp
+        amp *= 0.5
+        freq *= 2.3
+    coarse /= total
+    fine_noise = OpenSimplex(seed=seed + 1)
+    flin = np.linspace(0.0, 130.0, size, endpoint=False)
+    fine = np.asarray(fine_noise.noise2array(flin, flin))
+    shade = (1.0 + coarse * 0.24 + fine * 0.07).clip(0.55, 1.5)
+    return np.clip(np.full((size, size, 3), 188.0) * shade[..., None], 0, 255).astype(np.uint8)
+
+
 def _log_terrain(t: HeightField) -> None:
     # 视觉网格 4 倍细分并采样 height_at：保证渲染三角面与内核双线性高程一致，
     # 否则 156m 粗网格的三角面与插值面能差数米，单位会被埋入地下
     n = (t.n - 1) * 4 + 1
+    dx_world = t.size[0] / (n - 1)
     xs = np.linspace(0, t.size[0], n)
     ys = np.linspace(0, t.size[1], n)
     gx, gy = np.meshgrid(xs, ys)
@@ -129,8 +157,8 @@ def _log_terrain(t: HeightField) -> None:
     verts = np.column_stack([gx.ravel(), gy.ravel(), heights.ravel()])
 
     # 坡度（中心差分）
-    dy, dx = np.gradient(heights, t.size[0] / (n - 1), t.size[1] / (n - 1))
-    slope = np.hypot(dx, dy).ravel()
+    dhd_y, dhd_x = np.gradient(heights, dx_world, dx_world)
+    slope = np.hypot(dhd_x, dhd_y).ravel()
     h = heights.ravel()
     colors = np.zeros((n * n, 4), dtype=np.uint8)
     colors[:] = C_GRASS + (255,)
@@ -141,6 +169,16 @@ def _log_terrain(t: HeightField) -> None:
     colors[h < t.water_level] = C_WATER + (255,)
     rocky = (slope > 0.35) & (h >= t.water_level)
     colors[rocky] = C_ROCK + (255,)
+
+    # 顶点法线：让方向光在坡面上产生明暗，地形不再是塑料平面
+    normals = np.zeros((n * n, 3))
+    normals[:, 0] = -dhd_x.ravel()
+    normals[:, 1] = -dhd_y.ravel()
+    normals[:, 2] = 1.0
+    normals /= np.linalg.norm(normals, axis=1, keepdims=True)
+
+    # 归一化 UV（0..1，纹理覆盖全战场，约 10m/texel）
+    uvs = np.column_stack([gx.ravel() / t.size[0], gy.ravel() / t.size[1]])
 
     ii, jj = np.meshgrid(np.arange(n - 1), np.arange(n - 1))
     a = (jj * n + ii).ravel()
@@ -153,7 +191,14 @@ def _log_terrain(t: HeightField) -> None:
     ).reshape(-1, 3)
     rr.log(
         "world/terrain",
-        rr.Mesh3D(vertex_positions=verts, triangle_indices=idx, vertex_colors=colors),
+        rr.Mesh3D(
+            vertex_positions=verts,
+            triangle_indices=idx,
+            vertex_colors=colors,
+            vertex_normals=normals,
+            vertex_texcoords=uvs,
+            albedo_texture=_ground_texture(),
+        ),
         static=True,
     )
     # 半透明水面

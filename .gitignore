@@ -14,6 +14,9 @@ data/real/
 *.parquet
 !data/**/*.parquet.example
 
+# 外部素材原始下载（加工脚本在 outputs/，来源记录于 DEVLOG）
+assets/models/_inbox/
+
 # 编辑器/系统
 .idea/
 .vscode/

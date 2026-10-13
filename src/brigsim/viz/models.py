@@ -8,6 +8,7 @@ M3 可用实测/扫描 GLB 直接替换 assets/models 下同名文件。
 
 from __future__ import annotations
 
+import functools
 from pathlib import Path
 
 import numpy as np
@@ -98,3 +99,15 @@ def ensure_model(type_name: str) -> Path:
     combined = trimesh.util.concatenate(builder())
     combined.export(path, file_type="glb")
     return path
+
+
+@functools.lru_cache(maxsize=None)
+def ground_offset(type_name: str) -> float:
+    """放置实体时需抬高的高度 = 模型本地坐标最低点的绝对值（含节点变换）。
+
+    同名资产替换后包围盒可能不同，每次按实际 GLB 计算，避免车体悬空/埋地。
+    """
+    path = ensure_model(type_name)
+    loaded = trimesh.load(path)
+    verts = loaded.to_geometry().vertices if hasattr(loaded, "to_geometry") else loaded.vertices
+    return float(-verts[:, 2].min())
