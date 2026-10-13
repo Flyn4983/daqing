@@ -8,8 +8,8 @@
 ## 当前进度
 
 - [x] **M0 框架骨架**：分层目录、数据接口（DataProvider）、内核抽象、想定 schema、端到端 hello-sim
+- [x] **M1.5 可视化提前**：rerun 3D 态势回放（轨迹/交火/目标点）+ 战损完好率曲线
 - [ ] **M1 最小闭环**：Mesa 交战 + SimPy 抢修耦合，输出三大指标置信区间
-- [ ] **M1.5 可视化提前**：rerun 3D 态势回放 + 指标看板（可用示例数据先出效果）
 - [ ] **M3 合成旅规模**：营/旅编组、地形气象、多阶段任务、参数标定
 - [ ] **M4 GPU 后端**：NVIDIA Warp kernel 批量加速（本机 GTX 1650 Ti / Ubuntu 工作站）
 
@@ -17,8 +17,9 @@
 
 ```powershell
 uv venv --python 3.12
-uv pip install -e ".[dev]"
+uv pip install -e ".[dev,viz]"
 uv run brigsim run scenarios/example_company.yaml --runs 100
+uv run brigsim replay scenarios/example_company.yaml   # 打开 rerun 3D 回放
 uv run pytest
 ```
 

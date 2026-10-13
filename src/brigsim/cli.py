@@ -44,5 +44,48 @@ def run(
         typer.echo(f"\n事件日志已写出: {out_dir}")
 
 
+@app.command()
+def replay(
+    scenario: str = typer.Argument(..., help="想定名称或 YAML 路径"),
+    seed: int = typer.Option(20261013, "--seed", help="随机种子（指定某次复制）"),
+    rrd: str = typer.Option("outputs/replay.rrd", "--rrd", help="录制文件输出路径"),
+    show: bool = typer.Option(True, "--show/--no-show", help="立即弹出 rerun 窗口"),
+) -> None:
+    """运行一次想定并生成 3D 态势回放与指标曲线。"""
+    from .experiment.runner import run_once
+    from .viz.rerun_view import visualize
+
+    sc = YamlFileProvider().load_scenario(scenario)
+    from .combat.toy_kernel import ToyNumpyKernel
+
+    _, kernel = run_once(sc, seed=seed, kernel_cls=ToyNumpyKernel)
+    snapshots, engagements = kernel.log.to_frames()
+
+    import sys
+
+    rrd_path = Path(rrd)
+    rrd_path.parent.mkdir(parents=True, exist_ok=True)
+    # rerun 0.39 的 pip 包不支持 SDK 内 spawn，统一录制后调用同环境 rerun.exe 打开
+    visualize(
+        snapshots,
+        engagements,
+        objective=sc.mission.objective,
+        dt_seconds=sc.mission.dt_seconds,
+        rrd_path=rrd_path,
+        spawn=False,
+    )
+    if show:
+        viewer = Path(sys.executable).parent / "rerun.exe"
+        if viewer.exists():
+            import subprocess
+
+            subprocess.Popen([str(viewer), str(rrd_path)])  # noqa: S603
+            typer.echo(f"回放录制完成: {rrd_path}，已打开 viewer")
+        else:
+            typer.echo(f"回放录制完成: {rrd_path}（未找到 rerun.exe，请手动打开）")
+    else:
+        typer.echo(f"回放录制完成: {rrd_path}")
+
+
 if __name__ == "__main__":
     app()

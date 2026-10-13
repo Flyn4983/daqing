@@ -28,4 +28,23 @@
 
 ### 下一步
 - M1：Mesa 重写交战（侦察/通信/C2 规则）、SimPy 故障-抢修-备件接入、指标置信区间
-- M1.5（提前）：rerun 读取事件日志出 3D 态势回放与指标看板，先确认观感方向
+
+## 2026-10-13 | trae + 用户 | M1.5 可视化提前：rerun 3D 回放
+
+### 完成内容
+- 安装 rerun-sdk 0.39（含 rerun.exe CLI/native viewer；注意 pip 包不再支持 SDK 内 spawn）
+- `viz/rerun_view.py`：读统一事件日志，绘制
+  - 3D 轨迹（红/蓝着色、受损黄、击毁灰）、交火箭头（击毁红/致损黄/未中灰）、绿色目标信标
+  - 红蓝战损率/完好率随 tick 的时间曲线
+  - 自定义蓝图：深色背景大 3D 斜视视图 + 下方指标标签页 + 时间轴
+- CLI 新增 `brigsim replay [--seed] [--rrd] [--show/--no-show]`：
+  录制 .rrd 并自动调用同环境 rerun.exe 打开
+- 已在本机验证窗口观感（GTX 1650 Ti 4GB，120 tick 流畅）
+
+### 开源选型记录
+- 沿用前期选型 rerun-sdk（Apache-2.0）；0.39 蓝图 API（Spatial3DView/TimeSeriesView/EyeControls3D）
+  原生满足"流畅漂亮"要求，未自研任何渲染
+
+### 下一步
+- M1：Mesa 重写交战内核（保持事件日志 schema 不变，可视化零改动）
+- SimPy 保障模型耦合，完好率曲线即可反映抢修效果
