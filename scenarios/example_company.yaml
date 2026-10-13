@@ -1,0 +1,52 @@
+# 示例想定：红方一个装步连（示意编成）冲击蓝方防御阵地
+# 数值均为占位示例，等待真实数据资产替换（M3 标定）
+name: example_company
+
+mission:
+  duration_ticks: 120
+  dt_seconds: 30
+  objective: [8000, 5000]
+  success_radius_m: 300
+
+terrain:
+  size_m: [10000, 10000]
+
+environment:
+  weather: clear
+  visibility_factor: 1.0
+
+platform_types:
+  tank:
+    sensor_range_m: 2500
+    weapon_range_m: 2000
+    pk: 0.35
+    speed_m_per_tick: 220
+    meta: {source: example, version: "0.1", confidence: 0.3}
+  ifv:
+    sensor_range_m: 1800
+    weapon_range_m: 1200
+    pk: 0.22
+    speed_m_per_tick: 260
+    meta: {source: example, version: "0.1", confidence: 0.3}
+  atgm_team:
+    sensor_range_m: 2200
+    weapon_range_m: 2000
+    pk: 0.45
+    speed_m_per_tick: 120
+    meta: {source: example, version: "0.1", confidence: 0.3}
+
+forces:
+  red:
+    - {unit_id: r-t1, type: tank, pos: [200, 4600]}
+    - {unit_id: r-t2, type: tank, pos: [200, 5000]}
+    - {unit_id: r-t3, type: tank, pos: [200, 5400]}
+    - {unit_id: r-i1, type: ifv,  pos: [0, 4300]}
+    - {unit_id: r-i2, type: ifv,  pos: [0, 4700]}
+    - {unit_id: r-i3, type: ifv,  pos: [0, 5300]}
+    - {unit_id: r-i4, type: ifv,  pos: [0, 5700]}
+  blue:
+    - {unit_id: b-a1, type: atgm_team, pos: [7600, 4200]}
+    - {unit_id: b-a2, type: atgm_team, pos: [7600, 5000]}
+    - {unit_id: b-a3, type: atgm_team, pos: [7600, 5800]}
+    - {unit_id: b-t1, type: tank, pos: [8200, 4600]}
+    - {unit_id: b-t2, type: tank, pos: [8200, 5400]}

@@ -1,0 +1,44 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "brigsim"
+version = "0.0.1"
+description = "合成旅作战任务仿真：实体级交战 ABM + 装备保障 DES，蒙特卡洛批量评估"
+requires-python = ">=3.11"
+dependencies = [
+    "numpy>=1.26",
+    "pandas>=2.2",
+    "pyarrow>=15",
+    "pydantic>=2.6",
+    "pyyaml>=6.0",
+    "typer>=0.12",
+]
+
+[project.optional-dependencies]
+# M1 起：交战多智能体 / 保障离散事件 / 灵敏度分析
+combat = ["mesa>=2.3", "simpy>=4.1"]
+analysis = ["scipy>=1.12", "salib>=1.4"]
+# 可视化（流畅 3D 回放）
+viz = ["rerun-sdk>=0.20"]
+# GPU 批量后端（M4）；本机已全局安装 warp-lang 1.12
+warp = ["warp-lang>=1.12"]
+dev = ["pytest>=8", "ruff>=0.6"]
+
+[project.scripts]
+brigsim = "brigsim.cli:app"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/brigsim"]
+
+[tool.ruff]
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]

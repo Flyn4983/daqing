@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+dist/
+build/
+
+# 仿真输出与真实（涉密）数据
+outputs/
+data/real/
+*.parquet
+!data/**/*.parquet.example
+
+# 编辑器/系统
+.idea/
+.vscode/
+.DS_Store
