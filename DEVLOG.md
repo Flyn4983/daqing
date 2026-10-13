@@ -385,3 +385,35 @@
 - 可视化：通行性栅格叠加层（当前回放只显示水面，未画道路/桥位）
 - M4：Warp GPU 批量后端
 
+## 2026-10-13 | trae + 用户 | M3 Sobol 定量方差分解
+
+### 完成内容
+- `experiment/sensitivity.py` 增 `run_sobol`：SALib Sobol 采样器
+  （Saltelli 方案、不算二阶，设计点 N×(D+2)）+ `sobol.analyze`，
+  输出每个指标/参数的 S1（一阶主效应）、ST（含交互总效应）及 95%
+  自助置信半宽，按 ST 排序；抽出 `_evaluate_points` 与 Morris 共用
+  "设计点 × 公共随机数复制"评估回路
+- CLI `brigsim sensitivity --method morris|sobol --sobol-n N --reps-per-point R`
+  （默认仍为 Morris），Sobol 结果另存 sensitivity_sobol.csv
+- 测试：新增 Sobol 冒烟（结构/有限性/排序，n_base=4），共 24 项全绿；ruff 全绿
+
+### 验证（连级想定，112 设计点 × 4 复制）
+- visibility 与 speed_scale 主导 success/战损/完好率，且 ST≫S1
+  （如 success：visibility S1=0.87/ST=1.22，speed S1=0.19/ST=1.08）
+  → 主要通过参数间交互起作用；pk_scale 一阶主效应明显；
+  detect_scale 总效应接近 0（当前粗侦察模型下分辨力弱，待标定）
+- ST 之和 >1 且置信区间偏宽：交互占主导 + N=16 偏小，
+  后续营级/旅级跑批取 N≥64 并对照 Morris 排序
+
+### 素材调研
+- Poly Pizza（免登录直链）坦克均为低多边形风格化资源，无写实 MBT；
+  open3dmodel 有写实 M1A2（多格式含 .dae）/M2A3（.3ds），
+  许可为 CC BY-NC（原型设计阶段可用），但下载端点 Cloudflare 挑战 +
+  广告重定向，自动化浏览器无法完成下载；写实装备素材仍待
+  用户登录 Sketchfab 或提供专有素材本地路径
+
+### 下一步
+- M3 续：旅级想定上 N≥64 Sobol、参数标定、备件供应链
+- 可视化：通行性栅格叠加层
+- M4：Warp GPU 批量后端
+

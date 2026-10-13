@@ -1,10 +1,13 @@
-"""M3 灵敏度分析：SALib Morris（一次一列法）筛选对三大指标影响最大的参数。
+"""M3 灵敏度分析：
 
-粗版做法（参数均为全局乘子，跨所有平台类型统一缩放）：
+- Morris（一次一列法）：低成本筛选对指标影响最大的参数（μ* 总效应、σ 非线性/交互）；
+- Sobol（方差分解）：Saltelli 采样 + S1（一阶主效应）/ST（含交互的总效应），
+  回答"指标不确定性中各参数贡献占比"。
+
+粗版做法（两法共用，参数均为全局乘子，跨所有平台类型统一缩放）：
 - pk_scale / detect_scale / speed_scale / mtbf_scale：交战与保障参数全局缩放；
 - visibility：环境能见度系数；
-- 每个 Morris 设计点跑若干蒙特卡洛复制取均值作为该点响应（公共随机数降噪）；
-- 输出 μ*（总效应敏感度）、σ（非线性/交互作用）与排序，后续可用 Sobol 做定量分解。
+- 每个设计点跑若干蒙特卡洛复制取均值作为该点响应（公共随机数降噪）。
 """
 
 from __future__ import annotations
@@ -12,9 +15,12 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 from SALib.analyze.morris import analyze as morris_analyze
+from SALib.analyze.sobol import analyze as sobol_analyze
 from SALib.sample.morris import sample as morris_sample
+from SALib.sample.sobol import sample as sobol_sample
 
 from ..data.schema import Scenario
+from .runner import run_once
 
 PROBLEM = {
     "num_vars": 5,
@@ -58,8 +64,6 @@ def run_sensitivity(
     kernel_cls=None,
 ) -> pd.DataFrame:
     """Morris 灵敏度扫描；返回每个 (指标, 参数) 的 μ*/σ/置信半宽与 μ* 排序。"""
-    from .runner import run_once
-
     if kernel_cls is None:
         from ..combat.mesa_kernel import MesaKernel
 
@@ -67,17 +71,7 @@ def run_sensitivity(
 
     rng = np.random.default_rng(base_seed)
     X = morris_sample(PROBLEM, N=trajectories, num_levels=num_levels, seed=rng)
-    # 公共随机数：每个设计点用同一组复制种子
-    seeds = [base_seed + r for r in range(reps_per_point)]
-
-    Y = np.zeros((X.shape[0], len(METRICS)))
-    for p, x in enumerate(X):
-        sc = apply_point(scenario, x)
-        vals = np.zeros((reps_per_point, len(METRICS)))
-        for r, seed in enumerate(seeds):
-            metrics, _ = run_once(sc, seed=seed, kernel_cls=kernel_cls)
-            vals[r] = [metrics[m] for m in METRICS]
-        Y[p] = vals.mean(axis=0)
+    Y = _evaluate_points(scenario, X, reps_per_point, base_seed, kernel_cls)
 
     frames = []
     for j, metric in enumerate(METRICS):
@@ -95,5 +89,66 @@ def run_sensitivity(
             }
         )
         df["rank"] = df["mu_star"].rank(ascending=False).astype(int)
+        frames.append(df.sort_values("rank"))
+    return pd.concat(frames, ignore_index=True)
+
+
+def _evaluate_points(
+    scenario: Scenario,
+    X: np.ndarray,
+    reps_per_point: int,
+    base_seed: int,
+    kernel_cls,
+) -> np.ndarray:
+    """在每个设计点上跑 reps 次蒙特卡洛复制（公共随机数），返回各指标均值矩阵。"""
+    seeds = [base_seed + r for r in range(reps_per_point)]
+    Y = np.zeros((X.shape[0], len(METRICS)))
+    for p, x in enumerate(X):
+        sc = apply_point(scenario, x)
+        vals = np.zeros((reps_per_point, len(METRICS)))
+        for r, seed in enumerate(seeds):
+            metrics, _ = run_once(sc, seed=seed, kernel_cls=kernel_cls)
+            vals[r] = [metrics[m] for m in METRICS]
+        Y[p] = vals.mean(axis=0)
+    return Y
+
+
+def run_sobol(
+    scenario: Scenario,
+    n_base: int = 16,
+    reps_per_point: int = 4,
+    base_seed: int = 20261013,
+    kernel_cls=None,
+) -> pd.DataFrame:
+    """Sobol 方差分解（Saltelli 采样，不算二阶）；返回每个 (指标, 参数) 的
+    S1（一阶主效应）/ST（总效应，含交互）与 95% 自助置信半宽，按 ST 排序。
+
+    设计点数 = n_base × (D + 2)；D=5，n_base=16 时为 112 点。
+    """
+    if kernel_cls is None:
+        from ..combat.mesa_kernel import MesaKernel
+
+        kernel_cls = MesaKernel
+
+    rng = np.random.default_rng(base_seed)
+    X = sobol_sample(PROBLEM, N=n_base, calc_second_order=False, seed=rng)
+    Y = _evaluate_points(scenario, X, reps_per_point, base_seed, kernel_cls)
+
+    frames = []
+    for j, metric in enumerate(METRICS):
+        si = sobol_analyze(
+            PROBLEM, Y[:, j], calc_second_order=False, conf_level=0.95, seed=rng
+        )
+        df = pd.DataFrame(
+            {
+                "metric": metric,
+                "param": PROBLEM["names"],
+                "S1": si["S1"],
+                "S1_conf": si["S1_conf"],
+                "ST": si["ST"],
+                "ST_conf": si["ST_conf"],
+            }
+        )
+        df["rank"] = df["ST"].rank(ascending=False).astype(int)
         frames.append(df.sort_values("rank"))
     return pd.concat(frames, ignore_index=True)

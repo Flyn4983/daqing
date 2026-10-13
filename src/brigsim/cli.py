@@ -90,29 +90,48 @@ def replay(
 @app.command()
 def sensitivity(
     scenario: str = typer.Argument(..., help="想定名称或 YAML 路径"),
+    method: str = typer.Option("morris", "--method", help="morris（筛选）或 sobol（方差分解）"),
     trajectories: int = typer.Option(12, "--trajectories", "-t", help="Morris 轨道数"),
+    sobol_n: int = typer.Option(16, "--sobol-n", help="Sobol 基准样本数 N（设计点 = N×(D+2)）"),
     reps: int = typer.Option(12, "--reps-per-point", help="每个设计点的蒙特卡洛复制数"),
     seed: int = typer.Option(20261013, "--seed", help="基础随机种子"),
     out: str | None = typer.Option(None, "--out", help="结果 CSV 输出目录"),
 ) -> None:
-    """Morris 一次一列法灵敏度扫描，输出各参数对指标的 μ* 排序。"""
-    from .experiment.sensitivity import run_sensitivity
+    """灵敏度扫描：Morris（μ* 排序）或 Sobol（S1/ST 方差贡献占比）。"""
+    from .experiment.sensitivity import PROBLEM, run_sensitivity, run_sobol
 
     sc = YamlFileProvider().load_scenario(scenario)
-    typer.echo(
-        f"想定: {sc.name}    轨道: {trajectories}    每点复制: {reps}"
-        f"（共 {trajectories * 6} 个设计点 × {reps} 次模拟）"
-    )
-    df = run_sensitivity(sc, trajectories=trajectories, reps_per_point=reps, base_seed=seed)
-    for metric, grp in df.groupby("metric", sort=False):
-        typer.echo(f"\n{metric}（按 μ* 排序，μ* 越大越敏感，σ 大表示非线性/交互）：")
-        for _, r in grp.iterrows():
-            typer.echo(f"  {r['param']:>13}: μ*={r['mu_star']:.3f}  σ={r['sigma']:.3f}")
+    d = PROBLEM["num_vars"]
+    if method == "morris":
+        typer.echo(
+            f"想定: {sc.name}  方法: Morris    轨道: {trajectories}    每点复制: {reps}"
+            f"（共 {trajectories * (d + 1)} 个设计点 × {reps} 次模拟）"
+        )
+        df = run_sensitivity(sc, trajectories=trajectories, reps_per_point=reps, base_seed=seed)
+        for metric, grp in df.groupby("metric", sort=False):
+            typer.echo(f"\n{metric}（按 μ* 排序，μ* 越大越敏感，σ 大表示非线性/交互）：")
+            for _, r in grp.iterrows():
+                typer.echo(f"  {r['param']:>13}: μ*={r['mu_star']:.3f}  σ={r['sigma']:.3f}")
+        csv_name = "sensitivity_morris.csv"
+    elif method == "sobol":
+        n_points = sobol_n * (d + 2)
+        typer.echo(
+            f"想定: {sc.name}  方法: Sobol    N: {sobol_n}    每点复制: {reps}"
+            f"（共 {n_points} 个设计点 × {reps} 次模拟）"
+        )
+        df = run_sobol(sc, n_base=sobol_n, reps_per_point=reps, base_seed=seed)
+        for metric, grp in df.groupby("metric", sort=False):
+            typer.echo(f"\n{metric}（按 ST 总效应排序；ST=含交互总贡献，S1=一阶主效应）：")
+            for _, r in grp.iterrows():
+                typer.echo(f"  {r['param']:>13}: S1={r['S1']:+.3f}  ST={r['ST']:.3f}")
+        csv_name = "sensitivity_sobol.csv"
+    else:
+        raise typer.BadParameter(f"未知方法 {method}（可选 morris/sobol）")
 
     if out:
         out_dir = Path(out)
         out_dir.mkdir(parents=True, exist_ok=True)
-        path = out_dir / "sensitivity_morris.csv"
+        path = out_dir / csv_name
         df.to_csv(path, index=False)
         typer.echo(f"\n结果已写出: {path}")
 

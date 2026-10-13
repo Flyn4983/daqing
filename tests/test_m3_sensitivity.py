@@ -3,7 +3,13 @@
 import numpy as np
 
 from brigsim.data.provider import YamlFileProvider
-from brigsim.experiment.sensitivity import METRICS, PROBLEM, apply_point, run_sensitivity
+from brigsim.experiment.sensitivity import (
+    METRICS,
+    PROBLEM,
+    apply_point,
+    run_sensitivity,
+    run_sobol,
+)
 
 
 def test_apply_point_scales_and_clips():
@@ -29,5 +35,20 @@ def test_morris_output_structure():
     for metric, grp in df.groupby("metric", sort=False):
         # μ* 非升序排列；名次在 1..k（允许并列）
         assert grp["mu_star"].is_monotonic_decreasing
+        assert grp["rank"].min() == 1
+        assert set(grp["rank"]) <= set(range(1, PROBLEM["num_vars"] + 1))
+
+
+def test_sobol_output_structure():
+    sc = YamlFileProvider("scenarios").load_scenario("example_company")
+    df = run_sobol(sc, n_base=4, reps_per_point=2)
+    # Saltelli（不算二阶）设计点 N×(D+2)；输出每指标 D 行
+    assert len(df) == len(METRICS) * PROBLEM["num_vars"]
+    assert set(df["metric"].unique()) == set(METRICS)
+    assert set(df["param"]) == set(PROBLEM["names"])
+    # 小样本下指数允许轻微越界（数值噪声），但必须有限；ST 非升序排列
+    assert np.isfinite(df[["S1", "S1_conf", "ST", "ST_conf"]].to_numpy()).all()
+    for metric, grp in df.groupby("metric", sort=False):
+        assert grp["ST"].is_monotonic_decreasing
         assert grp["rank"].min() == 1
         assert set(grp["rank"]) <= set(range(1, PROBLEM["num_vars"] + 1))
