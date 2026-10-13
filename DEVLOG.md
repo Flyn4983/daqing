@@ -208,3 +208,70 @@
 - M3：参数标定与灵敏度（SALib）、真实地形 GeoTIFF；备件供应链扩展
 - 写实素材仍待用户输入（本机专有包 / Sketchfab token）
 
+## 2026-10-13 | trae + 用户 | M2.3 步兵素材：three.js Soldier（MIT）蒙皮烘焙
+
+### 完成内容
+- 反坦克组（atgm_team）由程序三脚架模型替换为持枪士兵静态模型
+  （three.js 官方示例 Soldier.glb，MIT；全装具贴图、1.8m 真实身高、
+  Idle 持枪姿态），隔离场景截图确认贴图无黑面、双脚接地、朝向正确
+  （Y-up 转 Z-up 后面朝 -Y，与蓝军 heading_deg=270 一致）
+- 许可清单：新增 `assets/models/CREDITS.md`，登记三种入库素材的协议
+  （tank=CC0、ifv=Apache-2.0、atgm_team=MIT 全文），满足 MIT 保留声明要求
+- 用新资产重新录制 outputs/m1_replay.rrd，回放与 ground_offset 机制零改动适配
+
+### 开源选型与素材渠道
+- 渠道：three.js 仓库 `examples/models/gltf/Soldier.glb`（2.16MB），
+  经 jsDelivr CDN 直链下载（raw.githubusercontent.com 本机仍被重置）
+- 写实坦克直链渠道本轮仍无收获：CGTrader/Sketchfab 写实件均需登录，
+  Kenney/OGA/poly.pizza 无写实坦克；现实路径仍为用户提供本机专有素材
+  或 Sketchfab API token（用户已确认原型阶段可直接使用专有软件素材）
+
+### 关键加工：glTF 2.0 蒙皮烘焙（outputs/bake_skin.py，可复现）
+- rerun 不做角色蒙皮、trimesh 不评估 skin，手工实现线性混合蒙皮
+  `u_j = inv(G_mesh)·G_joint(t)·IBM_j`，动画采样用四元数 slerp
+  （Idle 动画 t=1.0s，避开首帧恰为绑定 T-pose 的问题）
+- 四个规范坑：
+  1. JOINTS_0 存的是 skin.joints 数组的 slot 索引，不是节点号
+  2. IBM MAT4 为列主序：reshape(-1,4,4) 后必须 transpose(0,2,1)
+     （REST 姿态偏差由 24606 降到 ~2e-5 验证公式正确）
+  3. JOINTS_0/WEIGHTS_0 共用 byteStride=32 的交错 bufferView
+     （JOINTS 行内偏移 0，WEIGHTS 偏移 16），read_accessor 增 stride 支持
+  4. 烘焙出的世界顶点必须回写为网格 POSITION（漏写导致导出包围盒不变）
+- build_infantry.py：按身高 1.8m 定标，Y-up→Z-up 纯旋转（det=+1），
+  按几何最低点平移接地（最终 0.768×0.884×1.80m，min z=0）；
+  材质保留贴图 UV，强制 metallic=0/roughness=0.9/doubleSided
+
+### 验证
+- pytest 9 项全绿、ruff 全绿；iso_atgm.rrd 隔离场景截图目检
+  （rerun 单实例会把新 rrd 转发给旧进程，验证前须先 kill 旧 rerun.exe）
+
+## 2026-10-13 | trae + 用户 | M3 灵敏度分析首版（SALib Morris）
+
+### 完成内容
+- `experiment/sensitivity.py`：SALib 1.6.0 Morris 一次一列法全局灵敏度
+  - 5 个全局乘子因子：pk_scale / detect_scale / speed_scale /
+    mtbf_scale / visibility（界别 4，60 设计点 = 12 轨迹×6 点）
+  - 每设计点 10 次蒙特卡洛复制取均值，公共随机数（CRN）降噪；
+    输出 μ*（总效应）、σ（非线性/交互）、μ* 置信区间与排名
+  - 五指标：success、红蓝战损率、红蓝完好率
+- CLI 新增 `brigsim sensitivity`（-t 轨迹数、--reps-per-point、--seed、
+  --out 写 sensitivity_morris.csv）；测试 test_m3_sensitivity.py 2 项
+- `apply_point`：pydantic model_copy 后按平台类型缩放参数，
+  pk/detect 截断 [0,1]，原想定不被修改
+
+### 首版结果（60 设计点 × 10 复制，共 600 次推演）
+- 任务成功率敏感度：**speed_scale μ*=0.405 居首** > detect 0.255 >
+  pk/visibility 0.210 > mtbf 0.195——冲击任务中机动速度最关键，
+  符合教条直觉；探测次之，毁伤/能见度再次
+- 红战损：speed 0.270、pk 0.214；蓝战损：speed 0.285、visibility 0.189
+- 产物 outputs/sensitivity_morris.csv
+
+### 开源选型记录
+- 直接落地 M0 选型 **SALib**（MIT）：morris_sample/morris_analyze，
+  未自研抽样与统计；μ* 并列时 rank(method=min) 名次允许并列
+
+### 下一步
+- M3 续：营/旅编组、多阶段任务、真实地形 GeoTIFF、参数标定；
+  Morris 筛查后上 Sobol 定量方差分解；备件供应链扩展
+- M4：Warp GPU 批量后端（列存状态布局已预留）
+

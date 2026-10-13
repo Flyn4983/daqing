@@ -87,5 +87,35 @@ def replay(
         typer.echo(f"回放录制完成: {rrd_path}")
 
 
+@app.command()
+def sensitivity(
+    scenario: str = typer.Argument(..., help="想定名称或 YAML 路径"),
+    trajectories: int = typer.Option(12, "--trajectories", "-t", help="Morris 轨道数"),
+    reps: int = typer.Option(12, "--reps-per-point", help="每个设计点的蒙特卡洛复制数"),
+    seed: int = typer.Option(20261013, "--seed", help="基础随机种子"),
+    out: str | None = typer.Option(None, "--out", help="结果 CSV 输出目录"),
+) -> None:
+    """Morris 一次一列法灵敏度扫描，输出各参数对指标的 μ* 排序。"""
+    from .experiment.sensitivity import run_sensitivity
+
+    sc = YamlFileProvider().load_scenario(scenario)
+    typer.echo(
+        f"想定: {sc.name}    轨道: {trajectories}    每点复制: {reps}"
+        f"（共 {trajectories * 6} 个设计点 × {reps} 次模拟）"
+    )
+    df = run_sensitivity(sc, trajectories=trajectories, reps_per_point=reps, base_seed=seed)
+    for metric, grp in df.groupby("metric", sort=False):
+        typer.echo(f"\n{metric}（按 μ* 排序，μ* 越大越敏感，σ 大表示非线性/交互）：")
+        for _, r in grp.iterrows():
+            typer.echo(f"  {r['param']:>13}: μ*={r['mu_star']:.3f}  σ={r['sigma']:.3f}")
+
+    if out:
+        out_dir = Path(out)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        path = out_dir / "sensitivity_morris.csv"
+        df.to_csv(path, index=False)
+        typer.echo(f"\n结果已写出: {path}")
+
+
 if __name__ == "__main__":
     app()
