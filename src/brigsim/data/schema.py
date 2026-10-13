@@ -22,13 +22,20 @@ class ParamMeta(BaseModel):
 
 
 class Terrain(BaseModel):
-    # M0：平坦方形场地，仅给边界（米）。M3 接高程/通行性栅格。
+    # 方形战场边界（米）；FBM 噪声程序生成高程，M3 可替换为 GeoTIFF 实测数据
     size_m: tuple[float, float] = (10_000.0, 10_000.0)
+    grid_n: int = 65
+    noise_seed: int = 42
+    noise_scale: float = 3.0
+    octaves: int = 4
+    base_height: float = 60.0
+    amplitude: float = 140.0
+    water_level: float = 10.0
 
 
 class Environment(BaseModel):
     weather: Literal["clear", "rain", "fog", "snow"] = "clear"
-    # 对探测概率的粗修正系数，M0 预留不参与内核
+    # 对探测距离的修正系数（雨/雾/雪 <1），同时驱动可视化粒子
     visibility_factor: float = 1.0
 
 
@@ -53,6 +60,9 @@ class UnitSpec(BaseModel):
     unit_id: str
     type: str
     pos: tuple[float, float]
+    # 编制层级标签（旅-营-连-排 自由文本链，用于态势图标注）
+    org: str = ""
+    heading_deg: float = 90.0  # 初始朝向，0=北(+y)，顺时针
 
 
 class Scenario(BaseModel):

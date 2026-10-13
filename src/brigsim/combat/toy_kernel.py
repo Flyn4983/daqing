@@ -27,7 +27,7 @@ class ToyNumpyKernel(Kernel):
             if red_alive.any():
                 self._move_toward(red_alive, s.objective[0], s.objective[1], aggro=False)
             if red_alive.any() and blue_alive.any():
-                # 每个蓝方找最近红方
+                # 每个蓝方找最近红方：在武器射程外前压，射程内转向瞄准
                 rx, ry = s.x[red_alive], s.y[red_alive]
                 idx_red = np.where(red_alive)[0]
                 for j in np.where(blue_alive)[0]:
@@ -35,6 +35,8 @@ class ToyNumpyKernel(Kernel):
                     d = np.hypot(s.x[k] - s.x[j], s.y[k] - s.y[j])
                     if d > s.weapon_range[j]:
                         self._move_one_toward(j, s.x[k], s.y[k])
+                    else:
+                        s.heading[j] = np.arctan2(s.y[k] - s.y[j], s.x[k] - s.x[j])
 
         # 2) 侦察+射击+毁伤：每个存活单位对射程内最近敌方单位射击一次
         for i in np.where(alive)[0]:
@@ -43,7 +45,8 @@ class ToyNumpyKernel(Kernel):
                 continue
             idx_enemy = np.where(enemy)[0]
             d = np.hypot(s.x[idx_enemy] - s.x[i], s.y[idx_enemy] - s.y[i])
-            reach = np.minimum(s.sensor_range[i], s.weapon_range[i])
+            vis = self.scenario.environment.visibility_factor
+            reach = min(s.sensor_range[i], s.weapon_range[i]) * vis
             if d.min() > reach:
                 continue
             t = idx_enemy[np.argmin(d)]
@@ -57,11 +60,14 @@ class ToyNumpyKernel(Kernel):
 
     def _move_one_toward(self, i: int, tx: float, ty: float) -> None:
         s = self.state
-        d = np.hypot(tx - s.x[i], ty - s.y[i])
-        step = min(s.speed[i], d)
+        dx, dy = tx - s.x[i], ty - s.y[i]
+        d = np.hypot(dx, dy)
         if d > 0:
-            s.x[i] += step * (tx - s.x[i]) / d
-            s.y[i] += step * (ty - s.y[i]) / d
+            s.heading[i] = np.arctan2(dy, dx)
+            factor = float(self.terrain.move_factor(s.x[i], s.y[i]))
+            step = min(s.speed[i] * factor, d)
+            s.x[i] += step * dx / d
+            s.y[i] += step * dy / d
 
     def _resolve_shot(self, i: int, t: int) -> None:
         s, rng = self.state, self.rng

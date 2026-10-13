@@ -10,9 +10,16 @@ mission:
 
 terrain:
   size_m: [10000, 10000]
+  grid_n: 65
+  noise_seed: 7
+  noise_scale: 3.0
+  octaves: 4
+  base_height: 60.0
+  amplitude: 150.0
+  water_level: 5.0
 
 environment:
-  weather: clear
+  weather: clear        # clear/rain/fog/snow，可切换
   visibility_factor: 1.0
 
 platform_types:
@@ -35,18 +42,19 @@ platform_types:
     speed_m_per_tick: 120
     meta: {source: example, version: "0.1", confidence: 0.3}
 
+# 编制：重型合成旅 1 营 装步1连（示意）
 forces:
   red:
-    - {unit_id: r-t1, type: tank, pos: [200, 4600]}
-    - {unit_id: r-t2, type: tank, pos: [200, 5000]}
-    - {unit_id: r-t3, type: tank, pos: [200, 5400]}
-    - {unit_id: r-i1, type: ifv,  pos: [0, 4300]}
-    - {unit_id: r-i2, type: ifv,  pos: [0, 4700]}
-    - {unit_id: r-i3, type: ifv,  pos: [0, 5300]}
-    - {unit_id: r-i4, type: ifv,  pos: [0, 5700]}
+    - {unit_id: r-t1, type: tank, org: "装步1连·坦克1排 101", pos: [200, 4600], heading_deg: 90}
+    - {unit_id: r-t2, type: tank, org: "装步1连·坦克1排 102", pos: [200, 5000], heading_deg: 90}
+    - {unit_id: r-t3, type: tank, org: "装步1连·坦克2排 103", pos: [200, 5400], heading_deg: 90}
+    - {unit_id: r-i1, type: ifv,  org: "装步1连·步战1排 111", pos: [0, 4300], heading_deg: 90}
+    - {unit_id: r-i2, type: ifv,  org: "装步1连·步战1排 112", pos: [0, 4700], heading_deg: 90}
+    - {unit_id: r-i3, type: ifv,  org: "装步1连·步战2排 121", pos: [0, 5300], heading_deg: 90}
+    - {unit_id: r-i4, type: ifv,  org: "装步1连·步战2排 122", pos: [0, 5700], heading_deg: 90}
   blue:
-    - {unit_id: b-a1, type: atgm_team, pos: [7600, 4200]}
-    - {unit_id: b-a2, type: atgm_team, pos: [7600, 5000]}
-    - {unit_id: b-a3, type: atgm_team, pos: [7600, 5800]}
-    - {unit_id: b-t1, type: tank, pos: [8200, 4600]}
-    - {unit_id: b-t2, type: tank, pos: [8200, 5400]}
+    - {unit_id: b-a1, type: atgm_team, org: "蓝守军·反坦克1组", pos: [7600, 4200], heading_deg: 270}
+    - {unit_id: b-a2, type: atgm_team, org: "蓝守军·反坦克2组", pos: [7600, 5000], heading_deg: 270}
+    - {unit_id: b-a3, type: atgm_team, org: "蓝守军·反坦克3组", pos: [7600, 5800], heading_deg: 270}
+    - {unit_id: b-t1, type: tank, org: "蓝守军·坦克排 201", pos: [8200, 4600], heading_deg: 270}
+    - {unit_id: b-t2, type: tank, org: "蓝守军·坦克排 202", pos: [8200, 5400], heading_deg: 270}

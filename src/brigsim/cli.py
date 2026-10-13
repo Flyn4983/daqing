@@ -69,8 +69,8 @@ def replay(
     visualize(
         snapshots,
         engagements,
-        objective=sc.mission.objective,
-        dt_seconds=sc.mission.dt_seconds,
+        scenario=sc,
+        terrain=kernel.terrain,
         rrd_path=rrd_path,
         spawn=False,
     )

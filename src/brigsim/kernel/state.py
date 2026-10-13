@@ -29,6 +29,11 @@ class SimState:
         self.alive = np.ones(self.n, dtype=bool)
         # 受损（未毁）：影响完好率，M1 起由保障模型修复
         self.damaged = np.zeros(self.n, dtype=bool)
+        # 朝向（弧度，数学坐标系，0=+x 向东）；由机动更新，射界/模型朝向使用
+        self.heading = np.asarray(
+            [np.deg2rad(90.0 - u.heading_deg) for u in units], dtype=np.float64
+        )
+        self.labels = np.asarray([u.org or u.unit_id for u in units], dtype=object)
 
         specs = [scenario.platform_types[t] for t in types]
         self.sensor_range = np.asarray([s.sensor_range_m for s in specs], dtype=np.float64)

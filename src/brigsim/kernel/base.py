@@ -7,6 +7,7 @@ from abc import ABC, abstractmethod
 from ..data.schema import Scenario
 from .events import EventLog
 from .state import SimState
+from .terrain import HeightField
 
 
 class Kernel(ABC):
@@ -18,6 +19,7 @@ class Kernel(ABC):
         self.scenario = scenario
         self.rng = np_rng(seed)
         self.state = SimState(scenario)
+        self.terrain = HeightField.from_spec(scenario.terrain)
         self.log = EventLog()
         self.log.snapshot(0, self.state)
 

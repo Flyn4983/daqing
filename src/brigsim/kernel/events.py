@@ -22,14 +22,13 @@ class EventLog:
                     "side": int(state.side[i]),
                     "x": float(state.x[i]),
                     "y": float(state.y[i]),
+                    "heading": float(state.heading[i]),
                     "alive": bool(state.alive[i]),
                     "damaged": bool(state.damaged[i]),
                 }
             )
 
-    def engagement(
-        self, tick: int, shooter: str, target: str, killed: bool, damage: bool
-    ) -> None:
+    def engagement(self, tick: int, shooter: str, target: str, killed: bool, damage: bool) -> None:
         self.engagements.append(
             {
                 "tick": tick,
