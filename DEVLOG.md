@@ -131,3 +131,39 @@
 - 等待/接入用户提供的写实坦克与反坦克组素材（GLB/FBX/OBJ 均可，trimesh 转换）
 - M1：Mesa 重写交战内核、SimPy 保障模型
 
+## 2026-10-13 | trae + 用户 | M2.2 坦克资产替换：Quaternius Tank2（CC0）
+
+### 完成内容
+- tank 由程序方块模型替换为 Quaternius Animated Tanks 包的 Tank2
+  （低矮车身+圆炮塔+长炮管，苏系 MBT 剪影；加工后 9.8×5.59×2.56m）
+- 4 个候选（Tank/Tank2/Tank3/Tank4）全部下载隔离对比，Tank2 高度比例最真实；
+  iso 同屏截图确认军绿涂装、履带负重轮、炮塔炮管、接地与朝向（炮口 +X）
+- 反坦克组（atgm_team）无开源直链素材，保留程序三脚架导弹模型
+
+### 素材渠道调研（可直链，无需登录）
+- GitHub 代码搜索、OGA、poly.pizza、Kenney：写实坦克 glb 基本没有可直链的，
+  Quaternius 官网/itch 本机超时，Sketchfab/TurboSquid/CGTrader 写实模型均需登录
+- 最终渠道：`trebeljahr/quaternius-showcase`（Next.js 镜像站仓库，CC0，
+  含全部 Quaternius 包的单文件 glb），经 jsDelivr CDN 直连下载
+  （raw.githubusercontent.com 本机被重置，api.github.com 与 jsdelivr 可通）
+- glbxz.com 有 T-72B3/豹2A4/96A 写实模型但为金币/登录下载站，放弃
+- 写实级素材的现实路径：用户提供本机专有素材，或提供 Sketchfab 账号 API token
+
+### 加工踩坑（outputs/build_tank.py，顶点色烘焙方案）
+- 源 glb 无贴图，PBR 基色被压到近黑（0.06–0.18）；调亮 baseColorFactor 后
+  rerun 无环境光，侧立面仍近黑，emissive 自发光与 doubleSided 均未解决
+- trimesh 的 PBRMaterial.baseColorFactor 存在 0-1/0-255 量纲混乱
+- 最终方案：放弃 PBR，按材质名（Main/Main_Dark/Main_Light/Wheels 五档）
+  烘焙为 glTF COLOR_0 顶点色，并按顶点法线 z 分量烘焙 0.75–1.0 的顶光明暗；
+  与程序模型走同一渲染路径，rerun 显示稳定，明暗层次保留
+- 几何管线：缩放（按炮管向前长度归一到 9.8m）+ Y-up→Z-up 纯旋转矩阵
+  （det=+1，避免镜像翻转面缠绕）+ 按世界包围盒接地
+
+### 验证
+- ruff、pytest 全绿；三候选同屏 iso 截图（outputs/shot_t5.png）军绿渲染正常
+- ground_offset 机制对新 tank.glb 零改动自动适配
+
+### 下一步
+- 写实素材待用户输入（本机专有包 / Sketchfab token）
+- M1：Mesa 重写交战内核、SimPy 保障模型
+
