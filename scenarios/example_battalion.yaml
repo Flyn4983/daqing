@@ -15,13 +15,10 @@ mission:
     - {name: "夺占纵深要点", objective: [8000, 5000], success_radius_m: 400}
 
 terrain:
+  source: geotiff                # synthetic=程序噪声 / geotiff=DEM 文件
+  geotiff_path: terrain/dem_demo.tif  # 相对本 YAML 目录；385² 合成峡谷（走廊+河障）
   size_m: [10000, 10000]
   grid_n: 65
-  noise_seed: 7
-  noise_scale: 3.0
-  octaves: 4
-  base_height: 60.0
-  amplitude: 150.0
   water_level: 5.0
 
 environment:

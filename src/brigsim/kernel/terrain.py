@@ -1,7 +1,9 @@
-"""地形高程模型：FBM 噪声生成高度场，供内核机动修正与可视化 Mesh3D 共用。
+"""地形高程模型：FBM 噪声或 GeoTIFF DEM 生成高度场，供内核机动与可视化共用。
 
-M1.5 轮：仅影响机动速度（坡度/地表粗糙度）；M3 接真实 GeoTIFF 高程、
-通行性栅格与视线遮挡时，保持本类接口不变。
+- synthetic：OpenSimplex FBM 程序地形；
+- geotiff：rasterio 读取 DEM 首波段，由 GDAL 双线性重采样到 grid_n，
+  像元阵列线性拉伸到 size_m（粗版暂不使用地理变换/CRS，真实测绘数据
+  预先裁剪为方形战区即可；后续接坐标变换与通行性栅格时接口保持不变）。
 """
 
 from __future__ import annotations
@@ -27,6 +29,15 @@ class HeightField:
 
     @classmethod
     def from_spec(cls, spec: Terrain) -> "HeightField":
+        if spec.source == "geotiff":
+            if not spec.geotiff_path:
+                raise ValueError("terrain.source=geotiff 时必须提供 geotiff_path")
+            return cls.from_geotiff(
+                spec.geotiff_path,
+                size=spec.size_m,
+                grid_n=spec.grid_n,
+                water_level=spec.water_level,
+            )
         n = spec.grid_n
         noise = OpenSimplex(seed=spec.noise_seed)
         # noise2array(x, y) 返回 shape=(y.size, x.size)，行=y、列=x，即高度场布局
@@ -42,6 +53,26 @@ class HeightField:
         h = h / total  # [-1, 1]
         heights = spec.base_height + h * spec.amplitude
         return cls(spec.size_m, n, heights, spec.water_level)
+
+    @classmethod
+    def from_geotiff(
+        cls,
+        path: str,
+        size: tuple[float, float] = (10_000.0, 10_000.0),
+        grid_n: int = 65,
+        water_level: float = 10.0,
+    ) -> "HeightField":
+        """读取单波段 DEM：GDAL 双线性重采样到 (grid_n, grid_n)，NaN 填水域高度。"""
+        import rasterio
+        from rasterio.enums import Resampling
+
+        with rasterio.open(path) as ds:
+            band = ds.read(1, out_shape=(grid_n, grid_n), resampling=Resampling.bilinear).astype(
+                np.float64
+            )
+        if not np.isfinite(band).all():
+            band = np.nan_to_num(band, nan=water_level, neginf=water_level)
+        return cls(size, grid_n, band, water_level)
 
     def _ij(self, x: np.ndarray | float, y: np.ndarray | float):
         fx = np.clip(np.asarray(x) / self.size[0], 0.0, 1.0) * (self.n - 1)

@@ -19,13 +19,16 @@ class DataProvider(Protocol):
 - 平台类型：探测距离、武器射程、单发毁伤概率 pk、机动速度
 - 兵力编成：红蓝双方单位清单（类型、初始位置）
 
-M3 扩展：地形高程/通行性栅格（GeoTIFF）、气象时间序列、备件清单、修理力量编配。
+M3 进展：GeoTIFF 地形已接入（`terrain.source: geotiff` + `geotiff_path`，
+单波段 DEM 经 GDAL 双线性重采样到 grid_n，像元线性拉伸到 size_m；
+相对路径以想定 YAML 目录为基准；真实测绘 DEM 裁剪成方形战区即可同名替换）。
+M3 待办：通行性栅格、气象时间序列、备件清单、修理力量编配。
 
 ## 3. 输出：统一事件日志
 
 仿真只产出两类记录（Parquet），可视化与统计都读它：
 
-- `snapshot`：每个 tick 每个单位的位置、生存/受损状态（供回放与完好率曲线）
+- `snapshot`：每个 tick 每个单位的位置、朝向、生存/受损状态、当前任务阶段 phase（供回放与完好率曲线）
 - `engagement`：交火事件（射击方、目标、是否击毁，供战损归因）
 
 Schema 在 `brigsim/kernel/events.py`，冻结前为 M0 草稿。

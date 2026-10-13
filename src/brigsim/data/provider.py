@@ -29,4 +29,9 @@ class YamlFileProvider:
             path = self.base_dir / f"{name}.yaml"
         with path.open(encoding="utf-8") as f:
             raw = yaml.safe_load(f)
-        return Scenario.model_validate(raw)
+        sc = Scenario.model_validate(raw)
+        # GeoTIFF 相对路径以想定 YAML 所在目录为基准
+        geo = sc.terrain.geotiff_path
+        if geo and not Path(geo).is_absolute():
+            sc.terrain.geotiff_path = str((path.parent / geo).resolve())
+        return sc

@@ -316,3 +316,43 @@
 - M3 续：真实地形 GeoTIFF、参数标定、Sobol 定量分解、旅级想定、备件供应链
 - M4：Warp GPU 批量后端（71 单位 × 百复制的 Python 循环已显慢）
 
+## 2026-10-13 | trae + 用户 | M3 GeoTIFF 真实地形接入（合成峡谷 DEM 先行）
+
+### 完成内容
+- 地形双来源（`kernel/terrain.py`，HeightField 接口不变）：
+  - Terrain 增 `source`（synthetic/geotiff）+ `geotiff_path`
+  - `HeightField.from_geotiff`：rasterio 读单波段 DEM，GDAL 双线性
+    `read(out_shape=...)` 直接重采样到 grid_n（不引 scipy），NaN 填水域；
+    粗版像元阵列线性拉伸到 size_m、暂不用 CRS/transform——真实测绘数据
+    预先裁剪成方形战区即可同名替换，后续再补坐标变换与通行性栅格
+  - Provider 把相对 GeoTIFF 路径解析为相对想定 YAML 目录的绝对路径
+- 合成峡谷 DEM `scenarios/terrain/dem_demo.tif`（385² float32，EPSG:32650，
+  生成脚本 `outputs/make_dem.py`，可复现）：
+  - 东西向摆动走廊（谷底 ~25m）+ 南北两侧平滑抬升山地（至 ~390m，山顶积雪带）
+  - 一道蛇形南北向河障在 x≈5200 横切进攻轴线（水面 2m < water_level 5，
+    机动系数在水面×0.4），含河岸阶地；FBM 破碎起伏
+- example_battalion 切换到 GeoTIFF 地形（想定零改动其余部分）；
+  可视化零改动即显示雪山-走廊-河障（地形网格/水面/配色全部沿用 M2 管线）
+
+### 开源选型记录
+- 直接用 **rasterio**（BSD，manylinux/win wheel 自带 GDAL，无需手装 GDAL）
+  做 DEM 读取与重采样，未自研任何栅格 IO；高程生成沿用 opensimplex（已提为
+  核心依赖：内核地形模块本就 import，CI 此前只装 dev extras 实际跑不起来，
+  本次把 opensimplex/rasterio 入核心依赖，CI 改为 `.[dev,combat,analysis]`）
+
+### 验证
+- pytest 20 项全绿（新增 3：DEM 重采样/插值趋势、缺 path 报错、
+  营级想定相对路径解析+机动系数区间）；ruff 全绿
+- 营级 40 复制（DEM）：success 1.00、红战损 0.39±0.05、蓝战损 0.98
+  （vs 程序地形 0.95/0.35，差异在小样本噪声内；河障未显著迟滞——
+  宽 110m 浅水面按现有粗机动模型一个 tick 即涉过，渡场/桥梁/泥泞通行性
+  留待后续通行性栅格细化）
+- 默认种子回放：阶段 6→22→32 tick；m3_battalion_dem.rrd 截图确认
+  雪山夹峙走廊、河障峡谷、林地基底与阶段信标
+- 顺带记录：CI 依赖修复（M1 起 combat/analysis extras 漏装）
+
+### 下一步
+- M3 续：参数标定、Sobol 定量分解、旅级想定、通行性栅格（渡场/桥梁）
+- 真实测绘 DEM 到位后同名替换 dem_demo.tif 即可
+- M4：Warp GPU 批量后端
+

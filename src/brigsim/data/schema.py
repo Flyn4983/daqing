@@ -22,9 +22,15 @@ class ParamMeta(BaseModel):
 
 
 class Terrain(BaseModel):
-    # 方形战场边界（米）；FBM 噪声程序生成高程，M3 可替换为 GeoTIFF 实测数据
+    # 高程来源：synthetic=FBM 程序噪声；geotiff=读取 DEM（数组线性拉伸到 size_m）
+    source: Literal["synthetic", "geotiff"] = "synthetic"
+    # geotiff 相对路径相对于想定 YAML 所在目录（由 Provider 解析）
+    geotiff_path: str | None = None
+    # 方形战场边界（米）
     size_m: tuple[float, float] = (10_000.0, 10_000.0)
+    # 内核机动/插值使用的网格分辨率（GeoTIFF 会重采样到该尺度）
     grid_n: int = 65
+    # synthetic 专用 FBM 参数
     noise_seed: int = 42
     noise_scale: float = 3.0
     octaves: int = 4
