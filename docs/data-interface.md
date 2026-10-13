@@ -19,10 +19,13 @@ class DataProvider(Protocol):
 - 平台类型：探测距离、武器射程、单发毁伤概率 pk、机动速度
 - 兵力编成：红蓝双方单位清单（类型、初始位置）
 
-M3 进展：GeoTIFF 地形已接入（`terrain.source: geotiff` + `geotiff_path`，
-单波段 DEM 经 GDAL 双线性重采样到 grid_n，像元线性拉伸到 size_m；
-相对路径以想定 YAML 目录为基准；真实测绘 DEM 裁剪成方形战区即可同名替换）。
-M3 待办：通行性栅格、气象时间序列、备件清单、修理力量编配。
+M3 进展：GeoTIFF 双栅格地形已接入（`terrain.source: geotiff` + `geotiff_path`
++ 可选 `passability_path`）：单波段 DEM 与通行性栅格均经 GDAL 双线性重采样
+到 grid_n，像元线性拉伸到 size_m；通行性取值 [0,1]（1=道路/硬地，
+0.12=无桥河面，桥=1.0），与坡度/涉水系数连乘进入机动修正；
+相对路径以想定 YAML 目录为基准；真实测绘 DEM/通行性数据裁剪成方形战区、
+两栅格配准后即可同名替换。
+M3 待办：气象时间序列、备件清单、修理力量编配。
 
 ## 3. 输出：统一事件日志
 

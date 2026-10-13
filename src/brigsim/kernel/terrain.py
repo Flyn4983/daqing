@@ -21,11 +21,14 @@ class HeightField:
         n: int,
         heights: np.ndarray,
         water_level: float,
+        passability: np.ndarray | None = None,
     ) -> None:
         self.size = size
         self.n = n
         self.heights = heights  # (n, n)，行=y，列=x
         self.water_level = water_level
+        # 通行性系数（n,n），1=道路/硬地，越小越难走（水面/林地/沼泽）
+        self.passability = passability if passability is not None else np.ones((n, n))
 
     @classmethod
     def from_spec(cls, spec: Terrain) -> "HeightField":
@@ -37,6 +40,7 @@ class HeightField:
                 size=spec.size_m,
                 grid_n=spec.grid_n,
                 water_level=spec.water_level,
+                passability_path=spec.passability_path,
             )
         n = spec.grid_n
         noise = OpenSimplex(seed=spec.noise_seed)
@@ -61,39 +65,50 @@ class HeightField:
         size: tuple[float, float] = (10_000.0, 10_000.0),
         grid_n: int = 65,
         water_level: float = 10.0,
+        passability_path: str | None = None,
     ) -> "HeightField":
-        """读取单波段 DEM：GDAL 双线性重采样到 (grid_n, grid_n)，NaN 填水域高度。"""
+        """读取单波段 DEM（可选通行性栅格）：GDAL 双线性重采样到 (grid_n, grid_n)。"""
         import rasterio
         from rasterio.enums import Resampling
 
         with rasterio.open(path) as ds:
-            band = ds.read(1, out_shape=(grid_n, grid_n), resampling=Resampling.bilinear).astype(
-                np.float64
-            )
+            band = ds.read(
+                1, out_shape=(grid_n, grid_n), resampling=Resampling.bilinear
+            ).astype(np.float64)
         if not np.isfinite(band).all():
             band = np.nan_to_num(band, nan=water_level, neginf=water_level)
-        return cls(size, grid_n, band, water_level)
+
+        passability = None
+        if passability_path:
+            with rasterio.open(passability_path) as ds:
+                passability = ds.read(
+                    1, out_shape=(grid_n, grid_n), resampling=Resampling.bilinear
+                ).astype(np.float64)
+            passability = np.clip(np.nan_to_num(passability, nan=1.0), 0.0, 1.0)
+        return cls(size, grid_n, band, water_level, passability)
 
     def _ij(self, x: np.ndarray | float, y: np.ndarray | float):
         fx = np.clip(np.asarray(x) / self.size[0], 0.0, 1.0) * (self.n - 1)
         fy = np.clip(np.asarray(y) / self.size[1], 0.0, 1.0) * (self.n - 1)
         return fx, fy
 
-    def height_at(self, x: np.ndarray | float, y: np.ndarray | float) -> np.ndarray:
-        """双线性插值高程（米）。"""
+    def _bilinear(self, grid: np.ndarray, x, y) -> np.ndarray:
         fx, fy = self._ij(x, y)
         i0, j0 = np.floor(fx).astype(int), np.floor(fy).astype(int)
         i1, j1 = np.minimum(i0 + 1, self.n - 1), np.minimum(j0 + 1, self.n - 1)
         tx, ty = fx - i0, fy - j0
-        h = self.heights
-        v00 = h[j0, i0]
-        v10 = h[j0, i1]
-        v01 = h[j1, i0]
-        v11 = h[j1, i1]
+        v00 = grid[j0, i0]
+        v10 = grid[j0, i1]
+        v01 = grid[j1, i0]
+        v11 = grid[j1, i1]
         return (1 - tx) * (1 - ty) * v00 + tx * (1 - ty) * v10 + (1 - tx) * ty * v01 + tx * ty * v11
 
+    def height_at(self, x: np.ndarray | float, y: np.ndarray | float) -> np.ndarray:
+        """双线性插值高程（米）。"""
+        return self._bilinear(self.heights, x, y)
+
     def move_factor(self, x: np.ndarray, y: np.ndarray) -> np.ndarray:
-        """机动修正系数：坡度越陡、水面越慢。粗略经验式，后续标定。"""
+        """机动修正系数：坡度 + 水面 + 通行性栅格（道路/河流/植被）。粗略经验式，后标定。"""
         cell = self.size[0] / self.n
         hx = (self.height_at(np.asarray(x) + cell, y) - self.height_at(np.asarray(x) - cell, y)) / (
             2 * cell
@@ -105,4 +120,6 @@ class HeightField:
         factor = np.clip(1.0 - 1.6 * slope, 0.25, 1.0)
         wet = self.height_at(x, y) < self.water_level
         factor = np.where(wet, factor * 0.4, factor)
-        return factor
+        # 通行性栅格：道路 1.0、一般地表 <1、无桥河面由栅格给低值（强制依赖渡场）
+        factor = factor * self._bilinear(self.passability, x, y)
+        return np.clip(factor, 0.05, 1.0)

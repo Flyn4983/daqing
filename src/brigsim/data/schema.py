@@ -26,6 +26,8 @@ class Terrain(BaseModel):
     source: Literal["synthetic", "geotiff"] = "synthetic"
     # geotiff 相对路径相对于想定 YAML 所在目录（由 Provider 解析）
     geotiff_path: str | None = None
+    # 通行性栅格（0=不可通行 … 1=道路），与 DEM 同网格约定；None=全域 1.0
+    passability_path: str | None = None
     # 方形战场边界（米）
     size_m: tuple[float, float] = (10_000.0, 10_000.0)
     # 内核机动/插值使用的网格分辨率（GeoTIFF 会重采样到该尺度）

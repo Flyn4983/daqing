@@ -30,8 +30,9 @@ class YamlFileProvider:
         with path.open(encoding="utf-8") as f:
             raw = yaml.safe_load(f)
         sc = Scenario.model_validate(raw)
-        # GeoTIFF 相对路径以想定 YAML 所在目录为基准
-        geo = sc.terrain.geotiff_path
-        if geo and not Path(geo).is_absolute():
-            sc.terrain.geotiff_path = str((path.parent / geo).resolve())
+        # GeoTIFF / 通行性栅格的相对路径以想定 YAML 所在目录为基准
+        for attr in ("geotiff_path", "passability_path"):
+            rel = getattr(sc.terrain, attr)
+            if rel and not Path(rel).is_absolute():
+                setattr(sc.terrain, attr, str((path.parent / rel).resolve()))
         return sc
