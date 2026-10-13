@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 SideName = Literal["red", "blue"]
 
@@ -39,11 +39,32 @@ class Environment(BaseModel):
     visibility_factor: float = 1.0
 
 
+class MissionPhase(BaseModel):
+    """一个任务阶段：红方进占该目标点（任一存活单位进入半径）即切换下一阶段。"""
+
+    name: str
+    objective: tuple[float, float]
+    success_radius_m: float = 300.0
+
+
 class Mission(BaseModel):
     duration_ticks: int = 120
     dt_seconds: int = 30
     objective: tuple[float, float] = (8_000.0, 5_000.0)
     success_radius_m: float = 300.0
+    # 多阶段任务（进攻出发阵地 → 突破前沿 → 纵深要点…）；None 时退化为单目标
+    phases: list[MissionPhase] | None = None
+
+    @property
+    def phase_list(self) -> list[MissionPhase]:
+        """归一化阶段序列：显式 phases 优先，否则用单目标 objective。"""
+        if self.phases:
+            return self.phases
+        return [
+            MissionPhase(
+                name="main", objective=self.objective, success_radius_m=self.success_radius_m
+            )
+        ]
 
 
 class SustainmentSpec(BaseModel):
@@ -84,6 +105,21 @@ class UnitSpec(BaseModel):
     heading_deg: float = 90.0  # 初始朝向，0=北(+y)，顺时针
 
 
+class UnitTemplate(BaseModel):
+    """成建制单位模板：按队形一次性展开 count 个同型单位（营/连级想定用）。"""
+
+    type: str
+    count: int = Field(..., ge=1)
+    # 队形几何中心（展开后各单位位置的均值落在此处）
+    anchor: tuple[float, float]
+    heading_deg: float = 90.0  # 队形纵轴方向，0=北(+y)，顺时针
+    org: str  # 编制名前缀，如 "重型合成1营·坦克1连"
+    id_prefix: str  # unit_id 前缀，展开为 f"{prefix}{序号:02d}"
+    layout: Literal["line", "column", "wedge"] = "line"
+    spacing_along: float = 200.0  # 沿 heading 方向间距（米）
+    spacing_lateral: float = 200.0  # 垂直 heading 方向间距（米）
+
+
 class Scenario(BaseModel):
     name: str
     mission: Mission = Mission()
@@ -91,4 +127,26 @@ class Scenario(BaseModel):
     environment: Environment = Environment()
     platform_types: dict[str, PlatformTypeSpec]
     sustainment: SustainmentSpec = SustainmentSpec()
-    forces: dict[SideName, list[UnitSpec]]
+    forces: dict[SideName, list[UnitSpec]] = {"red": [], "blue": []}
+    # 成建制模板：校验时展开并入 forces（展开后 forces 即为完整显式列表）
+    force_templates: dict[SideName, list[UnitTemplate]] = {
+        "red": [],
+        "blue": [],
+    }
+
+    @model_validator(mode="after")
+    def _expand_templates(self) -> "Scenario":
+        if not any(self.force_templates.values()):
+            return self
+        from .orbat import expand_templates
+
+        existing = {u.unit_id for side in ("red", "blue") for u in self.forces.get(side, [])}
+        expanded = expand_templates(self.force_templates, set(self.platform_types))
+        for side, new_units in expanded.items():
+            for u in new_units:
+                if u.unit_id in existing:
+                    raise ValueError(f"单位 id 冲突（模板与显式列表）: {u.unit_id}")
+                existing.add(u.unit_id)
+            self.forces.setdefault(side, []).extend(new_units)
+        self.force_templates = {"red": [], "blue": []}
+        return self

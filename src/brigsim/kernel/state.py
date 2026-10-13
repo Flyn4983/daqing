@@ -51,4 +51,6 @@ class SimState:
         self.mttr = np.asarray([s.mttr_ticks for s in specs], dtype=np.float64)
 
         self.tick = 0
-        self.objective = np.asarray(scenario.mission.objective, dtype=np.float64)
+        # 当前任务阶段（全局标量；M3 多阶段任务，内核推进时更新阶段与目标点）
+        self.phase = 0
+        self.objective = np.asarray(scenario.mission.phase_list[0].objective, dtype=np.float64)

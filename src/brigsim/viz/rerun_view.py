@@ -66,11 +66,26 @@ def visualize(
     # 各型装备的接地高度（按实际 GLB 包围盒，支持同名资产无缝替换）
     z_off = {typ: ground_offset(typ) for typ in {v[0] for v in info.values()}}
     model_state: dict[str, str] = {}
+    phases = scenario.mission.phase_list
+    shown_phase = -1
 
     for tick, grp in snapshots.groupby("tick", sort=True):
         tick = int(tick)
         rr.set_time("tick", sequence=tick)
         rr.set_time("sim_clock", duration=float(tick * scenario.mission.dt_seconds))
+
+        if "phase" in grp.columns:
+            ph_idx = int(grp["phase"].iloc[0])
+            if ph_idx != shown_phase and ph_idx < len(phases):
+                rr.log(
+                    "feed/phase",
+                    rr.TextLog(
+                        f"T+{tick:03d} 进入阶段 {ph_idx + 1}/{len(phases)}：{phases[ph_idx].name}",
+                        level="WARN" if ph_idx < len(phases) - 1 else "CRITICAL",
+                        color=(230, 170, 60) if ph_idx < len(phases) - 1 else (47, 220, 120),
+                    ),
+                )
+                shown_phase = ph_idx
 
         cur = grp.set_index("unit_id")
         xs = cur["x"].to_numpy()
@@ -245,29 +260,35 @@ def _tint_model(ent: str, typ: str, state: str) -> None:
 
 
 def _log_objective(scenario: Scenario, terrain: HeightField) -> None:
-    ox, oy = scenario.mission.objective
-    z = float(terrain.height_at(ox, oy))
-    pole = np.asarray([[ox, oy, z], [ox, oy, z + 260]])
-    rr.log(
-        "world/objective/pole", rr.LineStrips3D([pole], colors=[OBJECTIVE_C], radii=6), static=True
-    )
-    rr.log(
-        "world/objective/beacon",
-        rr.Points3D([[ox, oy, z + 270]], radii=160, colors=[OBJECTIVE_C], labels=["任务目标"]),
-        static=True,
-    )
-    # 目标区半径圈
+    """逐阶段绘制目标点：末段绿色（最终目标），中间阶段琥珀色。"""
+    phases = scenario.mission.phase_list
     th = np.linspace(0, 2 * np.pi, 48)
-    ring = np.column_stack(
-        [
-            ox + scenario.mission.success_radius_m * np.cos(th),
-            oy + scenario.mission.success_radius_m * np.sin(th),
-            np.full_like(th, z + 2),
-        ]
-    )
-    rr.log(
-        "world/objective/ring", rr.LineStrips3D([ring], colors=[OBJECTIVE_C], radii=4), static=True
-    )
+    for k, ph in enumerate(phases):
+        final = k == len(phases) - 1
+        color = OBJECTIVE_C if final else (230, 170, 60)
+        ox, oy = ph.objective
+        z = float(terrain.height_at(ox, oy))
+        base = f"world/objective/phase{k}"
+        pole = np.asarray([[ox, oy, z], [ox, oy, z + 260]])
+        rr.log(f"{base}/pole", rr.LineStrips3D([pole], colors=[color], radii=6), static=True)
+        rr.log(
+            f"{base}/beacon",
+            rr.Points3D(
+                [[ox, oy, z + 270]],
+                radii=160 if final else 110,
+                colors=[color],
+                labels=[f"阶段{k + 1} {ph.name}"],
+            ),
+            static=True,
+        )
+        ring = np.column_stack(
+            [
+                ox + ph.success_radius_m * np.cos(th),
+                oy + ph.success_radius_m * np.sin(th),
+                np.full_like(th, z + 2),
+            ]
+        )
+        rr.log(f"{base}/ring", rr.LineStrips3D([ring], colors=[color], radii=4), static=True)
 
 
 # ---------- 每 tick 要素 ----------

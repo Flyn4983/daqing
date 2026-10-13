@@ -1,0 +1,89 @@
+# 营级示例想定：红方重型合成1营（44 台装备）三阶段进攻蓝方加强防御连（27 台）
+# 阶段：占领进攻出发阵地 → 突破前沿警戒 → 夺占纵深要点
+# 单位由 force_templates 按队形自动展开（line 横队 / column 纵队 / wedge 前三角）
+# 数值均为占位示例，等待真实数据资产替换（M3 标定）
+name: example_battalion
+
+mission:
+  duration_ticks: 160      # 160 * 30s = 80 分钟
+  dt_seconds: 30
+  objective: [8000, 5000]
+  success_radius_m: 400
+  phases:
+    - {name: "占领进攻出发阵地", objective: [2800, 5000], success_radius_m: 400}
+    - {name: "突破前沿警戒阵地", objective: [6000, 5000], success_radius_m: 500}
+    - {name: "夺占纵深要点", objective: [8000, 5000], success_radius_m: 400}
+
+terrain:
+  size_m: [10000, 10000]
+  grid_n: 65
+  noise_seed: 7
+  noise_scale: 3.0
+  octaves: 4
+  base_height: 60.0
+  amplitude: 150.0
+  water_level: 5.0
+
+environment:
+  weather: clear
+  visibility_factor: 1.0
+
+platform_types:
+  tank:
+    sensor_range_m: 2500
+    weapon_range_m: 2000
+    pk: 0.35
+    speed_m_per_tick: 220
+    meta: {source: example, version: "0.1", confidence: 0.3}
+  ifv:
+    sensor_range_m: 1800
+    weapon_range_m: 1200
+    pk: 0.22
+    speed_m_per_tick: 260
+    meta: {source: example, version: "0.1", confidence: 0.3}
+  atgm_team:
+    sensor_range_m: 2200
+    weapon_range_m: 2000
+    pk: 0.45
+    speed_m_per_tick: 120
+    meta: {source: example, version: "0.1", confidence: 0.3}
+
+sustainment:
+  repair_teams: {red: 3, blue: 2}
+  repair_delay_ticks: 0
+
+# ---- 红方：重型合成1营（2 坦克连 + 2 装步连 + 火力连反坦克排 = 44 台）----
+force_templates:
+  red:
+    - {type: tank, count: 10, layout: wedge, anchor: [800, 2400], heading_deg: 90,
+       spacing_along: 300, spacing_lateral: 350,
+       org: "重型合成1营·坦克1连", id_prefix: r1t}
+    - {type: tank, count: 10, layout: wedge, anchor: [800, 5000], heading_deg: 90,
+       spacing_along: 300, spacing_lateral: 350,
+       org: "重型合成1营·坦克2连", id_prefix: r2t}
+    - {type: ifv, count: 10, layout: line, anchor: [100, 3700], heading_deg: 90,
+       spacing_lateral: 250, org: "重型合成1营·装步1连", id_prefix: r1i}
+    - {type: ifv, count: 10, layout: line, anchor: [100, 6300], heading_deg: 90,
+       spacing_lateral: 250, org: "重型合成1营·装步2连", id_prefix: r2i}
+    - {type: atgm_team, count: 4, layout: line, anchor: [300, 8000], heading_deg: 90,
+       spacing_lateral: 300, org: "重型合成1营·火力连反坦克排", id_prefix: r1a}
+  # ---- 蓝方：加强防御连（前沿 9 反坦克组 + 主阵地 12 坦克 + 6 步战 = 27 台）----
+  blue:
+    - {type: atgm_team, count: 3, layout: line, anchor: [6000, 3500], heading_deg: 270,
+       spacing_lateral: 700, org: "蓝守军·前沿反坦克1组", id_prefix: ba}
+    - {type: atgm_team, count: 3, layout: line, anchor: [6000, 5000], heading_deg: 270,
+       spacing_lateral: 700, org: "蓝守军·前沿反坦克2组", id_prefix: bb}
+    - {type: atgm_team, count: 3, layout: line, anchor: [6000, 6500], heading_deg: 270,
+       spacing_lateral: 700, org: "蓝守军·前沿反坦克3组", id_prefix: bc}
+    - {type: tank, count: 4, layout: line, anchor: [7800, 4000], heading_deg: 270,
+       spacing_lateral: 500, org: "蓝守军·坦克1排", id_prefix: bt}
+    - {type: tank, count: 4, layout: line, anchor: [7800, 6200], heading_deg: 270,
+       spacing_lateral: 500, org: "蓝守军·坦克2排", id_prefix: bu}
+    - {type: tank, count: 4, layout: line, anchor: [8300, 5100], heading_deg: 270,
+       spacing_lateral: 450, org: "蓝守军·预备坦克排", id_prefix: bv}
+    - {type: ifv, count: 2, layout: line, anchor: [8400, 2500], heading_deg: 270,
+       spacing_lateral: 400, org: "蓝守军·北翼翼步战", id_prefix: bi}
+    - {type: ifv, count: 2, layout: line, anchor: [8400, 7700], heading_deg: 270,
+       spacing_lateral: 400, org: "蓝守军·南翼翼步战", id_prefix: bj}
+    - {type: ifv, count: 2, layout: line, anchor: [8700, 5100], heading_deg: 270,
+       spacing_lateral: 500, org: "蓝守军·预备步战", id_prefix: bk}

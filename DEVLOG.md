@@ -275,3 +275,44 @@
   Morris 筛查后上 Sobol 定量方差分解；备件供应链扩展
 - M4：Warp GPU 批量后端（列存状态布局已预留）
 
+## 2026-10-13 | trae + 用户 | M3 营级编组（ORBAT 模板）+ 多阶段进攻任务
+
+### 完成内容
+- 成建制模板（`data/orbat.py` + schema `UnitTemplate`）：连级模板按队形
+  自动展开成单位，营级想定不再手摆几十个点
+  - 三种队形：line 横队 / column 纵队 / wedge 前三角（1 尖兵 + 成对展翼）
+  - anchor 为队形几何中心（展开后质心落在锚点），heading 0=北顺时针；
+    自动生成 unit_id（前缀+序号）与中文编制标签
+  - Scenario 校验期 model_validator 展开并入 forces，展开后清空模板；
+    id 冲突/未定义平台类型直接报错；model_copy 不重验，灵敏度路径无二次展开
+- 多阶段任务（schema `MissionPhase` + `Mission.phase_list`）：
+  - 红方任一存活单位进占当前目标半径即顺序切换阶段，末段达成=任务成功
+  - MesaKernel 增 `_update_phases`/`finished`：末段达成或红方被全歼提前收束
+    （不必跑满 duration）；SimState 增全局 phase 标量，snapshot 带 phase 列
+  - 单目标想定零改动兼容（phases=None 退化为单阶段）；ToyNumpyKernel 不受影响
+- 营级想定 `scenarios/example_battalion.yaml`：红重型合成1营
+  （2 坦克连 wedge + 2 装步连 line + 火力连反坦克排 = 44 台）三阶段进攻
+  蓝加强防御连（前沿 9 ATGM + 12 坦克 + 6 步战 = 27 台）
+- 可视化：逐阶段目标信标（中间阶段琥珀色、末段绿色+阶段名标签）、
+  阶段切换 TextLog 播报（WARN/CRITICAL 分级）；既有单位/射界/烟柱零改动
+
+### 验证
+- pytest 17 项全绿（新增 8 项：队形几何/质心、id 冲突、未知类型、
+  model_copy 不重复展开、单阶段兼容、营级展开数量、三阶段推进提前成功、
+  被全歼提前失败）；ruff 全绿
+- 营级 40 复制（71 单位、≤160 tick）：success 0.95±0.07、红战损 0.35±0.06、
+  蓝战损 0.98；约 0.8s/复制（i7 单核级，M4 Warp 批量化的动机数据点）
+- 默认种子回放：阶段切换 tick 7（进攻出发阵地）→ 26（突破前沿）→
+  39（夺占纵深要点，成功）；m3_battalion.rrd 截图确认三阶段信标与播报
+- 首轮 44v18 想定 success=1.0 无区分度，蓝方加强到 27 台后分布拉开；
+  参数平衡仍属粗调，待 M3 标定
+
+### 素材渠道（本轮追加，仍免登录直链）
+- Kenney Tower Defense Kit 为中世纪题材无坦克；Babylon CDN 无 Tank 模型；
+  GitHub 仅见 0 星休闲游戏 glb 仓库（TankarioGlb 等），风格化质量不优于
+  现有 CC0 Tank2。写实 MBT 维持原结论：待用户本机专有素材或 Sketchfab token
+
+### 下一步
+- M3 续：真实地形 GeoTIFF、参数标定、Sobol 定量分解、旅级想定、备件供应链
+- M4：Warp GPU 批量后端（71 单位 × 百复制的 Python 循环已显慢）
+

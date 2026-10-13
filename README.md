@@ -10,7 +10,7 @@
 - [x] **M0 框架骨架**：分层目录、数据接口（DataProvider）、内核抽象、想定 schema、端到端 hello-sim
 - [x] **M1.5 可视化提前**：rerun 3D 态势回放（轨迹/交火/目标点）+ 战损完好率曲线
 - [x] **M1 最小闭环**：Mesa 交战（侦察/C2/机动/交战四阶段）+ SimPy 故障-抢修耦合，三大指标含 95% 置信区间
-- [ ] **M3 合成旅规模**：参数灵敏度（SALib Morris）、营/旅编组、多阶段任务、真实地形与参数标定
+- [~] **M3 合成旅规模**：SALib Morris 灵敏度、ORBAT 成建制模板（横队/纵队/前三角）营级想定（44v27）、多阶段进攻任务（出发阵地→突破→夺占纵深要点）；待办：真实地形 GeoTIFF、参数标定、Sobol 定量分解、旅级规模、备件供应链
 - [ ] **M4 GPU 后端**：NVIDIA Warp kernel 批量加速（本机 GTX 1650 Ti / Ubuntu 工作站）
 
 ## 快速开始
@@ -19,6 +19,7 @@
 uv venv --python 3.12
 uv pip install -e ".[dev,viz]"
 uv run brigsim run scenarios/example_company.yaml --runs 100
+uv run brigsim run example_battalion --runs 40        # 营级 44v27 三阶段进攻
 uv run brigsim replay scenarios/example_company.yaml   # 打开 rerun 3D 回放
 uv run pytest
 ```

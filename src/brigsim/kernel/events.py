@@ -18,6 +18,7 @@ class EventLog:
             self.snapshots.append(
                 {
                     "tick": tick,
+                    "phase": int(getattr(state, "phase", 0)),
                     "unit_id": state.unit_ids[i],
                     "side": int(state.side[i]),
                     "x": float(state.x[i]),

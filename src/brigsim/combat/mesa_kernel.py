@@ -139,6 +139,11 @@ class MesaKernel(Kernel, mesa.Model):
         # 共享航迹：side -> {敌方 idx: 失效 tick}
         self.tracks = {RED: {}, BLUE: {}}
         self.sustain = SustainmentModel(scenario, s, self.rng)
+        # 多阶段任务：从第 0 阶段开始，红方进占当前目标点后顺序切换
+        self.phases = scenario.mission.phase_list
+        self.phase_idx = 0
+        s.objective = np.asarray(self.phases[0].objective, dtype=np.float64)
+        self._accomplished = False
         for i in range(s.n):
             PlatformAgent(self, i)
 
@@ -155,6 +160,8 @@ class MesaKernel(Kernel, mesa.Model):
         self._purge_tracks()
         self.agents.do("move")
         self.agents.do("engage")
+        # 6) 任务阶段推进（红方进占当前目标点 -> 切换下一阶段 / 末段达成）
+        self._update_phases()
         self.log.snapshot(s.tick, s)
 
     def _purge_tracks(self) -> None:
@@ -177,13 +184,40 @@ class MesaKernel(Kernel, mesa.Model):
         k = int(np.argmin(d))
         return int(cand[k]), float(d[k])
 
-    def mission_success(self) -> bool:
-        m = self.scenario.mission
+    @property
+    def finished(self) -> bool:
+        """到时、末段目标达成、红方被全歼，三者之一即结束（后两者提前收束）。"""
+        if super().finished:
+            return True
+        if self._accomplished:
+            return True
+        return not bool((self.state.alive & (self.state.side == RED)).any())
+
+    def _red_min_dist(self, point) -> float:
         red_alive = self.state.alive & (self.state.side == RED)
         if not red_alive.any():
-            return False
-        d = np.hypot(
-            self.state.x[red_alive] - m.objective[0],
-            self.state.y[red_alive] - m.objective[1],
+            return float("inf")
+        return float(
+            np.hypot(
+                self.state.x[red_alive] - point[0],
+                self.state.y[red_alive] - point[1],
+            ).min()
         )
-        return bool(d.min() <= m.success_radius_m)
+
+    def _update_phases(self) -> None:
+        """红方任一存活单位进入当前阶段目标半径即切换；进占末段目标 = 任务成功。"""
+        s = self.state
+        last = len(self.phases) - 1
+        while self.phase_idx < last:
+            ph = self.phases[self.phase_idx]
+            if self._red_min_dist(ph.objective) > ph.success_radius_m:
+                break
+            self.phase_idx += 1
+            s.objective = np.asarray(self.phases[self.phase_idx].objective, dtype=np.float64)
+        s.phase = self.phase_idx
+        ph = self.phases[self.phase_idx]
+        if self.phase_idx == last and self._red_min_dist(ph.objective) <= ph.success_radius_m:
+            self._accomplished = True
+
+    def mission_success(self) -> bool:
+        return self._accomplished
