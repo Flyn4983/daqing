@@ -29,6 +29,10 @@ class SimState:
         self.alive = np.ones(self.n, dtype=bool)
         # 受损（未毁）：影响完好率，M1 起由保障模型修复
         self.damaged = np.zeros(self.n, dtype=bool)
+        # 在修（抢修队列中/维修作业中）：机动与交战暂停
+        self.under_repair = np.zeros(self.n, dtype=bool)
+        # 射击冷却计数（>0 时本 tick 不能射击），每 tick 递减
+        self.cooldown = np.zeros(self.n, dtype=np.int16)
         # 朝向（弧度，数学坐标系，0=+x 向东）；由机动更新，射界/模型朝向使用
         self.heading = np.asarray(
             [np.deg2rad(90.0 - u.heading_deg) for u in units], dtype=np.float64
@@ -40,6 +44,11 @@ class SimState:
         self.weapon_range = np.asarray([s.weapon_range_m for s in specs], dtype=np.float64)
         self.pk = np.asarray([s.pk for s in specs], dtype=np.float64)
         self.speed = np.asarray([s.speed_m_per_tick for s in specs], dtype=np.float64)
+        self.reload_ticks = np.asarray([s.reload_ticks for s in specs], dtype=np.int16)
+        self.detect_prob = np.asarray([s.detect_prob for s in specs], dtype=np.float64)
+        self.track_ttl = np.asarray([s.track_ttl_ticks for s in specs], dtype=np.int16)
+        self.mtbf = np.asarray([s.mtbf_ticks for s in specs], dtype=np.float64)
+        self.mttr = np.asarray([s.mttr_ticks for s in specs], dtype=np.float64)
 
         self.tick = 0
         self.objective = np.asarray(scenario.mission.objective, dtype=np.float64)

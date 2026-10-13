@@ -167,3 +167,44 @@
 - 写实素材待用户输入（本机专有包 / Sketchfab token）
 - M1：Mesa 重写交战内核、SimPy 保障模型
 
+## 2026-10-13 | trae + 用户 | M1 交战内核（Mesa）+ 装备保障（SimPy）
+
+### 完成内容
+- 新内核 `combat/mesa_kernel.py`（Mesa 3.5.1），切换为 runner/replay 默认内核；
+  `ToyNumpyKernel` 保留作粗内核对照
+  - **列存为唯一真相**：SimState numpy 列不变式，`PlatformAgent(mesa.Agent)` 仅持
+    列索引的薄行为壳，不自带位置/血量，M4 可直接换 Warp 后端
+  - 每 tick 四阶段：sense（距离线性衰减探测概率 + 能见度系数）→ 按方共享航迹
+    （C2，TTL 过期）→ 机动决策（红方冲击目标点、蓝方前出接敌/固守，受损半速，
+    在修不动）→ 交战（reload_ticks 装填冷却、pk 击毁/pk+0.25 致损/否则脱靶）
+  - 阶段内固定索引顺序激活，随机性全部来自 Kernel.rng（同种子事件日志逐字节一致）
+- 保障模型 `sustainment/repair.py`（SimPy 4.1.2，时间单位=tick，tick 边界与内核
+  同步）：每方一个抢修组 Resource；战损送修（延迟→排队→指数 MTTR→归建）+
+  自然故障指数 MTBF 循环；战毁不可修；无抢修组（容量 0）则永久排队
+- schema/state 扩展：PlatformTypeSpec 增 reload_ticks/detect_prob/track_ttl_ticks/
+  mtbf/mttr（默认值，旧 YAML 零改动兼容）；新增 SustainmentSpec；SimState 增
+  cooldown/under_repair 列
+- 事件日志 schema 完全不变，rerun 可视化零改动，`replay` 用新内核直接录制成功
+
+### 开源选型记录
+- 直接落地 M0 选型：Mesa（MIT，ABM 框架，Agent/AgentSet 行为组织）、
+  SimPy（MIT，DES 进程/Resource）；未自研任何调度/随机数设施
+- Mesa 3.5 集成踩坑：
+  1. `Model` 自带实验性 `scenario` 属性，setter 会回写 `scenario.model=self`，
+     与 pydantic Scenario 冲突 → 在 MesaKernel 覆盖同名 property
+  2. `Model.__init__()` 无参时会塞入 mesa 自己的默认 Scenario 覆盖我方对象 →
+     必须先 mesa init 再 Kernel init
+- 环境：mesa 3.5.1 依赖 networkx（uv pip 补装 3.7）；venv 无 pip 模块，
+  统一用 `uv pip install --python .venv\Scripts\python.exe`
+
+### 验证
+- pytest 7 项全绿（M0 冒烟 + M1：装填间隔、同种子确定性、在修不动、
+  战损修复、故障-修复循环、无抢修组不归建）；ruff 全绿
+- 示例想定 50 复制：success 0.48±0.14、红战损 0.73、蓝战损 0.62
+  （toy 对照 0.30/0.90/0.72；新内核因探测概率与装填冷却杀伤略低，分布合理；
+  参数平衡留待 M3 标定）
+
+### 下一步
+- M3：参数标定与灵敏度（SALib）、真实地形 GeoTIFF；备件供应链扩展
+- 写实素材仍待用户输入（本机专有包 / Sketchfab token）
+

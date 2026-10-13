@@ -32,9 +32,9 @@ def run_replications(
     M4 计划：本函数的循环体替换为 Warp GPU 上的批量复制，接口保持不变。
     """
     if kernel_cls is None:
-        from ..combat.toy_kernel import ToyNumpyKernel
+        from ..combat.mesa_kernel import MesaKernel
 
-        kernel_cls = ToyNumpyKernel
+        kernel_cls = MesaKernel
 
     rows: list[dict] = []
     event_frames = None

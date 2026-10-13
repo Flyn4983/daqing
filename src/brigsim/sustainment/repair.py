@@ -1,0 +1,86 @@
+"""M1 装备保障模型：SimPy 离散事件进程，按 tick 边界与交战内核同步。
+
+机制（粗版，参数均为占位，后续轮次标定/扩展）：
+- 每方一个 simpy.Resource 抢修组（容量 = repair_teams）；
+- 战斗受损与自然故障共用同一条抢修通道：送修延迟 -> 排队 -> 维修（指数 MTTR）-> 归建；
+- 自然故障按指数 MTBF 抽样（战斗损毁 killed 不可修，进程直接终止）；
+- 唯一状态真相是 SimState 列存（damaged/under_repair），本模块只在 DES 回调里改列，
+  不持有装备状态对象，保持 M4 向量化/GPU 后端的可迁移性。
+"""
+
+from __future__ import annotations
+
+import simpy
+
+from ..data.schema import Scenario
+from ..kernel.state import SimState
+
+RED, BLUE = 0, 1
+SIDE_NAMES = {RED: "red", BLUE: "blue"}
+
+
+class SustainmentModel:
+    """一次想定一次运行的保障进程集合（时间单位 = 内核 tick）。"""
+
+    def __init__(self, scenario: Scenario, state: SimState, rng) -> None:
+        self.scenario = scenario
+        self.state = state
+        self.rng = rng
+        self.env = simpy.Environment()
+        spec = scenario.sustainment
+        self.repair_delay = spec.repair_delay_ticks
+        # SimPy Resource 容量必须 >0；None 表示该方无抢修能力（送修后无限挂起）
+        self.teams = {
+            side: (simpy.Resource(self.env, capacity=n) if n > 0 else None)
+            for side, n in ((RED, spec.repair_teams["red"]), (BLUE, spec.repair_teams["blue"]))
+        }
+        for i in range(state.n):
+            self.env.process(self._failure_loop(i))
+
+    # ---- 对外接口 ----
+
+    def advance(self, tick: int) -> None:
+        """把 DES 时钟推进到指定 tick（含该时刻前的全部故障/修复事件）。"""
+        self.env.run(until=tick)
+
+    def combat_damage(self, i: int) -> None:
+        """交战内核判定单位受损（未毁）时调用：登记并入抢修通道。"""
+        self.state.damaged[i] = True
+        self._start_repair(i)
+
+    # ---- SimPy 进程 ----
+
+    def _failure_loop(self, i: int):
+        """自然故障循环：指数 MTBF 间隔抽样，故障后送修，修复后继续计时。"""
+        env, s = self.env, self.state
+        while True:
+            yield env.timeout(float(self.rng.exponential(s.mtbf[i])))
+            if not s.alive[i]:
+                return
+            if s.damaged[i] or s.under_repair[i]:
+                continue  # 已在抢修通道中（战斗受损等），修完后重新计时
+            s.damaged[i] = True
+            self._start_repair(i)
+
+    def _start_repair(self, i: int) -> None:
+        s = self.state
+        if not s.alive[i] or s.under_repair[i]:
+            return
+        s.under_repair[i] = True
+        self.env.process(self._repair_process(i))
+
+    def _repair_process(self, i: int):
+        env, s = self.env, self.state
+        if self.repair_delay > 0:
+            yield env.timeout(float(self.repair_delay))
+        team = self.teams[int(s.side[i])]
+        if team is None:
+            yield env.event()  # 无抢修组：永久排队，进程挂起
+            return
+        with team.request() as req:
+            yield req
+            yield env.timeout(float(self.rng.exponential(s.mttr[i])))
+        # 维修期间被战毁则不归建；标志位无论如何都要清
+        if s.alive[i]:
+            s.damaged[i] = False
+        s.under_repair[i] = False

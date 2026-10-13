@@ -46,13 +46,32 @@ class Mission(BaseModel):
     success_radius_m: float = 300.0
 
 
+class SustainmentSpec(BaseModel):
+    """装备保障配置（M1 粗版：抢修组并发资源 + 平均修复时长）。
+
+    战斗受损与自然故障共用抢修队列；战毁（killed）不可修。
+    备件供应链在后续轮次扩展（接口预留）。
+    """
+
+    repair_teams: dict[str, int] = {"red": 1, "blue": 1}
+    # 受损后送修延迟（tick，确定性常量；后续改为分布抽样）
+    repair_delay_ticks: int = 0
+
+
 class PlatformTypeSpec(BaseModel):
     """一类装备平台的性能参数（数值均为示例占位，等待真实数据资产替换）。"""
 
     sensor_range_m: float
     weapon_range_m: float
-    pk: float = Field(..., ge=0.0, le=1.0, description="单次交火击毁概率")
+    pk: float = Field(..., ge=0.0, le=1.0, description="理想条件单次交火击毁概率")
     speed_m_per_tick: float
+    # M1：交战节奏与可观测性
+    reload_ticks: int = Field(2, ge=1, description="射击冷却（tick）")
+    detect_prob: float = Field(0.85, ge=0.0, le=1.0, description="满近界发现目标概率")
+    track_ttl_ticks: int = Field(3, ge=1, description="共享航迹过期时间（tick）")
+    # M1：保障（平均故障间隔 / 平均修复时长，单位 tick；指数抽样）
+    mtbf_ticks: float = Field(400.0, gt=0.0)
+    mttr_ticks: float = Field(6.0, gt=0.0)
     meta: ParamMeta = ParamMeta()
 
 
@@ -71,4 +90,5 @@ class Scenario(BaseModel):
     terrain: Terrain = Terrain()
     environment: Environment = Environment()
     platform_types: dict[str, PlatformTypeSpec]
+    sustainment: SustainmentSpec = SustainmentSpec()
     forces: dict[SideName, list[UnitSpec]]

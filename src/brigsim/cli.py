@@ -56,9 +56,9 @@ def replay(
     from .viz.rerun_view import visualize
 
     sc = YamlFileProvider().load_scenario(scenario)
-    from .combat.toy_kernel import ToyNumpyKernel
+    from .combat.mesa_kernel import MesaKernel
 
-    _, kernel = run_once(sc, seed=seed, kernel_cls=ToyNumpyKernel)
+    _, kernel = run_once(sc, seed=seed, kernel_cls=MesaKernel)
     snapshots, engagements = kernel.log.to_frames()
 
     import sys
