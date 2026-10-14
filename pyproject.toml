@@ -22,7 +22,7 @@ dependencies = [
 [project.optional-dependencies]
 # M1 起：交战多智能体 / 保障离散事件 / 灵敏度分析
 combat = ["mesa>=2.3", "simpy>=4.1"]
-analysis = ["scipy>=1.12", "salib>=1.4", "scikit-learn>=1.4", "joblib>=1.3"]
+analysis = ["scipy>=1.12", "salib>=1.4", "scikit-learn>=1.4", "joblib>=1.3", "pymoo>=0.6"]
 # 可视化（流畅 3D 回放；trimesh 生成装备 GLB）
 viz = ["rerun-sdk>=0.20", "trimesh>=4.4"]
 # GPU 批量后端（M4）；本机已全局安装 warp-lang 1.12

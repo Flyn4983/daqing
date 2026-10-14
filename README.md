@@ -40,6 +40,7 @@ uv run brigsim run example_brigade --runs 100 --kernel warp   # Warp 向量化�
 uv run brigsim replay scenarios/example_company.yaml   # 打开 rerun 3D 回放
 uv run brigsim surrogate-gen example_brigade --points 512 --reps 8 --out outputs/datasets/sur.parquet
 uv run brigsim surrogate-train outputs/datasets/sur.parquet --model-out models/surrogate_brigade_v1.joblib
+uv run brigsim optimize models/surrogate_brigade_v1.joblib --pop 80 --gens 60 --validate --out models/pareto_brigade_v1.csv
 uv run pytest
 ```
 
@@ -49,7 +50,7 @@ uv run pytest
 |---|---|---|---|
 | L4 应用 | `brigsim/cli.py` | 想定加载、跑批、报告 | Typer |
 | L3 可视化 | `brigsim/viz/` | 态势回放、指标看板 | rerun-sdk（M1.5） |
-| L2 实验 | `brigsim/experiment/`、`brigsim/surrogate/` | 蒙特卡洛、灵敏度、**四率代理模型**（轻量 MLP，秒级预测，留出平均 R²=0.88） | pandas / SALib / scikit-learn |
+| L2 实验 | `brigsim/experiment/`、`brigsim/surrogate/`、`brigsim/optimize/` | 蒙特卡洛、灵敏度、**四率代理模型**（轻量 MLP，R²=0.88）、**NSGA-II 保障决策 Pareto 优化** | pandas / SALib / scikit-learn / pymoo |
 | L1 内核 | `brigsim/kernel combat sustainment/` | 交战 ABM ＋ 保障 DES | Mesa + SimPy；Warp 向量化后端（M4 切片 1） |
 | L0 数据 | `brigsim/data/` | 想定/装备/地形参数资产 | Pydantic + YAML，Provider 可替换 |
 

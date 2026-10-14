@@ -269,5 +269,78 @@ def surrogate_train(
     typer.echo(f"模型已保存: {out_path}")
 
 
+@app.command("optimize")
+def optimize_cmd(
+    model: str = typer.Argument(..., help="代理模型 joblib（surrogate-train 产出）"),
+    scenario: str = typer.Option("example_brigade", "--scenario", help="基线想定（取任务时长；--validate 时回仿真）"),
+    pop: int = typer.Option(80, "--pop", help="NSGA-II 种群规模"),
+    gens: int = typer.Option(60, "--gens", help="进化代数"),
+    min_readiness: float = typer.Option(0.0, "--min-readiness", help="红方完好率保底约束（0=不启用）"),
+    validate: bool = typer.Option(False, "--validate", help="对代表方案回蒙特卡洛仿真复验"),
+    reps: int = typer.Option(16, "--reps", help="复验复制次数"),
+    kernel: str = typer.Option("warp", "--kernel", help="复验内核 warp/mesa"),
+    device: str = typer.Option("cuda:0", "--device", help="warp 设备"),
+    out: str | None = typer.Option(None, "--out", help="Pareto 方案表 CSV 输出路径"),
+) -> None:
+    """C4：代理驱动 NSGA-II 多目标保障决策优化（成功率↑ 红战损↓ 资源成本↓）。"""
+    from .optimize.nsga import evaluate_baseline, optimize_support
+    from .optimize.problem import ScenarioContext
+    from .optimize.validation import representative_plans, validate_plans
+    from .surrogate.model import SurrogateModel
+
+    sc = YamlFileProvider().load_scenario(scenario)
+    surrogate = SurrogateModel.load(model)
+    ctx = ScenarioContext.baseline()
+
+    pareto = optimize_support(
+        surrogate, duration_ticks=sc.mission.duration_ticks, ctx=ctx,
+        pop_size=pop, n_gen=gens, min_readiness_red=min_readiness,
+    )
+    base = evaluate_baseline(surrogate, sc.mission.duration_ticks, ctx)
+    knee = pareto[pareto["rank_tag"] == "knee"].iloc[0]
+
+    typer.echo(f"NSGA-II 完成：{pop} 种群 × {gens} 代 → {len(pareto)} 个 Pareto 非支配方案")
+    typer.echo("\n基线方案（v3 标定）与 knee 推荐方案对比（代理预测）：")
+    typer.echo(
+        f"  {'':>16}{'抢修组':>6}{'备件':>5}{'周期':>5}{'批量':>5}"
+        f"{'成功率':>8}{'红战损':>8}{'红完好':>8}{'成本':>7}"
+    )
+    for label, r in (("基线", base), ("knee推荐", knee)):
+        typer.echo(
+            f"  {label:>16}{int(r['red_repair_teams']):>6}{int(r['red_spare_stock']):>5}"
+            f"{int(r['resupply_interval_ticks']):>5}{int(r['resupply_qty']):>5}"
+            f"{r['success']:>8.3f}{r['attrition_red']:>8.3f}"
+            f"{r['readiness_red']:>8.3f}{r['cost']:>7.3f}"
+        )
+
+    if validate:
+        dev = None if kernel == "mesa" else device
+        reps_df = representative_plans(pareto)
+        cmp_df = validate_plans(sc, reps_df, ctx=ctx, reps=reps, device=dev)
+        typer.echo(f"\n代表方案仿真复验（{reps} 次蒙特卡洛；代理 vs 仿真均值）：")
+        for plan in reps_df["rank_tag"].replace("", "pareto"):
+            sub = cmp_df[cmp_df["plan"] == plan]
+            if sub.empty:
+                continue
+            mae = sub["abs_error"].mean()
+            typer.echo(f"  [{plan}] 九指标平均绝对误差 {mae:.3f}")
+            for _, r in sub.iterrows():
+                if r["metric"] in ("success", "attrition_red", "readiness_red"):
+                    typer.echo(
+                        f"    {r['metric']:>16}: 代理 {r['surrogate']:.3f}"
+                        f" / 仿真 {r['simulation']:.3f} ± {r['sim_std']:.3f}"
+                    )
+        if out:
+            cmp_path = Path(out).with_name(Path(out).stem + "_validation.csv")
+            cmp_df.to_csv(cmp_path, index=False)
+            typer.echo(f"复验明细已写出: {cmp_path}")
+
+    if out:
+        out_path = Path(out)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        pareto.to_csv(out_path, index=False)
+        typer.echo(f"\nPareto 方案表已写出: {out_path}")
+
+
 if __name__ == "__main__":
     app()
