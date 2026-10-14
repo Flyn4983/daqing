@@ -17,7 +17,9 @@ def run_once(
     kernel = kernel_cls(scenario, seed=seed)
     while not kernel.finished:
         kernel.step()
-    return per_run_metrics(kernel.state, kernel.mission_success()), kernel
+    sustain = getattr(kernel, "sustain", None)
+    supply = sustain.supply_stats() if sustain is not None else None
+    return per_run_metrics(kernel.state, kernel.mission_success(), supply), kernel
 
 
 def run_replications(

@@ -162,6 +162,8 @@ class MesaKernel(Kernel, mesa.Model):
         self.agents.do("engage")
         # 6) 任务阶段推进（红方进占当前目标点 -> 切换下一阶段 / 末段达成）
         self._update_phases()
+        # 7) 本 tick 战斗受损统一进抢修通道（下 tick 起在修免疫，与 GPU 对齐）
+        self.sustain.commit_combat_damage()
         self.log.snapshot(s.tick, s, self.sustain)
 
     def _purge_tracks(self) -> None:
@@ -173,10 +175,13 @@ class MesaKernel(Kernel, mesa.Model):
             }
 
     def nearest_tracked(self, i: int) -> tuple[int, float] | None:
-        """本方共享航迹中距 i 最近的存活敌方 (idx, 距离)。"""
+        """本方共享航迹中距 i 最近的存活敌方 (idx, 距离)。
+
+        在修单位视为后送脱离接触，不可被选为目标。
+        """
         s = self.state
         side = int(s.side[i])
-        cand = [j for j in self.tracks[side] if s.alive[j]]
+        cand = [j for j in self.tracks[side] if s.alive[j] and not s.under_repair[j]]
         if not cand:
             return None
         cand = np.asarray(cand, dtype=int)

@@ -31,17 +31,23 @@ def test_stock_consumption_blocks_until_resupply():
     red = np.where((state.side == RED) & state.alive)[0][:3]
     for i in red:
         model.combat_damage(int(i))
+    model.commit_combat_damage()  # tick 末统一入通道
 
     model.advance(8)
     # 初始 1 件只够 1 台维修，其余挂起等件，库存见底
     assert model.parts[RED].level == 0
     assert state.under_repair[red].sum() >= 2
+    # 3 次请领仅 1 次即时满足（挂起中的等待在兑现时记账）
+    stats = model.supply_stats()
+    assert abs(stats["fill_rate_red"] - 1 / 3) < 1e-9
 
     model.advance(35)
     # t=15 补给 2 件解束两台，t=30 再补 2 件；三台均修复，库存剩 2
     assert not state.damaged[red].any()
     assert not state.under_repair[red].any()
     assert model.parts[RED].level == 2
+    # 两台等过备件，缺货等待累计为正
+    assert model.supply_stats()["stockout_wait_red"] > 0
 
 
 def test_none_stock_means_unlimited():
@@ -52,7 +58,10 @@ def test_none_stock_means_unlimited():
     red = np.where((state.side == RED) & state.alive)[0][:3]
     for i in red:
         model.combat_damage(int(i))
+    model.commit_combat_damage()
     model.advance(40)
     # 无库存约束：抢修组充足，全部修复归建
     assert not state.damaged[red].any()
     assert not state.under_repair[red].any()
+    # 未启用库存：请领不计数，fill_rate 缺省为满
+    assert model.supply_stats()["fill_rate_red"] == 1.0

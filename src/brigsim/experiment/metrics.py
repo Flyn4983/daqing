@@ -13,7 +13,7 @@ import pandas as pd
 from ..kernel.state import SimState
 
 
-def per_run_metrics(state: SimState, success: bool) -> dict:
+def per_run_metrics(state: SimState, success: bool, supply: dict | None = None) -> dict:
     red = state.side == 0
     blue = state.side == 1
 
@@ -24,13 +24,16 @@ def per_run_metrics(state: SimState, success: bool) -> dict:
         ok = state.alive[mask] & (~state.damaged[mask])
         return float(ok.sum() / mask.sum()) if mask.any() else 0.0
 
-    return {
+    out = {
         "success": bool(success),
         "attrition_red": attr(red),
         "attrition_blue": attr(blue),
         "readiness_red": ready(red),
         "readiness_blue": ready(blue),
     }
+    if supply:
+        out.update(supply)
+    return out
 
 
 def summarize(rows: list[dict]) -> pd.DataFrame:

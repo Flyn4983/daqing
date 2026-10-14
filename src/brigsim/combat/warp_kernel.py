@@ -99,17 +99,21 @@ def _nearest_tracked(
     x: wp.array(dtype=wp.float32),
     y: wp.array(dtype=wp.float32),
     alive: wp.array(dtype=wp.int32),
+    repair: wp.array(dtype=wp.int32),
     side: wp.array(dtype=wp.int32),
     tracks: wp.array(dtype=wp.int32),
 ) -> int:
-    """本方共享航迹中最近的存活敌方索引，无则 -1。"""
+    """本方共享航迹中最近的存活敌方索引，无则 -1。
+
+    在修单位视为后送脱离接触，不可被选为目标。
+    """
     si = side[i]
     xi = x[i]
     yi = y[i]
     best = int(-1)
     best_d = float(1.0e30)
     for j in range(0, n):
-        if side[j] == si or alive[j] != 1:
+        if side[j] == si or alive[j] != 1 or repair[j] == 1:
             continue
         if tracks[si * n + j] > tick:
             dx = x[j] - xi
@@ -209,7 +213,7 @@ def k_move(
     # 目标搜索与位移全部基于 tick 起点快照 xp/yp：本 kernel 内每个线程
     # 都会写自己的 x[i]/y[i]，直接读其他单位位置会与线程调度竞争
     # （间歇读到已更新值导致非确定性），故机动段双缓冲
-    tgt = _nearest_tracked(i, n, tick, xp, yp, alive, side, tracks)
+    tgt = _nearest_tracked(i, n, tick, xp, yp, alive, under_repair, side, tracks)
     if side[i] == RED:
         # 红方无论是否接触都向当前阶段目标点冲击（接触时身管指向目标的逻辑
         # 在 Mesa 版里随后被 _step_toward 覆盖，最终朝向即目标点方向）
@@ -264,7 +268,7 @@ def k_engage(
     target[i] = -1
     if alive[i] != 1 or under_repair[i] == 1 or cooldown[i] > 0:
         return
-    tgt = _nearest_tracked(i, n, tick, x, y, alive, side, tracks)
+    tgt = _nearest_tracked(i, n, tick, x, y, alive, under_repair, side, tracks)
     if tgt < 0:
         return
     dx = x[tgt] - x[i]
@@ -468,6 +472,8 @@ class WarpKernel(Kernel):
         for j in np.flatnonzero(self.a_dmg.numpy()):
             if s.alive[j]:
                 self.sustain.combat_damage(int(j))
+        # tick 末统一进通道（下 tick 初 push repair 后才在设备侧生效）
+        self.sustain.commit_combat_damage()
 
         # 7) 阶段推进与快照
         self._update_phases()

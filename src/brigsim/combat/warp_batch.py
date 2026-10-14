@@ -62,6 +62,7 @@ def _b_nearest_dense(
     x: wp.array(dtype=wp.float32),
     y: wp.array(dtype=wp.float32),
     alive: wp.array(dtype=wp.int32),
+    repair: wp.array(dtype=wp.int32),
     side: wp.array(dtype=wp.int32),
     tracks: wp.array(dtype=wp.int32),
 ) -> int:
@@ -69,7 +70,7 @@ def _b_nearest_dense(
 
     C2 航迹全方共享：目标出生时只在某友邻探测距内，开火单位自身可距
     目标任意远，故无距离上界、不能套半径查询。仅蓝方调用且无随机数，
-    规模 O(蓝*n)，保留稠密。
+    规模 O(蓝*n)，保留稠密。在修单位视为后送脱离接触，不可被选为目标。
     """
     si = side[base + i]
     xi = x[base + i]
@@ -78,7 +79,7 @@ def _b_nearest_dense(
     best_d = float(1.0e30)
     for k in range(base, base + n):
         j = k - base
-        if side[k] == si or alive[k] != 1:
+        if side[k] == si or alive[k] != 1 or repair[k] == 1:
             continue
         if tracks[(env * 2 + si) * n + j] > tick:
             dx = x[k] - xi
@@ -101,6 +102,7 @@ def _b_nearest_grid(
     x: wp.array(dtype=wp.float32),
     y: wp.array(dtype=wp.float32),
     alive: wp.array(dtype=wp.int32),
+    repair: wp.array(dtype=wp.int32),
     side: wp.array(dtype=wp.int32),
     tracks: wp.array(dtype=wp.int32),
     stride: float,
@@ -110,6 +112,7 @@ def _b_nearest_grid(
 
     交战段只关心射程内目标：全局最近者在射程外时开火必然不发生，
     故半径=武器射程的查询与稠密全扫描语义等价。等距取较小索引消歧。
+    在修单位视为后送脱离接触，不可被选为目标。
     """
     g = base + i
     si = side[g]
@@ -121,7 +124,7 @@ def _b_nearest_grid(
         if k / n != env:
             continue  # 哈希碰撞/环绕落入的其他环境点
         j = k - base
-        if side[k] == si or alive[k] != 1:
+        if side[k] == si or alive[k] != 1 or repair[k] == 1:
             continue
         if tracks[(env * 2 + si) * n + j] > tick:
             dx = x[k] - x[g]
@@ -252,7 +255,7 @@ def k_b_move(
         # 目标方位基于 tick 起点快照（xp/yp），与本 kernel 的位置写不竞争；
         # 追击转向需要全局最近航迹（C2 共享下无距离上界），保留稠密
         tgt = _b_nearest_dense(
-            env, i, n, tick, base, xp, yp, alive, side, tracks
+            env, i, n, tick, base, xp, yp, alive, under_repair, side, tracks
         )
         if tgt < 0:
             return
@@ -305,7 +308,8 @@ def k_b_engage(
     # 只需射程内最近航迹：全局最近在射程外则不可能开火，网格半径=射程
     wrange = weapon[g] * vis[env]
     tgt = _b_nearest_grid(
-        grid, env, i, n, tick, base, x, y, alive, side, tracks, stride, wrange
+        grid, env, i, n, tick, base, x, y, alive, under_repair,
+        side, tracks, stride, wrange,
     )
     if tgt < 0:
         return
@@ -560,9 +564,14 @@ class WarpBatchKernel:
             & (~prev_repair)
             & active_g
         )
+        touched_envs = set()
         for g in np.flatnonzero(new_dmg):
             e, i = divmod(int(g), n)
             self._sustain[e].combat_damage(i)
+            touched_envs.add(e)
+        # tick 末统一进抢修通道：下 tick 初 _push_repair 后设备侧才见在修标志
+        for e in touched_envs:
+            self._sustain[e].commit_combat_damage()
 
         # 4) 阶段推进（向量化）与 active 更新
         self._update_phases()
@@ -735,7 +744,11 @@ class WarpBatchKernel:
         for e, st in enumerate(self.states):
             st.alive = self.h_alive[e * self.n:(e + 1) * self.n].astype(bool)
             st.damaged = self.h_damaged[e * self.n:(e + 1) * self.n].astype(bool)
-            rows.append(per_run_metrics(st, bool(self.accomplished[e])))
+            rows.append(
+                per_run_metrics(
+                    st, bool(self.accomplished[e]), self._sustain[e].supply_stats()
+                )
+            )
         return rows
 
 

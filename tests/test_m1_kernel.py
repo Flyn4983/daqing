@@ -64,7 +64,9 @@ def test_combat_damage_gets_repaired():
     state = SimState(sc)
     sustain = SustainmentModel(sc, state, np.random.default_rng(0))
     sustain.combat_damage(0)
-    assert state.damaged[0] and state.under_repair[0]
+    assert state.damaged[0] and not state.under_repair[0]  # tick 内只登记
+    sustain.commit_combat_damage()  # tick 末统一入抢修通道
+    assert state.under_repair[0]
     sustain.advance(50)  # MTTR=6，50 tick 内首轮修复必完成（远早于下次自然故障）
     assert not state.damaged[0]
     assert not state.under_repair[0]
@@ -116,5 +118,6 @@ def test_no_repair_team_stays_damaged():
     state = SimState(sc2)
     sustain = SustainmentModel(sc2, state, np.random.default_rng(2))
     sustain.combat_damage(0)
+    sustain.commit_combat_damage()
     sustain.advance(100)
     assert state.damaged[0] and state.under_repair[0]

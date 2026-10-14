@@ -40,6 +40,10 @@ class SustainmentModel:
         }
         # 备件库存：None = 无限备件（不启用供应链约束）
         self.parts: dict[int, simpy.Container] | None = None
+        # 备件保障统计（仅启用库存时计数）：请领总数、即时满足数、缺货累计等待
+        self.req_total = {RED: 0, BLUE: 0}
+        self.req_immediate = {RED: 0, BLUE: 0}
+        self.stockout_wait = {RED: 0.0, BLUE: 0.0}
         if spec.spare_stock is not None:
             self.parts = {
                 side: simpy.Container(
@@ -49,6 +53,10 @@ class SustainmentModel:
             }
             for side in (RED, BLUE):
                 self.env.process(self._resupply_loop(side))
+        # 本 tick 战斗受损待入队集合：交战段只登记、tick 末统一进通道，
+        # 与 GPU 批量内核"设备侧下 tick 才见 under_repair"的时序对齐
+        # （否则 Mesa 受损当 tick 立即免疫，Warp 当 tick 仍可被打，分布分叉）
+        self._pending_combat: set[int] = set()
         for i in range(state.n):
             self.env.process(self._failure_loop(i))
 
@@ -59,9 +67,26 @@ class SustainmentModel:
         self.env.run(until=tick)
 
     def combat_damage(self, i: int) -> None:
-        """交战内核判定单位受损（未毁）时调用：登记并入抢修通道。"""
+        """交战内核判定单位受损（未毁）时调用：仅登记，tick 末 commit 入通道。"""
         self.state.damaged[i] = True
-        self._start_repair(i)
+        self._pending_combat.add(int(i))
+
+    def commit_combat_damage(self) -> None:
+        """tick 末把本 tick 战斗受损单位统一送入抢修通道。"""
+        for i in self._pending_combat:
+            self._start_repair(i)
+        self._pending_combat.clear()
+
+    def supply_stats(self) -> dict[str, float]:
+        """备件保障终局统计：每方即时满足率（无请领记 1.0）与缺货累计等待 tick。"""
+        out: dict[str, float] = {}
+        for side, name in ((RED, "red"), (BLUE, "blue")):
+            total = self.req_total[side]
+            out[f"fill_rate_{name}"] = (
+                self.req_immediate[side] / total if total > 0 else 1.0
+            )
+            out[f"stockout_wait_{name}"] = float(self.stockout_wait[side])
+        return out
 
     # ---- SimPy 进程 ----
 
@@ -109,7 +134,12 @@ class SustainmentModel:
         # 备件请领（在占用抢修组之前）：缺货则挂起等补给
         parts = self.parts[side] if self.parts is not None else None
         if parts is not None:
+            self.req_total[side] += 1
+            if parts.level >= 1:
+                self.req_immediate[side] += 1
+            t_req = env.now
             yield parts.get(1)
+            self.stockout_wait[side] += env.now - t_req
             if not s.alive[i]:
                 _abort(True)
                 return
