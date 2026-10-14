@@ -83,9 +83,9 @@ def k_b_sense(
     tracks: wp.array(dtype=wp.int32),
     active: wp.array(dtype=wp.int32),
     tick: int,
-    vis: float,
+    vis: wp.array(dtype=wp.float32),
     n: int,
-    base_seed: int,
+    seed0: wp.array(dtype=wp.int32),
 ):
     g = wp.tid()
     env = g / n
@@ -93,8 +93,8 @@ def k_b_sense(
     if active[env] == 0 or alive[g] != 1:
         return
     si = side[g]
-    state = wp.rand_init(base_seed + env, tick * n + i)
-    reach = sensor[g] * vis
+    state = wp.rand_init(seed0[env], tick * n + i)
+    reach = sensor[g] * vis[env]
     xi = x[g]
     yi = y[g]
     for j in range(0, n):
@@ -135,7 +135,7 @@ def k_b_move(
     oxs: wp.array(dtype=wp.float32),
     oys: wp.array(dtype=wp.float32),
     tick: int,
-    vis: float,
+    vis: wp.array(dtype=wp.float32),
     n: int,
     gn: int,
     sx: float,
@@ -171,7 +171,7 @@ def k_b_move(
         dy = y[k] - y[g]
         d = wp.sqrt(dx * dx + dy * dy)
         heading[g] = wp.atan2(dy, dx)
-        if d > weapon[g] * vis:
+        if d > weapon[g] * vis[env]:
             f = _move_factor(heights, passab, gn, sx, sy, water, x[g], y[g])
             step = wp.min(speed[g] * f, d)
             x[g] = wp.clamp(x[g] + step * dx / d, 0.0, bx)
@@ -194,9 +194,9 @@ def k_b_engage(
     want_dmg: wp.array(dtype=wp.int32),
     active: wp.array(dtype=wp.int32),
     tick: int,
-    vis: float,
+    vis: wp.array(dtype=wp.float32),
     n: int,
-    base_seed: int,
+    seed0: wp.array(dtype=wp.int32),
 ):
     g = wp.tid()
     env = g / n
@@ -216,9 +216,9 @@ def k_b_engage(
     dx = x[k] - x[g]
     dy = y[k] - y[g]
     d = wp.sqrt(dx * dx + dy * dy)
-    if d > weapon[g] * vis:
+    if d > weapon[g] * vis[env]:
         return
-    state = wp.rand_init(base_seed + env, tick * n + n + i)
+    state = wp.rand_init(seed0[env], tick * n + n + i)
     r = wp.randf(state)
     if r < pk[g]:
         wp.atomic_max(want_kill, k, 1)
@@ -254,22 +254,31 @@ class WarpBatchKernel:
 
     def __init__(
         self,
-        scenario: Scenario,
+        scenarios: Scenario | list[Scenario],
         seeds: list[int],
         device: str | None = None,
         verbose: bool = False,
     ) -> None:
-        self.sc = scenario
+        """scenarios 可为单个想定（E 个相同复制）或每环境一个想定
+        （灵敏度设计点；要求各想定编制规模 n 与地形一致，参数/能见度可不同）。"""
+        if isinstance(scenarios, Scenario):
+            scenarios = [scenarios] * len(seeds)
+        else:
+            scenarios = list(scenarios)
+        self.scs = scenarios
         self.seeds = list(seeds)
         self.E = len(seeds)
+        assert len(self.scs) == self.E, "想定数必须与种子数一致"
         self.dev = resolve_device(device)
         self.verbose = verbose
 
         # host 镜像：每环境一个 SimState（供 SimPy 与最终指标），其关键列
         # 指向批量大数组的切片视图，零拷贝
-        ref = SimState(scenario)
+        self.states = [SimState(sc) for sc in self.scs]
+        ref = self.states[0]
         self.n = ref.n
-        self.states = [SimState(scenario) for _ in range(self.E)]
+        if any(st.n != self.n for st in self.states):
+            raise ValueError("批量内核要求各想定编制规模 n 一致")
         E, n = self.E, self.n
         self.h_x = np.zeros(E * n, dtype=np.float32)
         self.h_y = np.zeros(E * n, dtype=np.float32)
@@ -291,21 +300,28 @@ class WarpBatchKernel:
         self._sustain = []
         from ..sustainment.repair import SustainmentModel
 
-        for st in self.states:
+        for sc, st in zip(self.scs, self.states):
             rng = np.random.default_rng(self.seeds[len(self._sustain)])
-            self._sustain.append(SustainmentModel(scenario, st, rng))
+            self._sustain.append(SustainmentModel(sc, st, rng))
 
         d = self.dev
 
         def col(name, dtype):
-            return wp.array(np.tile(np.asarray(getattr(ref, name), dtype=dtype), E),
-                           dtype={np.float32: wp.float32, np.int32: wp.int32}[dtype],
-                           device=d)
+            # 每环境参数可不同（灵敏度 per-env 参数列），按 env 顺序拼接
+            stacked = np.concatenate(
+                [np.asarray(getattr(st, name), dtype=dtype) for st in self.states]
+            )
+            return wp.array(
+                stacked,
+                dtype={np.float32: wp.float32, np.int32: wp.int32}[dtype],
+                device=d,
+            )
 
         self.a_x = wp.array(self.h_x, dtype=wp.float32, device=d)
         self.a_y = wp.array(self.h_y, dtype=wp.float32, device=d)
         self.a_heading = wp.array(
-            np.tile(np.asarray(ref.heading, dtype=np.float32), E), dtype=wp.float32, device=d
+            np.concatenate([np.asarray(st.heading, dtype=np.float32) for st in self.states]),
+            dtype=wp.float32, device=d,
         )
         self.a_alive = wp.array(self.h_alive, dtype=wp.int32, device=d)
         self.a_damaged = wp.array(self.h_damaged, dtype=wp.int32, device=d)
@@ -319,27 +335,34 @@ class WarpBatchKernel:
         self.a_reload = col("reload_ticks", np.int32)
         self.a_detect = col("detect_prob", np.float32)
         self.a_ttl = col("track_ttl", np.int32)
+        # 每环境能见度（灵敏度设计点可不同）
+        self.h_vis = np.asarray(
+            [sc.environment.visibility_factor for sc in self.scs], dtype=np.float32
+        )
+        self.a_vis = wp.array(self.h_vis, dtype=wp.float32, device=d)
+        # 每环境随机流种子（任意偏移；CRN 时多环境可取相同种子）
+        self.a_seed0 = wp.array(np.asarray(self.seeds, dtype=np.int32), dtype=wp.int32, device=d)
 
         self.a_tracks = wp.zeros(E * 2 * n, dtype=wp.int32, device=d)
         self.a_kill = wp.zeros(E * n, dtype=wp.int32, device=d)
         self.a_dmg = wp.zeros(E * n, dtype=wp.int32, device=d)
         self.a_active = wp.array(np.ones(E, dtype=np.int32), dtype=wp.int32, device=d)
-        # 每环境当前阶段目标点（f32，host 推进阶段后下发）
-        self.phases = scenario.mission.phase_list
+        # 每环境阶段序列（灵敏度只改参数，阶段一致；结构上允许不同）
+        self.phase_lists = [sc.mission.phase_list for sc in self.scs]
         self.phase_idx = np.zeros(E, dtype=np.int32)
         self.accomplished = np.zeros(E, dtype=bool)
-        self.h_ox = np.tile(
-            np.asarray(self.phases[0].objective, dtype=np.float32)[0], E
-        ).astype(np.float32)
-        self.h_oy = np.tile(
-            np.asarray(self.phases[0].objective, dtype=np.float32)[1], E
-        ).astype(np.float32)
+        self.h_ox = np.asarray(
+            [pl[0].objective[0] for pl in self.phase_lists], dtype=np.float32
+        )
+        self.h_oy = np.asarray(
+            [pl[0].objective[1] for pl in self.phase_lists], dtype=np.float32
+        )
         self.a_ox = wp.array(self.h_ox, dtype=wp.float32, device=d)
         self.a_oy = wp.array(self.h_oy, dtype=wp.float32, device=d)
 
         from ..kernel.terrain import HeightField
 
-        t = HeightField.from_spec(scenario.terrain)
+        t = HeightField.from_spec(self.scs[0].terrain)
         self.terrain = t
         self.gn = t.n
         self.a_h = wp.array(
@@ -348,12 +371,9 @@ class WarpBatchKernel:
         self.a_p = wp.array(
             np.asarray(t.passability.reshape(-1), dtype=np.float32), dtype=wp.float32, device=d
         )
-        self.vis = float(scenario.environment.visibility_factor)
-        self.bound = scenario.terrain.size_m
-        self.duration = scenario.mission.duration_ticks
+        self.bound = self.scs[0].terrain.size_m
+        self.duration = self.scs[0].mission.duration_ticks
         self.tick = 0
-        # 每环境随机流基准种子（+env 在设备端做）
-        self.base_seed = min(self.seeds)
 
     def run(self) -> list[dict]:
         while self.active_count() > 0 and self.tick < self.duration:
@@ -383,7 +403,7 @@ class WarpBatchKernel:
             k_b_sense, dim=E * n,
             inputs=[self.a_x, self.a_y, self.a_alive, self.a_side, self.a_sensor,
                     self.a_detect, self.a_ttl, self.a_tracks, self.a_active,
-                    tick, self.vis, n, self.base_seed],
+                    tick, self.a_vis, n, self.a_seed0],
             **common,
         )
         wp.launch(k_b_clear, dim=E * n, inputs=[self.a_kill], **common)
@@ -393,7 +413,7 @@ class WarpBatchKernel:
             inputs=[self.a_x, self.a_y, self.a_heading, self.a_alive, self.a_damaged,
                     self.a_repair, self.a_side, self.a_speed, self.a_weapon, self.a_tracks,
                     self.a_h, self.a_p, self.a_active, self.a_ox, self.a_oy,
-                    tick, self.vis, n, self.gn,
+                    tick, self.a_vis, n, self.gn,
                     float(self.terrain.size[0]), float(self.terrain.size[1]),
                     float(self.bound[0]), float(self.bound[1]),
                     float(self.terrain.water_level)],
@@ -404,7 +424,7 @@ class WarpBatchKernel:
             inputs=[self.a_x, self.a_y, self.a_alive, self.a_repair, self.a_side, self.a_cd,
                     self.a_pk, self.a_weapon, self.a_reload, self.a_tracks,
                     self.a_kill, self.a_dmg, self.a_active,
-                    tick, self.vis, n, self.base_seed],
+                    tick, self.a_vis, n, self.a_seed0],
             **common,
         )
         wp.launch(
@@ -474,19 +494,20 @@ class WarpBatchKernel:
         for e in range(E):
             if not self._host_active[e]:
                 continue
-            last = len(self.phases) - 1
+            phases = self.phase_lists[e]
+            last = len(phases) - 1
             rx = xb[e][red_alive[e]]
             ry = yb[e][red_alive[e]]
             while self.phase_idx[e] < last:
-                ph = self.phases[int(self.phase_idx[e])]
+                ph = phases[int(self.phase_idx[e])]
                 if rx.size == 0 or np.hypot(
                     rx - ph.objective[0], ry - ph.objective[1]
                 ).min() > ph.success_radius_m:
                     break
                 self.phase_idx[e] += 1
-                nxt = self.phases[int(self.phase_idx[e])]
+                nxt = phases[int(self.phase_idx[e])]
                 ox[e], oy[e] = nxt.objective[0], nxt.objective[1]
-            ph = self.phases[int(self.phase_idx[e])]
+            ph = phases[int(self.phase_idx[e])]
             if (
                 rx.size
                 and self.phase_idx[e] == last
@@ -496,7 +517,7 @@ class WarpBatchKernel:
                 self.accomplished[e] = True
             st = self.states[e]
             st.phase = int(self.phase_idx[e])
-            st.objective = np.asarray(self.phases[int(self.phase_idx[e])].objective)
+            st.objective = np.asarray(phases[int(self.phase_idx[e])].objective)
             st.alive = self.h_alive[e * n:(e + 1) * n].astype(bool)
 
         # 末段达成 / 红方被歼 / 到时 -> 冻结
@@ -517,12 +538,31 @@ class WarpBatchKernel:
 
 
 def run_batch(
+    scenarios: Scenario | list[Scenario],
+    seeds: list[int],
+    device: str | None = None,
+    verbose: bool = False,
+) -> list[dict]:
+    """设备端批量运行。
+
+    - 同一想定多次复制：传单个 Scenario + seeds 列表；
+    - 灵敏度设计点批量：传与 seeds 等长的想定列表（每环境一个扰动后想定）。
+    返回与 envs 同序的指标字典列表。
+    """
+    return WarpBatchKernel(scenarios, seeds, device=device, verbose=verbose).run()
+
+
+def run_replications_batch(
     scenario: Scenario,
     base_seed: int,
     n_runs: int,
     device: str | None = None,
-    verbose: bool = False,
+    batch_size: int = 128,
 ) -> list[dict]:
-    """同一想定 n_runs 次复制的设备端批量运行（种子 base_seed..+n_runs-1）。"""
-    seeds = [base_seed + r for r in range(n_runs)]
-    return WarpBatchKernel(scenario, seeds, device=device, verbose=verbose).run()
+    """同一想定 n_runs 次复制分批运行（run_replications 的批量便捷封装）。"""
+    rows: list[dict] = []
+    for start in range(0, n_runs, batch_size):
+        count = min(batch_size, n_runs - start)
+        seeds = [base_seed + start + r for r in range(count)]
+        rows.extend(run_batch(scenario, seeds, device=device))
+    return rows

@@ -601,3 +601,45 @@
 - Sobol 想定参数化（每设计点一批复制：批量内核支持 per-env 参数列）
 - M3 续：按灵敏度优先级做参数标定、备件库存曲线进回放
 
+## 2026-10-14 | trae + 用户 | M4 切片 3：per-env 参数批量（设计点×复制整体上 GPU）
+
+### 完成内容
+- `WarpBatchKernel` 构造改为 `(scenarios: Scenario | list[Scenario], seeds: list[int])`：
+  支持每环境一个独立想定（灵敏度设计点）；单个想定自动复制为 E 份；
+  校验各想定编制规模 n 一致（地形共享），否则 ValueError
+- 参数列由 tile 共享改为按环境拼接（col() concatenate 各想定属性列）；
+  新增每环境能见度数组 a_vis 与每环境种子数组 a_seed0，
+  内核内 `wp.rand_init(seed0[env], tick*n+i)`、探测/射程 reach 乘 vis[env]
+- 阶段目标点按环境从各自 mission.phase_list 构造（h_ox/h_oy），
+  _update_phases 按环境取相位序列
+- 保障：每环境一个 SustainmentModel，新战损 flatnonzero 稀疏登记到
+  对应环境的模型；批量只收最终指标
+- 新对外接口：`run_batch(scenarios, seeds, device=None)` 与
+  `run_replications_batch(scenario, base_seed, n_runs, batch_size=128)`
+- `experiment/sensitivity.py` 新增 `_evaluate_points_batch`：
+  env 顺序点主序 (p, r)，CRN 种子只随复制号 r 变化（公共随机数），
+  分批调 run_batch；run_sensitivity/run_sobol 增 batch_device/batch_size
+- runner.py / cli.py：run 与 sensitivity 均支持 `--batch --batch-size --device`
+- 新增测试：3 个自定义设计点 ×2 复制，批量与逐个单环境五项指标
+  **逐位相等**（atol 1e-9）；全套 33 项全绿、ruff 全绿
+
+### 正确性验证
+- 全量 448 个 Sobol 设计点 ×4 复制（CPU 后端）：单环境逐个跑 vs
+  per-env 批量跑，五项指标 **max abs diff = 0.0，差异 cell 数 0**
+- GPU 批量结果与 CPU 路径存在微小数值差异（如 success 的 speed ST
+  0.597→0.568、detect ST 0.088→0.284）：排查确认同后端（CPU）逐位
+  一致，差异来自 CPU/CUDA 的 f32 规约与数学函数微差，经交战正反馈
+  放大为轨迹分歧——确定性、可复现，非逻辑错误；灵敏度结论排序
+  （speed/mtbf 主导）不改变
+
+### 性能
+- 全批量旅级 N=64 Sobol（1792 次仿真）GPU wall 45.1s，
+  其中约 1792 个 SimPy 环境构建占大头，纯 GPU 计算约 18s
+
+### 下一步
+- HashGrid 目标搜索替换稠密 O(n²)、ScopedCapture 图录制压 launch 开销
+- SimPy 环境构建占比上升，后续评估 host 侧构建复用/向量化
+- M3 续：按灵敏度优先级（speed/mtbf/pk）做参数标定、备件库存曲线进回放
+- 写实装备素材：免登录直链渠道已穷尽（OGA 仅 S 坦克无炮塔 CC-BY 模型、
+  CC0 Abrams .blend 素模），待用户登录 Sketchfab 或提供本机专有素材
+

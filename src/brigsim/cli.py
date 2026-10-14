@@ -119,6 +119,10 @@ def sensitivity(
     seed: int = typer.Option(20261013, "--seed", help="基础随机种子"),
     kernel: str = typer.Option("mesa", "--kernel", help="mesa（智能体）或 warp（向量化）"),
     device: str = typer.Option("cuda:0", "--device", help="warp 内核设备：cuda:0 或 cpu"),
+    batch: bool = typer.Option(
+        False, "--batch", help="warp 设计点×复制 env 维全批量（需 --kernel warp）"
+    ),
+    batch_size: int = typer.Option(128, "--batch-size", help="每批环境数（4GB 显存预算）"),
     out: str | None = typer.Option(None, "--out", help="结果 CSV 输出目录"),
 ) -> None:
     """灵敏度扫描：Morris（μ* 排序）或 Sobol（S1/ST 方差贡献占比）。"""
@@ -129,10 +133,12 @@ def sensitivity(
         from .combat.mesa_kernel import MesaKernel
 
         kernel_cls = MesaKernel
+        batch_device = None
     elif kernel == "warp":
         from .combat.warp_kernel import WarpKernel
 
         kernel_cls = lambda scenario, seed=0: WarpKernel(scenario, seed, device=device)  # noqa: E731
+        batch_device = device if batch else None
     else:
         raise typer.BadParameter(f"未知内核 {kernel}（可选 mesa/warp）")
     d = PROBLEM["num_vars"]
@@ -144,6 +150,7 @@ def sensitivity(
         df = run_sensitivity(
             scenario=sc, trajectories=trajectories, reps_per_point=reps,
             base_seed=seed, kernel_cls=kernel_cls,
+            batch_device=batch_device, batch_size=batch_size,
         )
         for metric, grp in df.groupby("metric", sort=False):
             typer.echo(f"\n{metric}（按 μ* 排序，μ* 越大越敏感，σ 大表示非线性/交互）：")
@@ -159,6 +166,7 @@ def sensitivity(
         df = run_sobol(
             scenario=sc, n_base=sobol_n, reps_per_point=reps,
             base_seed=seed, kernel_cls=kernel_cls,
+            batch_device=batch_device, batch_size=batch_size,
         )
         for metric, grp in df.groupby("metric", sort=False):
             typer.echo(f"\n{metric}（按 ST 总效应排序；ST=含交互总贡献，S1=一阶主效应）：")

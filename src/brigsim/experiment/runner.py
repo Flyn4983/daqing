@@ -41,9 +41,8 @@ def run_replications(
         rows: list[dict] = []
         for start in range(0, n_runs, batch_size):
             count = min(batch_size, n_runs - start)
-            rows.extend(
-                run_batch(scenario, base_seed + start, count, device=batch_device)
-            )
+            seeds = [base_seed + start + r for r in range(count)]
+            rows.extend(run_batch(scenario, seeds, device=batch_device))
         event_frames = None
         if keep_events_of is not None and 0 <= keep_events_of < n_runs:
             _, kernel = run_once(

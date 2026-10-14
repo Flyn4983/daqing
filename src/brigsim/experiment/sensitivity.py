@@ -62,16 +62,25 @@ def run_sensitivity(
     base_seed: int = 20261013,
     num_levels: int = 4,
     kernel_cls=None,
+    batch_device: str | None = None,
+    batch_size: int = 128,
 ) -> pd.DataFrame:
-    """Morris 灵敏度扫描；返回每个 (指标, 参数) 的 μ*/σ/置信半宽与 μ* 排序。"""
-    if kernel_cls is None:
-        from ..combat.mesa_kernel import MesaKernel
+    """Morris 灵敏度扫描；返回每个 (指标, 参数) 的 μ*/σ/置信半宽与 μ* 排序。
 
-        kernel_cls = MesaKernel
-
+    batch_device 非 None 时走 M4 Warp env 维批量（设计点×复制整体上设备）。
+    """
     rng = np.random.default_rng(base_seed)
     X = morris_sample(PROBLEM, N=trajectories, num_levels=num_levels, seed=rng)
-    Y = _evaluate_points(scenario, X, reps_per_point, base_seed, kernel_cls)
+    if batch_device is not None:
+        Y = _evaluate_points_batch(
+            scenario, X, reps_per_point, base_seed, batch_device, batch_size
+        )
+    else:
+        if kernel_cls is None:
+            from ..combat.mesa_kernel import MesaKernel
+
+            kernel_cls = MesaKernel
+        Y = _evaluate_points(scenario, X, reps_per_point, base_seed, kernel_cls)
 
     frames = []
     for j, metric in enumerate(METRICS):
@@ -113,26 +122,62 @@ def _evaluate_points(
     return Y
 
 
+def _evaluate_points_batch(
+    scenario: Scenario,
+    X: np.ndarray,
+    reps_per_point: int,
+    base_seed: int,
+    device: str,
+    batch_size: int = 128,
+) -> np.ndarray:
+    """M4：全部 (设计点×复制) 作为 env 维批量上设备。
+
+    env 顺序点主序 (p, r)；种子只随复制号 r 变化（公共随机数 CRN），
+    与单环境 WarpKernel 同种子轨迹一致。每环境一个 apply_point 后的想定，
+    要求编制规模与地形不变（本灵敏度只缩放参数/能见度）。
+    """
+    from ..combat.warp_batch import run_batch
+
+    P = X.shape[0]
+    crn_seeds = [base_seed + r for r in range(reps_per_point)]
+    V = np.zeros((P * reps_per_point, len(METRICS)))
+    for begin in range(0, P * reps_per_point, batch_size):
+        end = min(begin + batch_size, P * reps_per_point)
+        scs = [apply_point(scenario, X[i // reps_per_point]) for i in range(begin, end)]
+        seeds = [crn_seeds[i % reps_per_point] for i in range(begin, end)]
+        rows = run_batch(scs, seeds, device=device)
+        for k, m in enumerate(rows):
+            V[begin + k] = [m[name] for name in METRICS]
+    return V.reshape(P, reps_per_point, len(METRICS)).mean(axis=1)
+
+
 def run_sobol(
     scenario: Scenario,
     n_base: int = 16,
     reps_per_point: int = 4,
     base_seed: int = 20261013,
     kernel_cls=None,
+    batch_device: str | None = None,
+    batch_size: int = 128,
 ) -> pd.DataFrame:
     """Sobol 方差分解（Saltelli 采样，不算二阶）；返回每个 (指标, 参数) 的
     S1（一阶主效应）/ST（总效应，含交互）与 95% 自助置信半宽，按 ST 排序。
 
     设计点数 = n_base × (D + 2)；D=5，n_base=16 时为 112 点。
+    batch_device 非 None 时走 M4 Warp env 维批量（全部点×复制一次平铺）。
     """
-    if kernel_cls is None:
-        from ..combat.mesa_kernel import MesaKernel
-
-        kernel_cls = MesaKernel
-
     rng = np.random.default_rng(base_seed)
     X = sobol_sample(PROBLEM, N=n_base, calc_second_order=False, seed=rng)
-    Y = _evaluate_points(scenario, X, reps_per_point, base_seed, kernel_cls)
+    if batch_device is not None:
+        Y = _evaluate_points_batch(
+            scenario, X, reps_per_point, base_seed, batch_device, batch_size
+        )
+    else:
+        if kernel_cls is None:
+            from ..combat.mesa_kernel import MesaKernel
+
+            kernel_cls = MesaKernel
+        Y = _evaluate_points(scenario, X, reps_per_point, base_seed, kernel_cls)
 
     frames = []
     for j, metric in enumerate(METRICS):

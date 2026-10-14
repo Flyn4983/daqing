@@ -97,8 +97,30 @@ def test_batch_matches_single_environments_bit_exact(scenario):
             kernel_cls=lambda sc, seed=0: WarpKernel(sc, seed, device="cpu"),
         )
         single.append(metrics)
-    batch = run_batch(scenario, base_seed=base, n_runs=E, device="cpu")
+    batch = run_batch(scenario, [base + e for e in range(E)], device="cpu")
     for e in range(E):
         assert batch[e]["success"] == single[e]["success"]
         for key in ("attrition_red", "attrition_blue", "readiness_red", "readiness_blue"):
             assert abs(batch[e][key] - single[e][key]) < 1e-9, (e, key)
+
+
+def test_batch_sensitivity_matches_single_per_env_params(scenario):
+    """设计点×复制批量（每环境不同参数/能见度）必须与逐点单环境结果逐位一致。"""
+    from brigsim.experiment import sensitivity as sens
+
+    X = np.array(
+        [
+            [1.2, 0.8, 1.1, 0.5, 0.9],
+            [0.7, 1.3, 0.9, 2.0, 0.6],
+            [1.0, 1.0, 1.4, 1.0, 1.0],
+        ]
+    )
+    reps = 2
+    base = 4242
+    warp_factory = lambda sc, seed=0: WarpKernel(sc, seed, device="cpu")  # noqa: E731
+    y_single = sens._evaluate_points(scenario, X, reps, base, warp_factory)
+    y_batch = sens._evaluate_points_batch(
+        scenario, X, reps, base, device="cpu", batch_size=4
+    )
+    assert y_single.shape == y_batch.shape
+    assert np.allclose(y_single, y_batch, atol=1e-9)
