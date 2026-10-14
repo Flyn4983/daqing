@@ -56,7 +56,9 @@ uv run pytest
 - 所有参数经 `DataProvider` 进入仿真，一期 `YamlFileProvider`，后续可加数据库/API 实现；
 - 参数 schema 见 `src/brigsim/data/schema.py`，新增数据资产只需加数据文件，不改模型代码；
 - 真实/涉密参数放 `data/real/`（已 gitignore），仓库只保留示例数据；
-- 接口说明见 [docs/data-interface.md](docs/data-interface.md)。
+- **填真实数据从模板开始**：[templates/scenario_template.yaml](templates/scenario_template.yaml)（逐参数单位/公开参考/【待填】），
+  参数域与开源文献整编见 [templates/param_catalog.yaml](templates/param_catalog.yaml)；
+- 接口说明见 [docs/data-interface.md](docs/data-interface.md)（输入 7 表 + 输出 4 表 + 四率 GJB 口径 + 替换流程）。
 
 ## 协作约定
 

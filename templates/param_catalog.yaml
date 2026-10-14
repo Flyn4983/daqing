@@ -1,0 +1,341 @@
+# =============================================================================
+# 参数目录（比赛 C2 交付物）—— 数据溯源 + 可调参数域 + 真实数据留白对照
+# -----------------------------------------------------------------------------
+# 机器可读，三类下游消费：
+#   (1) 溯源：每个参数的公开来源、置信度、原型假设说明；
+#   (2) C3 代理模型 / C4 NSGA-II：直接读取 domain 作为抽样/优化变量的上下界；
+#   (3) 用户填真实数据：real_data_slot=true 的行是必须用本部队数据替换的留白项。
+# 置信度分档：0.80-1.00 权威标准/官方手册；0.50-0.79 官方审计/学术/多源交叉；
+#             0.30-0.49 单一公开来源或行业报告；0.00-0.29 无外部来源的原型/标定值。
+# 时间换算基准 dt_seconds=30：1 tick=30s；speed_m_per_tick×0.12=km/h；
+#             ticks×30/3600=小时。
+# =============================================================================
+
+meta:
+  version: "0.1"
+  updated_at: "2026-10-14"
+  dt_seconds_ref: 30
+  confidence_legend:
+    authoritative: [0.80, 1.00]
+    cross_checked: [0.50, 0.79]
+    single_source: [0.30, 0.49]
+    prototype: [0.00, 0.29]
+
+sources:
+  S1:
+    citation: "Project on Government Oversight, The Army's M1 Tank: Has it Lived Up to Expectations? (1990)，引陆军 RAM-D 数据：M1/M1A1 战斗可靠性 MMBCF 110/152 英里（要求 320），维修工时率 M1A1 1.239 工时/英里"
+    url: "https://docs.pogo.org/report/1990/m1-report-19900612.pdf"
+    kind: gov_audit_secondary
+  S2:
+    citation: "GJB 451A-2005《可靠性维修性保障性术语》：MTBF（平均故障间隔时间）、战备完好性等术语权威口径"
+    url: "https://aero.nuaa.edu.cn/_upload/article/files/12/57/46a8d9c342bc8c97719f1d5725b4/1d463a96-ad99-4ee9-8a0f-b1aa9e4ea93a.pdf"
+    kind: military_standard
+  S3:
+    citation: "Ukraine War Analytics, Ukraine Tank Repair Capacity 2026：前沿连级小损数小时；旅/战役级中损平均 2-4 周；战略级 6-10 周；野战车间约 50% 战损装甲车辆修复返建"
+    url: "https://ukraine-war-analytics.com/weapons/ukraine-tank-repair-capacity-2026.html"
+    kind: open_source_intelligence
+  S4:
+    citation: "DefStrat, The Cost of Poor Sustainment：高可靠性平台+强前沿修理能力时多数受损平台 2-6 小时返建；俄乌战争逾 400 辆坦克（约 50%）经前沿修理返建"
+    url: "https://www.defstrat.com/magazine_articles/the-cost-of-poor-sustainment/"
+    kind: professional_analysis
+  S5:
+    citation: "U.S. AFCENT, BDRF keeps Strykers rolling into battlefield：后方 Battle Damage Repair Facility 修复 Stryker 平均 60 天（战役/战略级口径参照）"
+    url: "https://www.afcent.af.mil/News/Features/Display/Article/223738/bdrf-keeps-strykers-rolling-into-battlefield/"
+    kind: official_report
+  S6:
+    citation: "中国装甲车服务行业市场报告（2026，行业预测性质，可信度低）：单车年均出动 186.3 小时；MTBF 里程高原 428km/寒区 512km/湿热 397km；完好率目标 94.7%"
+    url: "https://www.docin.com/touch_new/preview_new.do?id=4968297305"
+    kind: trade_report_low_confidence
+  S7:
+    citation: "RCM3 Methodology Application to Armored Military Vehicle Cooling System：装甲车辆冷却系统部件级 MTBF 约 4134 发动机小时（部件可靠性建模学术案例）"
+    url: "https://pdfs.semanticscholar.org/76d6/6e8fa85d9fac0324c9259777ef5e544708a6.pdf"
+    kind: academic_paper
+  S8:
+    citation: "GAO-01-425, Defense Inventory: Army War Reserve Spare Parts Requirements Are Uncertain：战储备件需求应基于 Equipment Usage Profiles 与 MUBR（Mean Usage Between Replacement）消耗因子，实际需求呈 lumpy 间歇分布"
+    url: "https://www.govinfo.gov/content/pkg/GAOREPORTS-GAO-01-425/html/GAOREPORTS-GAO-01-425.htm"
+    kind: gov_audit
+  S9:
+    citation: "第三代主战坦克/步战车/反坦克导弹公开技术规格（Leopard 2 等）：MBT 越野速度 45-55km/h；120/125mm 炮动对动有效射程约 2-3km；二代后 ATGM 射程 3-5km；稳像观瞄昼间对装甲目标发现距离 2-4km"
+    url: "https://www.defencedb.com/profile_page.php?item_id=45"
+    kind: public_specification
+
+# 平台类型键（prototype 中以该三者给值）
+platform_keys: [tank, ifv, atgm_team]
+
+parameters:
+  # ---- 平台性能（交战） ----
+  - key: platform.sensor_range_m
+    unit: m
+    dtype: float
+    domain: [800, 4000]
+    prototype: {tank: 2500, ifv: 1800, atgm_team: 2200}
+    confidence: 0.40
+    sources: [S9]
+    real_data_slot: false
+    note: "观瞄对装甲目标发现距离；实战还受能见度/植被/目标姿态影响，模型以 visibility_factor 粗折减"
+
+  - key: platform.weapon_range_m
+    unit: m
+    dtype: float
+    domain: [800, 4000]
+    prototype: {tank: 2000, ifv: 1200, atgm_team: 2000}
+    confidence: 0.40
+    sources: [S9]
+    real_data_slot: false
+    note: "有效交战距离（非最大射程）；射程内是否命中由 pk 一次性抽样，无弹道"
+
+  - key: platform.pk
+    unit: probability
+    dtype: float
+    domain: [0.05, 0.80]
+    prototype: {tank: 0.35, ifv: 0.22, atgm_team: 0.45}
+    confidence: 0.25
+    sources: []
+    real_data_slot: true
+    note: "理想条件单次交火击毁概率；无公开权威值（兵棋核心标定参数），M3 v3 标定；待实弹/演习毁伤数据替换。另有固定 0.25 概率为'可修复受损'（代码常量，未来随弹道模型参数化）"
+
+  - key: platform.speed_m_per_tick
+    unit: m/tick
+    dtype: float
+    domain: [50, 460]
+    prototype: {tank: 184, ifv: 217, atgm_team: 100}
+    confidence: 0.50
+    sources: [S9]
+    real_data_slot: false
+    note: "每 30s 机动距离，物理速=×0.12 km/h：原型约 22/26/12 km/h，为最大越野速度（45-55km/h）乘地形/接敌减损系数 0.836 后标定的平均接敌速度"
+
+  - key: platform.reload_ticks
+    unit: tick
+    dtype: int
+    domain: [1, 8]
+    prototype: {tank: 2, ifv: 2, atgm_team: 2}
+    confidence: 0.40
+    sources: [S9]
+    real_data_slot: false
+    note: "射击冷却=60s；坦克炮战斗射速 4-6 发/分、ATGM 制导周期的粗抽象"
+
+  - key: platform.detect_prob
+    unit: probability
+    dtype: float
+    domain: [0.50, 0.99]
+    prototype: 0.85
+    confidence: 0.25
+    sources: []
+    real_data_slot: true
+    note: "满近界单周期发现目标概率；原型假设，待观瞄试验/演习数据"
+
+  - key: platform.track_ttl_ticks
+    unit: tick
+    dtype: int
+    domain: [1, 10]
+    prototype: 3
+    confidence: 0.20
+    sources: []
+    real_data_slot: true
+    note: "共享航迹信息老化时间（90s）；C2 体系抽象参数，无物理对标，待指挥信息系统数据"
+
+  # ---- 平台可靠性/维修性（四率直接驱动） ----
+  - key: platform.mtbf_ticks
+    unit: tick
+    dtype: float
+    domain: [50, 4000]
+    prototype: 400
+    confidence: 0.35
+    sources: [S1, S6, S7]
+    real_data_slot: true
+    note: "自然故障平均间隔（指数抽样）；原型 400tick=3.33 战斗小时。公开参照：M1A1 MMBCF 152 英里折约 9-10 越野小时(S1)，行业报告 MTBF 里程 397-512km(S6,低可信)，部件级可达 4000+ 发动机小时(S7)。原型偏悲观以保证保障压力，待本部队故障统计"
+
+  - key: platform.mttr_ticks
+    unit: tick
+    dtype: float
+    domain: [2, 240]
+    prototype: 6
+    confidence: 0.35
+    sources: [S3, S4, S5]
+    real_data_slot: true
+    note: "平均修复时长（指数抽样）；原型 6tick=3 分钟，抽象火线拖救/紧急抢修。公开参照：前沿强保障 2-6h(S4)、连级小损数小时(S3)、战役级 2-4 周(S3)/60 天(S5)——后两者超出单场战斗时域，本模型不计"
+
+  # ---- 气象/方别 ----
+  - key: environment.weather
+    unit: categorical
+    dtype: categorical
+    values: [clear, rain, fog, snow]
+    prototype: clear
+    confidence: 0.30
+    sources: []
+    real_data_slot: true
+    note: "任务时段实际气象；当前全程常量，时变气象序列为留白扩展"
+
+  - key: environment.visibility_factor
+    unit: factor
+    dtype: float
+    domain: [0.30, 1.00]
+    prototype: 1.0
+    confidence: 0.30
+    sources: []
+    real_data_slot: true
+    note: "探测距离乘子，雨/雾/雪 <1；原型按天气手工给常量，待气象-能见度实测对照"
+
+  - key: side.pk_scale
+    unit: factor
+    dtype: float
+    domain: [0.70, 1.50]
+    prototype: {red: 1.0, blue: 1.0}
+    confidence: 0.25
+    sources: []
+    real_data_slot: true
+    note: "方别毁伤概率乘子（既设阵地预瞄/工事/训练差）；v3 标定 blue=1.000"
+
+  - key: side.detect_scale
+    unit: factor
+    dtype: float
+    domain: [0.70, 1.50]
+    prototype: {red: 1.0, blue: 1.0}
+    confidence: 0.25
+    sources: []
+    real_data_slot: true
+    note: "方别发现概率乘子"
+
+  - key: side.speed_scale
+    unit: factor
+    dtype: float
+    domain: [0.70, 1.50]
+    prototype: {red: 1.0, blue: 1.0}
+    confidence: 0.25
+    sources: []
+    real_data_slot: true
+    note: "方别机动速度乘子"
+
+  # ---- 保障（C4 决策优化主变量区） ----
+  - key: sustainment.repair_teams
+    unit: team
+    dtype: int
+    domain: [1, 12]
+    prototype: {red: 6, blue: 4}
+    confidence: 0.20
+    sources: []
+    real_data_slot: true
+    note: "可并行抢修组数；待按合成旅修理营/连实际抢救抢修组编配填"
+
+  - key: sustainment.repair_delay_ticks
+    unit: tick
+    dtype: int
+    domain: [0, 20]
+    prototype: 0
+    confidence: 0.20
+    sources: []
+    real_data_slot: true
+    note: "报故-受损到送修的固定延迟；原型 0，待实际拖救响应时延分布（未来由常量改分布抽样）"
+
+  - key: sustainment.spare_stock
+    unit: piece
+    dtype: int
+    domain: [0, 60]
+    prototype: {red: 12, blue: 8}
+    confidence: 0.30
+    sources: [S8]
+    real_data_slot: true
+    note: "初始备件基数；null=无限备件。真实需求按 MUBR 消耗因子(S8)且呈间歇分布，当前每次维修统一耗 1 件"
+
+  - key: sustainment.resupply_interval_ticks
+    unit: tick
+    dtype: int
+    domain: [10, 60]
+    prototype: 20
+    confidence: 0.20
+    sources: []
+    real_data_slot: true
+    note: "周期前送间隔=10 分钟；待实际保障梯队前送节奏"
+
+  - key: sustainment.resupply_qty
+    unit: piece
+    dtype: int
+    domain: [1, 20]
+    prototype: 8
+    confidence: 0.30
+    sources: [S8]
+    real_data_slot: true
+    note: "每周期前送备件数；待按运输工具容量与消耗基数填"
+
+  - key: sustainment.repair_station
+    unit: m
+    dtype: point
+    prototype: {red: [1500, 5000], blue: [9500, 5100]}
+    confidence: 0.20
+    sources: []
+    real_data_slot: true
+    note: "各方修理所坐标（在修单位后送目的地）；纯原型坐标，待实际保障部署/情报评估"
+
+  # ---- 任务/地形/编成（想定级留白） ----
+  - key: mission.duration_ticks
+    unit: tick
+    dtype: int
+    domain: [30, 120]
+    prototype: 59
+    confidence: 0.40
+    sources: []
+    real_data_slot: true
+    note: "任务时限（59tick≈29.5 分钟）；按战法阶段时限规定填"
+
+  - key: mission.phases
+    unit: null
+    dtype: orbat_like
+    prototype: "三阶段（出发阵地/突破/纵深要点）"
+    confidence: 0.30
+    sources: []
+    real_data_slot: true
+    note: "阶段名称、目标点坐标与夺占半径；待实际作战方案"
+
+  - key: terrain.dem
+    unit: file
+    dtype: file
+    prototype: "synthetic FBM / scenarios/terrain/dem_demo.tif（合成峡谷）"
+    confidence: 0.20
+    sources: []
+    real_data_slot: true
+    note: "真实测绘 DEM：单波段 GeoTIFF，裁剪为方形战区、重采样到 grid_n；与通行性栅格配准"
+
+  - key: terrain.passability
+    unit: file
+    dtype: file
+    prototype: "scenarios/terrain/dem_pass.tif（合成：道路 1.0/无桥河 0.12/桥 1.0）"
+    confidence: 0.20
+    sources: []
+    real_data_slot: true
+    note: "通行性栅格 [0,1]，与 DEM 同网格；待真实地貌/水系/道路网数据"
+
+  - key: forces.orbat
+    unit: null
+    dtype: orbat
+    prototype: "example_brigade：红 104 台/蓝 63 台（示例编成）"
+    confidence: 0.30
+    sources: []
+    real_data_slot: true
+    note: "实际编制序列、平台型号、集结坐标、初始朝向、编制链标签（旅-营-连-排）"
+
+# =============================================================================
+# 未来扩展（预留槽，当前内核未实现）——M5 候选：弹道/落点/落角/分部件毁伤
+# 现状：射程内一次抽样 roll<pk 击毁、roll<pk+0.25 可修复受损，无弹道。
+# 升级路线（等效解析，兼容 tick 制）：pk = P_hit(距离, CEP) × P_kill|hit(落角, 部件)
+# =============================================================================
+future_extensions:
+  ballistics:
+    status: reserved_not_implemented
+    planned_for: M5
+    rationale: "比赛主线为四率统计+保障决策（蒙特卡洛大样本），逐弹高保真弹道增益低；等效解析模型可把固定 0.25 受损概率替换为部件级毁伤，直接对接分部件 MTTR/备件"
+    params:
+      muzzle_velocity_mps:
+        domain: [200, 1700]
+        note: "ATGM 巡航/炮射弹初速低端，APFSDS 约 1500-1700"
+      cep_m_at_1000m:
+        domain: [0.1, 5.0]
+        note: "千米距圆概率偏差（散布）"
+      impact_angle_deg_table:
+        dtype: lookup_table
+        note: "射程-落角表（抛物线解析或射表）；决定命中正面/顶装甲"
+      component_kill_table:
+        dtype: categorical_prob
+        components: [track, engine, transmission, weapon, fire_control, crew]
+        note: "命中后分部件毁伤概率；各部件带独立 MTTR 与备件 SKU（替换当前统一 mttr/每件 1 备件）"
+      pk_formula: "P_kill = P_hit(range, cep, visibility) × Σ_component P(component|hit, impact_angle) × P_kill(component, armor)"
+    open_source_to_survey: ["OneSAF 交战建模文档", "JMASS", "公开穿甲/装甲数据汇编"]

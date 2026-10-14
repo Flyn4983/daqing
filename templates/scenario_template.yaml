@@ -1,0 +1,140 @@
+# =============================================================================
+# 想定参数模板（比赛 C2 交付物）—— 填入真实数据的唯一入口
+# -----------------------------------------------------------------------------
+# 用法：
+#   1. 复制本文件为 scenarios/<你的想定名>.yaml；
+#   2. 逐项替换数值：带【待填】标记的为必须由真实数据/实际部署填写的项；
+#      带[公开参考]的给出了公开文献典型值，可保留原型值，也可按本部队数据覆盖；
+#   3. 来源编号 [S1]-[S9] 的文献清单与链接见 templates/param_catalog.yaml；
+#   4. 改完跑：uv run pytest tests/test_c2_data_templates.py（加载校验）
+#      以及 uv run brigsim run <想定名> --runs 20（冒烟）；
+#   5. 真实/涉密参数文件不要入库（data/real/ 已 gitignore）。
+#
+# 时间口径（重要）：内核离散 tick 制，1 tick = dt_seconds（默认 30 秒）。
+#   速度换算：speed_km/h = speed_m_per_tick × 3.6 / dt_seconds
+#   时长换算：物理小时 = ticks × dt_seconds / 3600
+# 本模板数值为 prototype_v0.4（M3 v3 标定后），置信度含义见 param_catalog.yaml。
+# =============================================================================
+
+name: my_scenario_fill_me          # 想定唯一标识（英文/拼音，文件名建议同名）
+
+# ---------------------------------------------------------------- 任务 ----
+mission:
+  duration_ticks: 59               # 任务总时长（tick）；59×30s≈29.5 分钟（v3 标定值）
+                                   # [原型假设] 单场战斗尺度 30-60 分钟；按实际战法阶段时限填【待填】
+  dt_seconds: 30                   # 时间步长（秒），固定口径，改它会改变所有 *_per_tick 参数的物理含义
+  objective: [9000, 5000]          # 单目标任务终点 [东向x, 北向y]（米，战场坐标系）
+  success_radius_m: 500            # 夺占成功半径（米）【待填：按目标地幅实际大小】
+  # 多阶段任务（优先于 objective）：任一存活单位进入半径即切换下一阶段
+  phases:
+    - {name: "占领进攻出发阵地", objective: [2800, 5000], success_radius_m: 400}
+    - {name: "突破前沿",           objective: [6000, 5000], success_radius_m: 500}
+    - {name: "夺占纵深要点",       objective: [9000, 5000], success_radius_m: 500}
+
+# ---------------------------------------------------------------- 地形 ----
+terrain:
+  # synthetic=程序生成 FBM 地形（无需外部文件，适合快速试验）；
+  # geotiff=读真实 DEM（需与通行性栅格配准、裁剪为方形战区）
+  source: synthetic
+  geotiff_path: null               # 【待填】真实测绘：相对本 YAML 的 DEM 路径，如 terrain/dem_real.tif
+  passability_path: null           # 【待填】真实通行性栅格（0=不可通行 … 1=道路/硬地），与 DEM 同网格配准
+  size_m: [10000, 10000]           # 方形战场边长（米）【待填：按实际作战地幅】
+  grid_n: 65                       # 内核网格分辨率（单边长宽格点数）
+  # 以下仅 source=synthetic 时生效（FBM 程序噪声）
+  noise_seed: 7
+  noise_scale: 3.0
+  octaves: 4
+  base_height: 60.0                # 基准高程（米）
+  amplitude: 150.0                 # 起伏幅度（米）
+  water_level: 5.0                 # 水位（米），低于此值的像元作水面处理
+
+# ---------------------------------------------------------------- 气象 ----
+environment:
+  weather: clear                   # clear/rain/fog/snow 四类【待填：任务时段气象预报】
+  visibility_factor: 1.0           # 探测距离修正乘子（雨/雾/雪 <1.0，当前手工设定；
+                                   # [原型假设] 气象时间序列未建模，全程常量；真实时变能见度为留白项）
+
+# ------------------------------------------------------- 方别不对称乘子 ----
+# 乘到该方所有平台类型的基准值上（既设阵地预瞄/工事、训练水平差等），缺省=全 1.0
+side_modifiers:
+  blue: {pk_scale: 1.000, detect_scale: 1.0, speed_scale: 1.0}   # [原型假设] v3 标定 1.000
+  # red:  {pk_scale: 1.0, detect_scale: 1.0, speed_scale: 1.0}
+
+# ------------------------------------------------------------- 平台类型 ----
+# 每类装备一行参数；来源/置信度在 meta 中标注。原型值为 M3 v3 标定后状态。
+# [S9]=公开装备技术规格；pk/detect 无公开权威值，属兵棋标定参数（[原型假设]）。
+platform_types:
+  tank:                            # 主战坦克（对标第三代 MBT）
+    sensor_range_m: 2500           # 观瞄发现距离（米）[公开参考 S9：昼间稳像观瞄对装甲目标 2-4km，依气象能见度折减]
+    weapon_range_m: 2000           # 有效交战距离（米）[公开参考 S9：120/125mm 炮动对动有效射程约 2-3km]
+    pk: 0.35                       # 理想条件单次交火击毁概率，域[0,1]【无公开值，v3 标定，待本部队实弹/演习数据替换】
+    speed_m_per_tick: 184          # 每 tick 机动距离（米）；184m/30s≈22.1km/h
+                                   # [公开参考 S9：MBT 最大越野 45-55km/h（≈375-458m/tick）；
+                                   #  现值为标称值×地形/接敌减损系数 0.836 后再标定，属平均接敌速度]
+    reload_ticks: 2                # 射击冷却（tick）=60s [公开参考：战斗射速 4-6 发/分的粗抽象]
+    detect_prob: 0.85              # 满近界单周期发现概率 [原型假设，待替换]
+    track_ttl_ticks: 3             # 共享航迹保持时间（tick）[原型假设：C2 信息老化抽象]
+    # 保障可靠性（指数分布抽样）：
+    mtbf_ticks: 400                # 平均故障间隔（tick）；400×30s≈3.33 战斗小时
+                                   # [公开参考 S1：M1A1 致命故障间隔约 152 英里≈按越野 25km/h 折 9-10h；
+                                   #  S6：行业报告 MTBF 里程 397-512km；现值更悲观，系标定保障压力的原型选择]
+    mttr_ticks: 6                  # 平均修复时长（tick）；6×30s=3 分钟
+                                   # [公开参考 S4：强保障下火线返建 2-6h；S3：连级小损数小时、
+                                   #  旅/战役级中损 2-4 周——本模型时间尺度仅单场战斗，
+                                   #  现值抽象"火线拖救/紧急抢修"，战役级修理不在模型时域内，待映射规则细化]
+    meta: {source: prototype_calibrated_v3, version: "0.4", confidence: 0.4, updated_at: "2026-10-14"}
+                                   # 填入真实数据后改为 {source: "部队xxx演习实测", version: "1.0", confidence: 0.9, updated_at: 日期}
+  ifv:                             # 步兵战车/装甲输送车
+    sensor_range_m: 1800
+    weapon_range_m: 1200
+    pk: 0.22
+    speed_m_per_tick: 217          # ≈26.0km/h（含减损系数后标定）
+    reload_ticks: 2
+    detect_prob: 0.85
+    track_ttl_ticks: 3
+    mtbf_ticks: 400
+    mttr_ticks: 6
+    meta: {source: prototype_calibrated_v3, version: "0.4", confidence: 0.4, updated_at: "2026-10-14"}
+  atgm_team:                       # 反坦克导弹班组/发射车
+    sensor_range_m: 2200
+    weapon_range_m: 2000           # [公开参考 S9：二代/三代 ATGM 射程 3-5km；现值偏保守]
+    pk: 0.45
+    speed_m_per_tick: 100          # ≈12.0km/h（班组/下车口径，含减损）
+    reload_ticks: 2
+    detect_prob: 0.85
+    track_ttl_ticks: 3
+    mtbf_ticks: 400
+    mttr_ticks: 6
+    meta: {source: prototype_calibrated_v3, version: "0.4", confidence: 0.4, updated_at: "2026-10-14"}
+
+# ---------------------------------------------------------------- 保障 ----
+# 战毁（killed）不可修；战斗受损与自然故障共用抢修队列；每次维修消耗 1 件备件。
+sustainment:
+  repair_teams: {red: 6, blue: 4}  # 各方可并行抢修组数【待填：按修理连/营实际抢救抢修组编配】
+  repair_delay_ticks: 0            # 受损到送修延迟（tick）[原型假设：0；待填实际报故-拖救-判定时延分布]
+  spare_stock: {red: 12, blue: 8}  # 各方初始备件基数（件；null=无限备件）
+                                   # 【待填：按战备弹药/器材基数标准；当前为 v3 网格标定值】
+  resupply_interval_ticks: 20      # 补给周期（tick）=10 分钟 [原型假设，待填实际前送节奏]
+  resupply_qty: 8                  # 每周期前送备件数（件）[原型假设；S8：真实备件需求呈 lumpy 间歇分布，
+                                   #  每件维修耗 1 件是粗抽象，分部件消耗清单为留白项]
+  repair_station:                  # 各方修理所坐标 [x,y]（在修单位物理后送目的地，修复后再前出）
+    red: [1500, 5000]              # 【待填：红方旅/营修理所实际展开位置】
+    blue: [9500, 5100]             # 【待填：蓝方（对手）修理所位置，情报评估】
+
+# ---------------------------------------------------------------- 编成 ----
+# 两种写法二选一或混用（模板给最小示例；成建制批量展开用 force_templates，
+# 队形 line/column/wedge + 间距，详见 src/brigsim/data/schema.py 与三个 example 想定）。
+# 【待填】整张编制表：unit_id/类型/实际集结坐标/编制链 org（旅-营-连-排）/初始朝向
+forces:
+  red:
+    - {unit_id: r-001, type: tank,      org: "示例连·1排 101", pos: [200, 4800], heading_deg: 90}
+    - {unit_id: r-002, type: ifv,       org: "示例连·1排 102", pos: [200, 5200], heading_deg: 90}
+  blue:
+    - {unit_id: b-001, type: atgm_team, org: "蓝守军·反坦克1组", pos: [7600, 5000], heading_deg: 270}
+# 成建制批量展开（展开后并入 forces）：
+# force_templates:
+#   red:
+#     - {type: tank, count: 12, anchor: [200, 5000], heading_deg: 90,
+#        org: "合成1营·坦克1连", id_prefix: r-t1-, layout: column,
+#        spacing_along: 200, spacing_lateral: 200}
+#   blue: []
