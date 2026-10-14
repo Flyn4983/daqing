@@ -521,7 +521,8 @@ class WarpBatchKernel:
         for e, sust in enumerate(self._sustain):
             if self._host_active[e]:
                 sust.advance(tick)
-        self._push_repair()
+        # prev_*：步初 host 口径的受损/抢修标志，用于只登记本 tick 新增战损
+        prev_damaged, prev_repair = self._push_repair()
 
         # tick 先写入设备数组：直接启动与图重放两条路径的内核都读它
         self.a_tick.assign(np.array([tick], dtype=np.int32))
@@ -547,12 +548,21 @@ class WarpBatchKernel:
         self.h_damaged = self.a_damaged.numpy()
         self._pull_repair()
 
-        # 3) 新战损登记各环境 SimPy 抢修通道
-        dmg_idx = np.flatnonzero(self.a_dmg.numpy())
-        for g in dmg_idx:
+        # 3) 新战损登记各环境 SimPy 抢修通道（仅本 tick 首次受损且尚未在
+        # 抢修中的单位；自然故障已在 advance 内自行入队，重复受损的老单位
+        # _start_repair 也会跳过——这里直接在 host 侧过滤掉，避免每 tick
+        # 对全部已损单位重复进 Python/SimPy）
+        active_g = np.repeat(self._host_active, n).astype(bool)
+        new_dmg = (
+            (self.h_damaged == 1)
+            & (self.h_alive == 1)
+            & (~prev_damaged)
+            & (~prev_repair)
+            & active_g
+        )
+        for g in np.flatnonzero(new_dmg):
             e, i = divmod(int(g), n)
-            if self.h_alive[g] and self._host_active[e]:
-                self._sustain[e].combat_damage(i)
+            self._sustain[e].combat_damage(i)
 
         # 4) 阶段推进（向量化）与 active 更新
         self._update_phases()
@@ -631,7 +641,9 @@ class WarpBatchKernel:
             self._active_cache = np.ones(self.E, dtype=np.int32)
         return self._active_cache
 
-    def _push_repair(self) -> None:
+    def _push_repair(self) -> tuple[np.ndarray, np.ndarray]:
+        """host 抢修状态整批 H2D；返回步初 (damaged, under_repair) bool 视图，
+        供战损登记过滤本 tick 新增项。"""
         rep = np.zeros(self.E * self.n, dtype=np.int32)
         dam = np.zeros(self.E * self.n, dtype=np.int32)
         for e, st in enumerate(self.states):
@@ -640,6 +652,7 @@ class WarpBatchKernel:
             dam[sl] = st.damaged
         self.a_repair.assign(rep)
         self.a_damaged.assign(dam)
+        return dam.astype(bool), rep.astype(bool)
 
     def _pull_repair(self) -> None:
         for e, st in enumerate(self.states):
@@ -662,35 +675,51 @@ class WarpBatchKernel:
         red_alive = alive_b & red[None, :]
         red_any = red_alive.any(axis=1)
 
-        ox = self.h_ox.copy()
-        oy = self.h_oy.copy()
-        for e in range(E):
-            if not self._host_active[e]:
-                continue
-            phases = self.phase_lists[e]
-            last = len(phases) - 1
-            rx = xb[e][red_alive[e]]
-            ry = yb[e][red_alive[e]]
-            while self.phase_idx[e] < last:
-                ph = phases[int(self.phase_idx[e])]
-                if rx.size == 0 or np.hypot(
-                    rx - ph.objective[0], ry - ph.objective[1]
-                ).min() > ph.success_radius_m:
-                    break
+        ox = self.h_ox.astype(np.float64)
+        oy = self.h_oy.astype(np.float64)
+        last = np.array([len(pl) - 1 for pl in self.phase_lists])
+        active_now = self._host_active.astype(bool)
+
+        # 向量化：各环境红方存活者到当前目标点的最近距离（E×n 一次算完，
+        # 无红方存活的环境为 inf）；距离沿用 float64，与单环境 host 口径一致
+        def red_min_dist(cx: np.ndarray, cy: np.ndarray) -> np.ndarray:
+            dx = np.where(red_alive, xb - cx[:, None], np.inf)
+            dy = np.where(red_alive, yb - cy[:, None], np.inf)
+            return np.hypot(dx, dy).min(axis=1)
+
+        dmin = red_min_dist(ox, oy)
+
+        def cur_radius() -> np.ndarray:
+            return np.array(
+                [self.phase_lists[e][int(self.phase_idx[e])].success_radius_m
+                 for e in range(E)]
+            )
+
+        # 一个 tick 理论上可连续跨多个阶段，循环推进到稳定（阶段数很少）
+        for _ in range(8):
+            reached = active_now & (self.phase_idx < last) & (dmin <= cur_radius())
+            if not reached.any():
+                break
+            for e in np.flatnonzero(reached):
                 self.phase_idx[e] += 1
-                nxt = phases[int(self.phase_idx[e])]
+                nxt = self.phase_lists[e][int(self.phase_idx[e])]
                 ox[e], oy[e] = nxt.objective[0], nxt.objective[1]
-            ph = phases[int(self.phase_idx[e])]
-            if (
-                rx.size
-                and self.phase_idx[e] == last
-                and np.hypot(rx - ph.objective[0], ry - ph.objective[1]).min()
-                <= ph.success_radius_m
-            ):
-                self.accomplished[e] = True
+            dmin = red_min_dist(ox, oy)
+
+        # 末段达成（红方被歼的环境 dmin=inf，不会误判）
+        self.accomplished[
+            active_now & (self.phase_idx == last) & (dmin <= cur_radius())
+        ] = True
+
+        # 各环境 SimState 记账（冻结环境不动）
+        for e in range(E):
+            if not active_now[e]:
+                continue
             st = self.states[e]
             st.phase = int(self.phase_idx[e])
-            st.objective = np.asarray(phases[int(self.phase_idx[e])].objective)
+            st.objective = np.asarray(
+                self.phase_lists[e][int(self.phase_idx[e])].objective
+            )
             st.alive = self.h_alive[e * n:(e + 1) * n].astype(bool)
 
         # 末段达成 / 红方被歼 / 到时 -> 冻结
