@@ -179,6 +179,8 @@ def k_clear(buf: wp.array(dtype=wp.int32)):
 def k_move(
     x: wp.array(dtype=wp.float32),
     y: wp.array(dtype=wp.float32),
+    xp: wp.array(dtype=wp.float32),
+    yp: wp.array(dtype=wp.float32),
     heading: wp.array(dtype=wp.float32),
     alive: wp.array(dtype=wp.int32),
     damaged: wp.array(dtype=wp.int32),
@@ -204,33 +206,36 @@ def k_move(
     i = wp.tid()
     if alive[i] != 1 or under_repair[i] == 1:
         return
-    tgt = _nearest_tracked(i, n, tick, x, y, alive, side, tracks)
+    # 目标搜索与位移全部基于 tick 起点快照 xp/yp：本 kernel 内每个线程
+    # 都会写自己的 x[i]/y[i]，直接读其他单位位置会与线程调度竞争
+    # （间歇读到已更新值导致非确定性），故机动段双缓冲
+    tgt = _nearest_tracked(i, n, tick, xp, yp, alive, side, tracks)
     if side[i] == RED:
         # 红方无论是否接触都向当前阶段目标点冲击（接触时身管指向目标的逻辑
         # 在 Mesa 版里随后被 _step_toward 覆盖，最终朝向即目标点方向）
-        dx = ox - x[i]
-        dy = oy - y[i]
+        dx = ox - xp[i]
+        dy = oy - yp[i]
         d = wp.sqrt(dx * dx + dy * dy)
         if d > 0.0:
             heading[i] = wp.atan2(dy, dx)
-            f = _move_factor(heights, passab, gn, sx, sy, water, x[i], y[i])
+            f = _move_factor(heights, passab, gn, sx, sy, water, xp[i], yp[i])
             if damaged[i] == 1:
                 f = f * 0.5
             step = wp.min(speed[i] * f, d)
-            x[i] = wp.clamp(x[i] + step * dx / d, 0.0, bx)
-            y[i] = wp.clamp(y[i] + step * dy / d, 0.0, by)
+            x[i] = wp.clamp(xp[i] + step * dx / d, 0.0, bx)
+            y[i] = wp.clamp(yp[i] + step * dy / d, 0.0, by)
     else:
         if tgt < 0:
             return  # 蓝方未发现目标固守
-        dx = x[tgt] - x[i]
-        dy = y[tgt] - y[i]
+        dx = xp[tgt] - xp[i]
+        dy = yp[tgt] - yp[i]
         d = wp.sqrt(dx * dx + dy * dy)
         heading[i] = wp.atan2(dy, dx)
         if d > weapon[i] * vis:
-            f = _move_factor(heights, passab, gn, sx, sy, water, x[i], y[i])
+            f = _move_factor(heights, passab, gn, sx, sy, water, xp[i], yp[i])
             step = wp.min(speed[i] * f, d)
-            x[i] = wp.clamp(x[i] + step * dx / d, 0.0, bx)
-            y[i] = wp.clamp(y[i] + step * dy / d, 0.0, by)
+            x[i] = wp.clamp(xp[i] + step * dx / d, 0.0, bx)
+            y[i] = wp.clamp(yp[i] + step * dy / d, 0.0, by)
 
 
 @wp.kernel
@@ -341,6 +346,9 @@ class WarpKernel(Kernel):
         # 装备状态列
         self.a_x = arr(s.x, wp.float32)
         self.a_y = arr(s.y, wp.float32)
+        # 机动段 tick 起点位置快照（双缓冲，避免 kernel 内跨线程读写竞争）
+        self.a_xp = wp.zeros_like(self.a_x)
+        self.a_yp = wp.zeros_like(self.a_y)
         self.a_heading = arr(s.heading, wp.float32)
         self.a_alive = arr(s.alive, wp.int32)
         self.a_damaged = arr(s.damaged, wp.int32)
@@ -401,11 +409,15 @@ class WarpKernel(Kernel):
         wp.launch(k_clear, dim=n, inputs=[self.a_kill], **common)
         wp.launch(k_clear, dim=n, inputs=[self.a_dmg], **common)
         ox, oy = (float(v) for v in s.objective)
+        # 机动前快照 tick 起点位置（同一条流，先于 k_move 完成）
+        wp.copy(self.a_xp, self.a_x)
+        wp.copy(self.a_yp, self.a_y)
         wp.launch(
             k_move,
             dim=n,
             inputs=[
-                self.a_x, self.a_y, self.a_heading, self.a_alive, self.a_damaged,
+                self.a_x, self.a_y, self.a_xp, self.a_yp, self.a_heading,
+                self.a_alive, self.a_damaged,
                 self.a_repair, self.a_side, self.a_speed, self.a_weapon, self.a_tracks,
                 self.a_h, self.a_p, s.tick, self.vis, n, self.gn,
                 float(self.terrain.size[0]), float(self.terrain.size[1]),

@@ -683,7 +683,55 @@
   即切片 5（ScopedCapture）的目标
 
 ### 下一步
-- ScopedCapture 图录制压 launch 开销（每 tick 10+ 次 launch）
+- ~~ScopedCapture 图录制压 launch 开销~~（切片 5 完成）
+- host 侧 SimPy 构模/向量化（图捕获后成为主要开销）
 - M3 续：按灵敏度优先级做参数标定、备件库存曲线进回放
 - 写实装备素材：待用户登录 Sketchfab 或提供本机专有素材
+
+## 2026-10-14 | trae + 用户 | M4 切片 5：CUDA 图捕获 + 修复机动内核跨线程竞争
+
+### 完成内容（图捕获）
+- 复用 Warp 官方 `wp.ScopedCapture`/`wp.capture_launch`（example_graph_capture
+  同款），不自研：每步设备序列 9 次 kernel launch + 2 次 grid.build 录制成
+  一个 CUDA graph，tick 2 起每步只 replay 一次
+- 关键约束处理：
+  - **标量参数会在录制时被固化**——每 tick 变化的 `tick` 改为单元素设备
+    数组 `a_tick[0]`，host 每步 assign 当前值，内核按引用读取；k_b_sense/
+    k_b_move/k_b_engage 三个内核签名同步改造
+  - **grid.build 可捕获性**：官方测试无覆盖，先写探针实测——首次 build 会
+    分配 CUB 排序临时缓冲，预热后的 build 可正常进入/重放图，结果正确且
+    重放确定；据此编排"首步直接启动（编译内核+预热分配）→同步→录图"
+  - host 段（SimPy 保障、H2D/D2H、阶段判定）留在图外；数组构造时一次
+    分配、生存期指针不变，满足图重放前提
+- `use_graph` 开关（None=CUDA 自动开/CPU 回退）透传到 run_batch，
+  便于对拍与无 GPU 环境复现
+
+### 重要 Bug 修复：机动内核跨线程位置读写竞争
+- 图/直对拍测试间歇失败（单跑过、全量跑挂），逐 tick 快照取证定位根因：
+  k_move/k_b_move 中每个线程一边写自己的 x[g]/y[g]，一边稠密扫描读取
+  **其他线程正在写**的目标位置 x[k]——读到本 tick 更新前还是更新后的值
+  取决于线程调度。单位接近后（tick≈15）出现 ~0.1m/0.002rad 级轨迹抖动
+- 该竞争自切片 2 起就在 GPU 上存在，此前 GPU/CPU 指标分歧被误记为
+  "f32 噪声"；修复为机动段双缓冲：move 前 wp.copy 位置快照 xp/yp
+  （同一条流有序），目标方位/地形因子/位移全部基于 tick 起点快照，
+  写回 x/y；单环境 k_move 与批量 k_b_move 同步改造、语义一致
+
+### 正确性
+- 全套 35 测试全绿、ruff 全绿；新增 2 个 GPU 测试（无 CUDA 自动 skip）：
+  图重放 vs 直接启动 E=4 五项指标逐位相等、per-env 参数批量逐位相等
+- 8 轮重复运行：直接/直接、图/图、图/直接全部逐位一致；单环境 GPU 内核
+  6 轮逐位一致；E=448 旅级图/直 448×5 指标 max diff 全 0
+- 修复后确定性语义变化使指标均值小幅移动（如 attrition_blue
+  0.826→0.843），蒙特卡洛统计现在建立在可复现轨迹之上
+
+### 性能（旅级 167 单位，E=448，warm 后 best of 3）
+- 图重放 4.22s（9.4 ms/复制） vs 直接启动 4.82s（10.8 ms/复制），约 12%
+- 收益受限于每 tick host 段（448 个 SimPy 环境 advance + 整批 H2D/D2H +
+  numpy 阶段判定），launch 开销已不是大头；下一步优化指向 host 侧
+
+### 下一步
+- host 侧 SimPy 环境构建复用/向量化；更大 batch_size 显存实测
+- M3 续：参数标定、备件库存曲线进回放
+- 写实装备素材：待用户登录 Sketchfab 或提供本机专有素材
+- 网络恢复后补推 c5709aa（切片 4）与本切片提交
 

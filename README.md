@@ -17,8 +17,11 @@
   复制可整体平铺上 GPU（全量 448 点对拍 max diff 0.0，旅级 1792 次 GPU 45s）；
   HashGrid 邻域查询替换 sense/engage 的 O(n²) 扫描（蓝方追击因 C2 无界航迹
   保留稠密；当前规模吞吐持平，复杂度降为 O(n·k)）；
+  切片 5 CUDA 图捕获：每步设备序列（9 launch + 2 次 grid.build）录制成图
+  replay（tick 经单元素设备数组传入），E=448 10.8→9.4ms/复制（约 12%）；
+  修复机动内核跨线程位置读写竞争（双缓冲快照），GPU 轨迹逐位可复现；
   SimPy 保障留 CPU tick 边界同步；
-  待办：CUDA 图捕获压 launch 开销
+  待办：host 侧 SimPy 构模/向量化（当前主要开销）
 
 ## 快速开始
 

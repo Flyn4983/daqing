@@ -18,7 +18,11 @@
   半径查询无法覆盖；
 - 保障（SimPy）仍在 CPU：每环境一个 SustainmentModel，状态列是批量 host
   大数组的切片视图，每 tick 一次整批 H2D/D2H（不为每环境单独传输）；
-- 批量模式不产出逐射事件日志（回放用单环境 WarpKernel），只收最终指标。
+- 批量模式不产出逐射事件日志（回放用单环境 WarpKernel），只收最终指标；
+- CUDA 后端默认启用图捕获（切片 5）：每步设备序列录制成一个 CUDA graph
+  反复 replay，压 9 次 launch + 2 次 grid.build 的启动开销；tick 经单元素
+  设备数组传入（标量会在录制时被固化），host 保障/阶段段留在图外，
+  CPU 后端自动回退直接启动。
 """
 
 from __future__ import annotations
@@ -154,7 +158,7 @@ def k_b_sense(
     tracks: wp.array(dtype=wp.int32),
     active: wp.array(dtype=wp.int32),
     grid: wp.uint64,
-    tick: int,
+    tickarr: wp.array(dtype=wp.int32),
     vis: wp.array(dtype=wp.float32),
     n: int,
     stride: float,
@@ -165,6 +169,9 @@ def k_b_sense(
     i = g - env * n
     if active[env] == 0 or alive[g] != 1:
         return
+    # tick 走设备数组：CUDA 图重放时标量参数被固化为录制值，
+    # 数组按引用捕获，每步 replay 前由 host assign 当前 tick
+    tick = tickarr[0]
     si = side[g]
     reach = sensor[g] * vis[env]
     qx = x[g] + float(env) * stride
@@ -197,6 +204,8 @@ def k_b_clear(buf: wp.array(dtype=wp.int32)):
 def k_b_move(
     x: wp.array(dtype=wp.float32),
     y: wp.array(dtype=wp.float32),
+    xp: wp.array(dtype=wp.float32),
+    yp: wp.array(dtype=wp.float32),
     heading: wp.array(dtype=wp.float32),
     alive: wp.array(dtype=wp.int32),
     damaged: wp.array(dtype=wp.int32),
@@ -210,7 +219,7 @@ def k_b_move(
     active: wp.array(dtype=wp.int32),
     oxs: wp.array(dtype=wp.float32),
     oys: wp.array(dtype=wp.float32),
-    tick: int,
+    tickarr: wp.array(dtype=wp.int32),
     vis: wp.array(dtype=wp.float32),
     n: int,
     gn: int,
@@ -225,36 +234,38 @@ def k_b_move(
     i = g - env * n
     if active[env] == 0 or alive[g] != 1 or under_repair[g] == 1:
         return
+    tick = tickarr[0]
     base = env * n
     if side[g] == RED:
-        dx = oxs[env] - x[g]
-        dy = oys[env] - y[g]
+        dx = oxs[env] - xp[g]
+        dy = oys[env] - yp[g]
         d = wp.sqrt(dx * dx + dy * dy)
         if d > 0.0:
             heading[g] = wp.atan2(dy, dx)
-            f = _move_factor(heights, passab, gn, sx, sy, water, x[g], y[g])
+            f = _move_factor(heights, passab, gn, sx, sy, water, xp[g], yp[g])
             if damaged[g] == 1:
                 f = f * 0.5
             step = wp.min(speed[g] * f, d)
-            x[g] = wp.clamp(x[g] + step * dx / d, 0.0, bx)
-            y[g] = wp.clamp(y[g] + step * dy / d, 0.0, by)
+            x[g] = wp.clamp(xp[g] + step * dx / d, 0.0, bx)
+            y[g] = wp.clamp(yp[g] + step * dy / d, 0.0, by)
     else:
+        # 目标方位基于 tick 起点快照（xp/yp），与本 kernel 的位置写不竞争；
         # 追击转向需要全局最近航迹（C2 共享下无距离上界），保留稠密
         tgt = _b_nearest_dense(
-            env, i, n, tick, base, x, y, alive, side, tracks
+            env, i, n, tick, base, xp, yp, alive, side, tracks
         )
         if tgt < 0:
             return
         k = base + tgt
-        dx = x[k] - x[g]
-        dy = y[k] - y[g]
+        dx = xp[k] - xp[g]
+        dy = yp[k] - yp[g]
         d = wp.sqrt(dx * dx + dy * dy)
         heading[g] = wp.atan2(dy, dx)
         if d > weapon[g] * vis[env]:
-            f = _move_factor(heights, passab, gn, sx, sy, water, x[g], y[g])
+            f = _move_factor(heights, passab, gn, sx, sy, water, xp[g], yp[g])
             step = wp.min(speed[g] * f, d)
-            x[g] = wp.clamp(x[g] + step * dx / d, 0.0, bx)
-            y[g] = wp.clamp(y[g] + step * dy / d, 0.0, by)
+            x[g] = wp.clamp(xp[g] + step * dx / d, 0.0, bx)
+            y[g] = wp.clamp(yp[g] + step * dy / d, 0.0, by)
 
 
 @wp.kernel
@@ -272,7 +283,7 @@ def k_b_engage(
     want_kill: wp.array(dtype=wp.int32),
     want_dmg: wp.array(dtype=wp.int32),
     active: wp.array(dtype=wp.int32),
-    tick: int,
+    tickarr: wp.array(dtype=wp.int32),
     vis: wp.array(dtype=wp.float32),
     n: int,
     seed0: wp.array(dtype=wp.int32),
@@ -289,6 +300,7 @@ def k_b_engage(
         or cooldown[g] > 0
     ):
         return
+    tick = tickarr[0]
     base = env * n
     # 只需射程内最近航迹：全局最近在射程外则不可能开火，网格半径=射程
     wrange = weapon[g] * vis[env]
@@ -343,9 +355,16 @@ class WarpBatchKernel:
         seeds: list[int],
         device: str | None = None,
         verbose: bool = False,
+        use_graph: bool | None = None,
     ) -> None:
         """scenarios 可为单个想定（E 个相同复制）或每环境一个想定
-        （灵敏度设计点；要求各想定编制规模 n 与地形一致，参数/能见度可不同）。"""
+        （灵敏度设计点；要求各想定编制规模 n 与地形一致，参数/能见度可不同）。
+
+        use_graph：CUDA 图捕获重放（每步 9 次 kernel launch + 2 次
+        grid.build 录制成一个图，压 launch 开销）；None 时 CUDA 后端自动
+        开启、CPU 后端关闭。首步直接启动以编译内核并预热 grid 内部分配，
+        随后录制一次、每 tick replay。
+        """
         if isinstance(scenarios, Scenario):
             scenarios = [scenarios] * len(seeds)
         else:
@@ -356,6 +375,8 @@ class WarpBatchKernel:
         assert len(self.scs) == self.E, "想定数必须与种子数一致"
         self.dev = resolve_device(device)
         self.verbose = verbose
+        self.use_graph = self.dev.is_cuda if use_graph is None else use_graph
+        self._graph = None  # 首个 CUDA tick 之后录制
 
         # host 镜像：每环境一个 SimState（供 SimPy 与最终指标），其关键列
         # 指向批量大数组的切片视图，零拷贝
@@ -404,6 +425,9 @@ class WarpBatchKernel:
 
         self.a_x = wp.array(self.h_x, dtype=wp.float32, device=d)
         self.a_y = wp.array(self.h_y, dtype=wp.float32, device=d)
+        # 机动段 tick 起点位置快照（双缓冲，避免 kernel 内跨线程读写竞争）
+        self.a_xp = wp.zeros_like(self.a_x)
+        self.a_yp = wp.zeros_like(self.a_y)
         self.a_heading = wp.array(
             np.concatenate([np.asarray(st.heading, dtype=np.float32) for st in self.states]),
             dtype=wp.float32, device=d,
@@ -431,6 +455,8 @@ class WarpBatchKernel:
         self.a_tracks = wp.zeros(E * 2 * n, dtype=wp.int32, device=d)
         self.a_kill = wp.zeros(E * n, dtype=wp.int32, device=d)
         self.a_dmg = wp.zeros(E * n, dtype=wp.int32, device=d)
+        # 当前 tick 的设备侧单元素数组：CUDA 图按引用捕获，重放读新值
+        self.a_tick = wp.zeros(1, dtype=wp.int32, device=d)
         self.a_active = wp.array(np.ones(E, dtype=np.int32), dtype=wp.int32, device=d)
         # 每环境阶段序列（灵敏度只改参数，阶段一致；结构上允许不同）
         self.phase_lists = [sc.mission.phase_list for sc in self.scs]
@@ -487,7 +513,7 @@ class WarpBatchKernel:
         return int(self._host_active.sum())
 
     def _step(self) -> None:
-        E, n, d = self.E, self.n, self.dev
+        n, d = self.n, self.dev
         self.tick += 1
         tick = self.tick
 
@@ -497,60 +523,21 @@ class WarpBatchKernel:
                 sust.advance(tick)
         self._push_repair()
 
-        common = dict(device=d)
-        wp.launch(k_b_cooldown, dim=E * n,
-                  inputs=[self.a_cd, self.a_alive, self.a_active, n], **common)
-        # 重建空间哈希网格（坐标平移隔离各环境）
-        wp.launch(
-            k_b_gridpoints, dim=E * n,
-            inputs=[self.a_pts, self.a_x, self.a_y, n, float(self.stride)],
-            **common,
-        )
-        self.grid.build(self.a_pts, float(self.cell))
-        wp.launch(
-            k_b_sense, dim=E * n,
-            inputs=[self.a_x, self.a_y, self.a_alive, self.a_side, self.a_sensor,
-                    self.a_detect, self.a_ttl, self.a_tracks, self.a_active,
-                    self.grid.id, tick, self.a_vis, n, float(self.stride),
-                    self.a_seed0],
-            **common,
-        )
-        wp.launch(k_b_clear, dim=E * n, inputs=[self.a_kill], **common)
-        wp.launch(k_b_clear, dim=E * n, inputs=[self.a_dmg], **common)
-        wp.launch(
-            k_b_move, dim=E * n,
-            inputs=[self.a_x, self.a_y, self.a_heading, self.a_alive, self.a_damaged,
-                    self.a_repair, self.a_side, self.a_speed, self.a_weapon, self.a_tracks,
-                    self.a_h, self.a_p, self.a_active, self.a_ox, self.a_oy,
-                    tick, self.a_vis, n, self.gn,
-                    float(self.terrain.size[0]), float(self.terrain.size[1]),
-                    float(self.bound[0]), float(self.bound[1]),
-                    float(self.terrain.water_level)],
-            **common,
-        )
-        # engage 在 move 之后：单位每 tick 可机动一个步长，必须用机动后
-        # 位置重建网格，否则新进入射程的目标还留在旧格里被漏掉
-        wp.launch(
-            k_b_gridpoints, dim=E * n,
-            inputs=[self.a_pts, self.a_x, self.a_y, n, float(self.stride)],
-            **common,
-        )
-        self.grid.build(self.a_pts, float(self.cell))
-        wp.launch(
-            k_b_engage, dim=E * n,
-            inputs=[self.a_x, self.a_y, self.a_alive, self.a_repair, self.a_side, self.a_cd,
-                    self.a_pk, self.a_weapon, self.a_reload, self.a_tracks,
-                    self.a_kill, self.a_dmg, self.a_active,
-                    tick, self.a_vis, n, self.a_seed0,
-                    self.grid.id, float(self.stride)],
-            **common,
-        )
-        wp.launch(
-            k_b_apply, dim=E * n,
-            inputs=[self.a_alive, self.a_damaged, self.a_repair,
-                    self.a_kill, self.a_dmg, self.a_active, n],
-            **common,
-        )
+        # tick 先写入设备数组：直接启动与图重放两条路径的内核都读它
+        self.a_tick.assign(np.array([tick], dtype=np.int32))
+        if self.use_graph:
+            if self._graph is None:
+                # 首步直接启动：触发内核编译与 grid.build 的内部分配预热，
+                # 随后把同一条设备序列录制成图（录制本身不执行、不改状态）
+                self._gpu_tick()
+                wp.synchronize_device(d)
+                with wp.ScopedCapture(device=d, force_module_load=True) as cap:
+                    self._gpu_tick()
+                self._graph = cap.graph
+            else:
+                wp.capture_launch(self._graph)
+        else:
+            self._gpu_tick()
         wp.synchronize_device(d)
 
         # 2) 设备 -> host 批量镜像
@@ -569,6 +556,72 @@ class WarpBatchKernel:
 
         # 4) 阶段推进（向量化）与 active 更新
         self._update_phases()
+
+    def _gpu_tick(self) -> None:
+        """一个仿真步的纯设备序列：9 次 kernel launch + 2 次 grid.build。
+
+        直接启动与 CUDA 图录制共用本方法；所有数组在构造时一次分配、
+        生存期内指针不变，tick 经 a_tick 单元素数组传入，故可安全重放。
+        """
+        E, n, d = self.E, self.n, self.dev
+        common = dict(device=d)
+        wp.launch(k_b_cooldown, dim=E * n,
+                  inputs=[self.a_cd, self.a_alive, self.a_active, n], **common)
+        # 重建空间哈希网格（坐标平移隔离各环境）
+        wp.launch(
+            k_b_gridpoints, dim=E * n,
+            inputs=[self.a_pts, self.a_x, self.a_y, n, float(self.stride)],
+            **common,
+        )
+        self.grid.build(self.a_pts, float(self.cell))
+        wp.launch(
+            k_b_sense, dim=E * n,
+            inputs=[self.a_x, self.a_y, self.a_alive, self.a_side, self.a_sensor,
+                    self.a_detect, self.a_ttl, self.a_tracks, self.a_active,
+                    self.grid.id, self.a_tick, self.a_vis, n, float(self.stride),
+                    self.a_seed0],
+            **common,
+        )
+        wp.launch(k_b_clear, dim=E * n, inputs=[self.a_kill], **common)
+        wp.launch(k_b_clear, dim=E * n, inputs=[self.a_dmg], **common)
+        # 机动前快照 tick 起点位置（同流有序，避免 k_b_move 跨线程读竞争）
+        wp.copy(self.a_xp, self.a_x)
+        wp.copy(self.a_yp, self.a_y)
+        wp.launch(
+            k_b_move, dim=E * n,
+            inputs=[self.a_x, self.a_y, self.a_xp, self.a_yp, self.a_heading,
+                    self.a_alive, self.a_damaged,
+                    self.a_repair, self.a_side, self.a_speed, self.a_weapon, self.a_tracks,
+                    self.a_h, self.a_p, self.a_active, self.a_ox, self.a_oy,
+                    self.a_tick, self.a_vis, n, self.gn,
+                    float(self.terrain.size[0]), float(self.terrain.size[1]),
+                    float(self.bound[0]), float(self.bound[1]),
+                    float(self.terrain.water_level)],
+            **common,
+        )
+        # engage 在 move 之后：单位每 tick 可机动一个步长，必须用机动后
+        # 位置重建网格，否则新进入射程的目标还留在旧格里被漏掉
+        wp.launch(
+            k_b_gridpoints, dim=E * n,
+            inputs=[self.a_pts, self.a_x, self.a_y, n, float(self.stride)],
+            **common,
+        )
+        self.grid.build(self.a_pts, float(self.cell))
+        wp.launch(
+            k_b_engage, dim=E * n,
+            inputs=[self.a_x, self.a_y, self.a_alive, self.a_repair, self.a_side, self.a_cd,
+                    self.a_pk, self.a_weapon, self.a_reload, self.a_tracks,
+                    self.a_kill, self.a_dmg, self.a_active,
+                    self.a_tick, self.a_vis, n, self.a_seed0,
+                    self.grid.id, float(self.stride)],
+            **common,
+        )
+        wp.launch(
+            k_b_apply, dim=E * n,
+            inputs=[self.a_alive, self.a_damaged, self.a_repair,
+                    self.a_kill, self.a_dmg, self.a_active, n],
+            **common,
+        )
 
     # ---- host 镜像/阶段 ----
 
@@ -662,14 +715,17 @@ def run_batch(
     seeds: list[int],
     device: str | None = None,
     verbose: bool = False,
+    use_graph: bool | None = None,
 ) -> list[dict]:
     """设备端批量运行。
 
     - 同一想定多次复制：传单个 Scenario + seeds 列表；
     - 灵敏度设计点批量：传与 seeds 等长的想定列表（每环境一个扰动后想定）。
-    返回与 envs 同序的指标字典列表。
+    返回与 envs 同序的指标字典列表。use_graph 见 WarpBatchKernel。
     """
-    return WarpBatchKernel(scenarios, seeds, device=device, verbose=verbose).run()
+    return WarpBatchKernel(
+        scenarios, seeds, device=device, verbose=verbose, use_graph=use_graph
+    ).run()
 
 
 def run_replications_batch(

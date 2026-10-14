@@ -11,12 +11,25 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 import pytest
+import warp as wp
 
 from brigsim.combat.mesa_kernel import MesaKernel
 from brigsim.combat.warp_batch import run_batch
 from brigsim.combat.warp_kernel import WarpKernel
 from brigsim.data.provider import YamlFileProvider
 from brigsim.experiment.runner import run_once
+
+
+def _cuda_available() -> bool:
+    try:
+        return wp.get_device("cuda").is_cuda
+    except Exception:
+        return False
+
+
+cuda_required = pytest.mark.skipif(
+    not _cuda_available(), reason="需要 CUDA 设备"
+)
 
 
 @pytest.fixture(scope="module")
@@ -124,3 +137,48 @@ def test_batch_sensitivity_matches_single_per_env_params(scenario):
     )
     assert y_single.shape == y_batch.shape
     assert np.allclose(y_single, y_batch, atol=1e-9)
+
+
+@cuda_required
+def test_cuda_graph_replay_matches_direct_launch(scenario):
+    """CUDA 图重放与直接启动同种子必须逐位一致（tick 数组化、图固化参数的硬保证）。"""
+    base = 9300
+    E = 4
+    direct = run_batch(scenario, [base + e for e in range(E)],
+                       device="cuda", use_graph=False)
+    graph = run_batch(scenario, [base + e for e in range(E)],
+                      device="cuda", use_graph=True)
+    for e in range(E):
+        assert graph[e]["success"] == direct[e]["success"]
+        for key in ("attrition_red", "attrition_blue", "readiness_red", "readiness_blue"):
+            assert abs(graph[e][key] - direct[e][key]) < 1e-9, (e, key)
+
+
+@cuda_required
+def test_cuda_graph_per_env_matches_direct(scenario):
+    """per-env 参数批量（灵敏度路径）下图重放与直接启动逐位一致。"""
+    X = np.array(
+        [
+            [1.2, 0.8, 1.1, 0.5, 0.9],
+            [0.7, 1.3, 0.9, 2.0, 0.6],
+            [1.0, 1.0, 1.4, 1.0, 1.0],
+        ]
+    )
+    reps = 2
+    base = 4242
+    y_direct = _batch_points_cuda(scenario, X, reps, base, use_graph=False)
+    y_graph = _batch_points_cuda(scenario, X, reps, base, use_graph=True)
+    assert np.allclose(y_graph, y_direct, atol=1e-9)
+
+
+def _batch_points_cuda(scenario, X, reps, base, use_graph):
+    """与 sensitivity._evaluate_points_batch 同结构，但可切换图路径。"""
+    from brigsim.experiment import sensitivity as sens
+
+    P = X.shape[0]
+    seeds = [base + r for r in range(reps)]
+    scs = [sens.apply_point(scenario, X[i // reps]) for i in range(P * reps)]
+    sd = [seeds[i % reps] for i in range(P * reps)]
+    rows = run_batch(scs, sd, device="cuda", use_graph=use_graph)
+    V = np.array([[m[name] for name in sens.METRICS] for m in rows])
+    return V.reshape(P, reps, len(sens.METRICS)).mean(axis=1)
