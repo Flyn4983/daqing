@@ -82,6 +82,9 @@ class SustainmentSpec(BaseModel):
     战斗受损与自然故障共用抢修队列；战毁（killed）不可修。
     spare_stock=None 表示备件无限（不启用供应链约束）；否则每次维修消耗
     1 件备件，库存耗尽后维修挂起，等待周期性补给投送。
+    repair_station 给出各方修理所 [x, y]（M3 后送物理位移）：在修单位
+    向本方修理所机动（后送脱离接触），修复后按教条再前出；None 时在修
+    单位原地不动（旧行为）。
     """
 
     repair_teams: dict[str, int] = {"red": 1, "blue": 1}
@@ -92,6 +95,8 @@ class SustainmentSpec(BaseModel):
     # 周期补给：每隔 interval tick 各方收到 qty 件备件
     resupply_interval_ticks: int = Field(40, gt=0)
     resupply_qty: int = Field(4, ge=1)
+    # M3 修理所位置（各方 [x_m, y_m]）；None=在修单位原地不动
+    repair_station: dict[str, list[float]] | None = None
 
 
 class PlatformTypeSpec(BaseModel):

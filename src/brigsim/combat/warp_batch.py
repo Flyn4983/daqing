@@ -138,8 +138,10 @@ def _b_nearest_grid(
 
 @wp.kernel
 def k_b_cooldown(
-    cd: wp.array(dtype=wp.int32), alive: wp.array(dtype=wp.int32),
-    active: wp.array(dtype=wp.int32), n: int,
+    cd: wp.array(dtype=wp.int32),
+    alive: wp.array(dtype=wp.int32),
+    active: wp.array(dtype=wp.int32),
+    n: int,
 ):
     g = wp.tid()
     env = g / n
@@ -222,6 +224,7 @@ def k_b_move(
     active: wp.array(dtype=wp.int32),
     oxs: wp.array(dtype=wp.float32),
     oys: wp.array(dtype=wp.float32),
+    stations: wp.array(dtype=wp.vec2),
     tickarr: wp.array(dtype=wp.int32),
     vis: wp.array(dtype=wp.float32),
     n: int,
@@ -235,10 +238,25 @@ def k_b_move(
     g = wp.tid()
     env = g / n
     i = g - env * n
-    if active[env] == 0 or alive[g] != 1 or under_repair[g] == 1:
+    if active[env] == 0 or alive[g] != 1:
         return
     tick = tickarr[0]
     base = env * n
+    if under_repair[g] == 1:
+        # 在修后送：朝本方修理所机动；未配置（x<0 哨兵）则原地不动
+        stn = stations[env * 2 + side[g]]
+        if stn[0] < 0.0:
+            return
+        dx = stn[0] - xp[g]
+        dy = stn[1] - yp[g]
+        d = wp.sqrt(dx * dx + dy * dy)
+        if d > 0.0:
+            heading[g] = wp.atan2(dy, dx)
+            f = _move_factor(heights, passab, gn, sx, sy, water, xp[g], yp[g]) * 0.5
+            step = wp.min(speed[g] * f, d)
+            x[g] = wp.clamp(xp[g] + step * dx / d, 0.0, bx)
+            y[g] = wp.clamp(yp[g] + step * dy / d, 0.0, by)
+        return
     if side[g] == RED:
         dx = oxs[env] - xp[g]
         dy = oys[env] - yp[g]
@@ -254,9 +272,7 @@ def k_b_move(
     else:
         # 目标方位基于 tick 起点快照（xp/yp），与本 kernel 的位置写不竞争；
         # 追击转向需要全局最近航迹（C2 共享下无距离上界），保留稠密
-        tgt = _b_nearest_dense(
-            env, i, n, tick, base, xp, yp, alive, under_repair, side, tracks
-        )
+        tgt = _b_nearest_dense(env, i, n, tick, base, xp, yp, alive, under_repair, side, tracks)
         if tgt < 0:
             return
         k = base + tgt
@@ -296,20 +312,27 @@ def k_b_engage(
     g = wp.tid()
     env = g / n
     i = g - env * n
-    if (
-        active[env] == 0
-        or alive[g] != 1
-        or under_repair[g] == 1
-        or cooldown[g] > 0
-    ):
+    if active[env] == 0 or alive[g] != 1 or under_repair[g] == 1 or cooldown[g] > 0:
         return
     tick = tickarr[0]
     base = env * n
     # 只需射程内最近航迹：全局最近在射程外则不可能开火，网格半径=射程
     wrange = weapon[g] * vis[env]
     tgt = _b_nearest_grid(
-        grid, env, i, n, tick, base, x, y, alive, under_repair,
-        side, tracks, stride, wrange,
+        grid,
+        env,
+        i,
+        n,
+        tick,
+        base,
+        x,
+        y,
+        alive,
+        under_repair,
+        side,
+        tracks,
+        stride,
+        wrange,
     )
     if tgt < 0:
         return
@@ -434,7 +457,8 @@ class WarpBatchKernel:
         self.a_yp = wp.zeros_like(self.a_y)
         self.a_heading = wp.array(
             np.concatenate([np.asarray(st.heading, dtype=np.float32) for st in self.states]),
-            dtype=wp.float32, device=d,
+            dtype=wp.float32,
+            device=d,
         )
         self.a_alive = wp.array(self.h_alive, dtype=wp.int32, device=d)
         self.a_damaged = wp.array(self.h_damaged, dtype=wp.int32, device=d)
@@ -466,14 +490,19 @@ class WarpBatchKernel:
         self.phase_lists = [sc.mission.phase_list for sc in self.scs]
         self.phase_idx = np.zeros(E, dtype=np.int32)
         self.accomplished = np.zeros(E, dtype=bool)
-        self.h_ox = np.asarray(
-            [pl[0].objective[0] for pl in self.phase_lists], dtype=np.float32
-        )
-        self.h_oy = np.asarray(
-            [pl[0].objective[1] for pl in self.phase_lists], dtype=np.float32
-        )
+        self.h_ox = np.asarray([pl[0].objective[0] for pl in self.phase_lists], dtype=np.float32)
+        self.h_oy = np.asarray([pl[0].objective[1] for pl in self.phase_lists], dtype=np.float32)
         self.a_ox = wp.array(self.h_ox, dtype=wp.float32, device=d)
         self.a_oy = wp.array(self.h_oy, dtype=wp.float32, device=d)
+        # 每环境每方修理所位置（在修后送目标，长度 2E）；
+        # 未配置用 (-1,-1) 哨兵（在修单位原地不动）
+        h_stn = np.full((E * 2, 2), -1.0, dtype=np.float32)
+        for e, sc_e in enumerate(self.scs):
+            rstation = sc_e.sustainment.repair_station
+            if rstation:
+                h_stn[e * 2 + 0] = rstation["red"]
+                h_stn[e * 2 + 1] = rstation["blue"]
+        self.a_stn = wp.array(h_stn, dtype=wp.vec2, device=d)
 
         from ..kernel.terrain import HeightField
 
@@ -584,21 +613,37 @@ class WarpBatchKernel:
         """
         E, n, d = self.E, self.n, self.dev
         common = dict(device=d)
-        wp.launch(k_b_cooldown, dim=E * n,
-                  inputs=[self.a_cd, self.a_alive, self.a_active, n], **common)
+        wp.launch(
+            k_b_cooldown, dim=E * n, inputs=[self.a_cd, self.a_alive, self.a_active, n], **common
+        )
         # 重建空间哈希网格（坐标平移隔离各环境）
         wp.launch(
-            k_b_gridpoints, dim=E * n,
+            k_b_gridpoints,
+            dim=E * n,
             inputs=[self.a_pts, self.a_x, self.a_y, n, float(self.stride)],
             **common,
         )
         self.grid.build(self.a_pts, float(self.cell))
         wp.launch(
-            k_b_sense, dim=E * n,
-            inputs=[self.a_x, self.a_y, self.a_alive, self.a_side, self.a_sensor,
-                    self.a_detect, self.a_ttl, self.a_tracks, self.a_active,
-                    self.grid.id, self.a_tick, self.a_vis, n, float(self.stride),
-                    self.a_seed0],
+            k_b_sense,
+            dim=E * n,
+            inputs=[
+                self.a_x,
+                self.a_y,
+                self.a_alive,
+                self.a_side,
+                self.a_sensor,
+                self.a_detect,
+                self.a_ttl,
+                self.a_tracks,
+                self.a_active,
+                self.grid.id,
+                self.a_tick,
+                self.a_vis,
+                n,
+                float(self.stride),
+                self.a_seed0,
+            ],
             **common,
         )
         wp.launch(k_b_clear, dim=E * n, inputs=[self.a_kill], **common)
@@ -607,38 +652,86 @@ class WarpBatchKernel:
         wp.copy(self.a_xp, self.a_x)
         wp.copy(self.a_yp, self.a_y)
         wp.launch(
-            k_b_move, dim=E * n,
-            inputs=[self.a_x, self.a_y, self.a_xp, self.a_yp, self.a_heading,
-                    self.a_alive, self.a_damaged,
-                    self.a_repair, self.a_side, self.a_speed, self.a_weapon, self.a_tracks,
-                    self.a_h, self.a_p, self.a_active, self.a_ox, self.a_oy,
-                    self.a_tick, self.a_vis, n, self.gn,
-                    float(self.terrain.size[0]), float(self.terrain.size[1]),
-                    float(self.bound[0]), float(self.bound[1]),
-                    float(self.terrain.water_level)],
+            k_b_move,
+            dim=E * n,
+            inputs=[
+                self.a_x,
+                self.a_y,
+                self.a_xp,
+                self.a_yp,
+                self.a_heading,
+                self.a_alive,
+                self.a_damaged,
+                self.a_repair,
+                self.a_side,
+                self.a_speed,
+                self.a_weapon,
+                self.a_tracks,
+                self.a_h,
+                self.a_p,
+                self.a_active,
+                self.a_ox,
+                self.a_oy,
+                self.a_stn,
+                self.a_tick,
+                self.a_vis,
+                n,
+                self.gn,
+                float(self.terrain.size[0]),
+                float(self.terrain.size[1]),
+                float(self.bound[0]),
+                float(self.bound[1]),
+                float(self.terrain.water_level),
+            ],
             **common,
         )
         # engage 在 move 之后：单位每 tick 可机动一个步长，必须用机动后
         # 位置重建网格，否则新进入射程的目标还留在旧格里被漏掉
         wp.launch(
-            k_b_gridpoints, dim=E * n,
+            k_b_gridpoints,
+            dim=E * n,
             inputs=[self.a_pts, self.a_x, self.a_y, n, float(self.stride)],
             **common,
         )
         self.grid.build(self.a_pts, float(self.cell))
         wp.launch(
-            k_b_engage, dim=E * n,
-            inputs=[self.a_x, self.a_y, self.a_alive, self.a_repair, self.a_side, self.a_cd,
-                    self.a_pk, self.a_weapon, self.a_reload, self.a_tracks,
-                    self.a_kill, self.a_dmg, self.a_active,
-                    self.a_tick, self.a_vis, n, self.a_seed0,
-                    self.grid.id, float(self.stride)],
+            k_b_engage,
+            dim=E * n,
+            inputs=[
+                self.a_x,
+                self.a_y,
+                self.a_alive,
+                self.a_repair,
+                self.a_side,
+                self.a_cd,
+                self.a_pk,
+                self.a_weapon,
+                self.a_reload,
+                self.a_tracks,
+                self.a_kill,
+                self.a_dmg,
+                self.a_active,
+                self.a_tick,
+                self.a_vis,
+                n,
+                self.a_seed0,
+                self.grid.id,
+                float(self.stride),
+            ],
             **common,
         )
         wp.launch(
-            k_b_apply, dim=E * n,
-            inputs=[self.a_alive, self.a_damaged, self.a_repair,
-                    self.a_kill, self.a_dmg, self.a_active, n],
+            k_b_apply,
+            dim=E * n,
+            inputs=[
+                self.a_alive,
+                self.a_damaged,
+                self.a_repair,
+                self.a_kill,
+                self.a_dmg,
+                self.a_active,
+                n,
+            ],
             **common,
         )
 
@@ -700,8 +793,7 @@ class WarpBatchKernel:
 
         def cur_radius() -> np.ndarray:
             return np.array(
-                [self.phase_lists[e][int(self.phase_idx[e])].success_radius_m
-                 for e in range(E)]
+                [self.phase_lists[e][int(self.phase_idx[e])].success_radius_m for e in range(E)]
             )
 
         # 一个 tick 理论上可连续跨多个阶段，循环推进到稳定（阶段数很少）
@@ -716,9 +808,7 @@ class WarpBatchKernel:
             dmin = red_min_dist(ox, oy)
 
         # 末段达成（红方被歼的环境 dmin=inf，不会误判）
-        self.accomplished[
-            active_now & (self.phase_idx == last) & (dmin <= cur_radius())
-        ] = True
+        self.accomplished[active_now & (self.phase_idx == last) & (dmin <= cur_radius())] = True
 
         # 各环境 SimState 记账（冻结环境不动）
         for e in range(E):
@@ -726,10 +816,8 @@ class WarpBatchKernel:
                 continue
             st = self.states[e]
             st.phase = int(self.phase_idx[e])
-            st.objective = np.asarray(
-                self.phase_lists[e][int(self.phase_idx[e])].objective
-            )
-            st.alive = self.h_alive[e * n:(e + 1) * n].astype(bool)
+            st.objective = np.asarray(self.phase_lists[e][int(self.phase_idx[e])].objective)
+            st.alive = self.h_alive[e * n : (e + 1) * n].astype(bool)
 
         # 末段达成 / 红方被歼 / 到时 -> 冻结
         active = (self.tick < self.duration) & red_any & (~self.accomplished)
@@ -742,12 +830,10 @@ class WarpBatchKernel:
     def _collect_metrics(self) -> list[dict]:
         rows = []
         for e, st in enumerate(self.states):
-            st.alive = self.h_alive[e * self.n:(e + 1) * self.n].astype(bool)
-            st.damaged = self.h_damaged[e * self.n:(e + 1) * self.n].astype(bool)
+            st.alive = self.h_alive[e * self.n : (e + 1) * self.n].astype(bool)
+            st.damaged = self.h_damaged[e * self.n : (e + 1) * self.n].astype(bool)
             rows.append(
-                per_run_metrics(
-                    st, bool(self.accomplished[e]), self._sustain[e].supply_stats()
-                )
+                per_run_metrics(st, bool(self.accomplished[e]), self._sustain[e].supply_stats())
             )
         return rows
 

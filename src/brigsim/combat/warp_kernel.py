@@ -39,8 +39,9 @@ SENSE_KEY_OFF = 1 << 28
 
 
 @wp.func
-def _grid_at(grid: wp.array(dtype=wp.float32), gn: int, sx: float, sy: float,
-             gx: float, gy: float) -> float:
+def _grid_at(
+    grid: wp.array(dtype=wp.float32), gn: int, sx: float, sy: float, gx: float, gy: float
+) -> float:
     fx = wp.clamp(gx / sx, 0.0, 1.0) * float(gn - 1)
     fy = wp.clamp(gy / sy, 0.0, 1.0) * float(gn - 1)
     i0 = int(wp.floor(fx))
@@ -206,13 +207,29 @@ def k_move(
     water: float,
     ox: float,
     oy: float,
+    stations: wp.array(dtype=wp.vec2),
 ):
     i = wp.tid()
-    if alive[i] != 1 or under_repair[i] == 1:
+    if alive[i] != 1:
         return
     # 目标搜索与位移全部基于 tick 起点快照 xp/yp：本 kernel 内每个线程
     # 都会写自己的 x[i]/y[i]，直接读其他单位位置会与线程调度竞争
     # （间歇读到已更新值导致非确定性），故机动段双缓冲
+    if under_repair[i] == 1:
+        # 在修后送：朝本方修理所机动；未配置（x<0 哨兵）则原地不动
+        stn = stations[side[i]]
+        if stn[0] < 0.0:
+            return
+        dx = stn[0] - xp[i]
+        dy = stn[1] - yp[i]
+        d = wp.sqrt(dx * dx + dy * dy)
+        if d > 0.0:
+            heading[i] = wp.atan2(dy, dx)
+            f = _move_factor(heights, passab, gn, sx, sy, water, xp[i], yp[i]) * 0.5
+            step = wp.min(speed[i] * f, d)
+            x[i] = wp.clamp(xp[i] + step * dx / d, 0.0, bx)
+            y[i] = wp.clamp(yp[i] + step * dy / d, 0.0, by)
+        return
     tgt = _nearest_tracked(i, n, tick, xp, yp, alive, under_repair, side, tracks)
     if side[i] == RED:
         # 红方无论是否接触都向当前阶段目标点冲击（接触时身管指向目标的逻辑
@@ -376,6 +393,14 @@ class WarpKernel(Kernel):
         self.a_kill = wp.zeros(s.n, dtype=wp.int32, device=d)
         self.a_dmg = wp.zeros(s.n, dtype=wp.int32, device=d)
 
+        # 各方修理所位置（在修后送目标）；未配置用 (-1,-1) 哨兵=原地不动
+        stn = np.full((2, 2), -1.0, dtype=np.float32)
+        spec_station = scenario.sustainment.repair_station
+        if spec_station:
+            stn[RED] = spec_station["red"]
+            stn[BLUE] = spec_station["blue"]
+        self.a_stn = wp.array(stn, dtype=wp.vec2, device=d)
+
         # 地形（行=y 列=x，展平为 1D）
         t = self.terrain
         self.gn = t.n
@@ -402,8 +427,18 @@ class WarpKernel(Kernel):
             k_sense,
             dim=n,
             inputs=[
-                self.a_x, self.a_y, self.a_alive, self.a_side, self.a_sensor,
-                self.a_detect, self.a_ttl, self.a_tracks, s.tick, self.vis, n, self.seed,
+                self.a_x,
+                self.a_y,
+                self.a_alive,
+                self.a_side,
+                self.a_sensor,
+                self.a_detect,
+                self.a_ttl,
+                self.a_tracks,
+                s.tick,
+                self.vis,
+                n,
+                self.seed,
             ],
             **common,
         )
@@ -420,13 +455,32 @@ class WarpKernel(Kernel):
             k_move,
             dim=n,
             inputs=[
-                self.a_x, self.a_y, self.a_xp, self.a_yp, self.a_heading,
-                self.a_alive, self.a_damaged,
-                self.a_repair, self.a_side, self.a_speed, self.a_weapon, self.a_tracks,
-                self.a_h, self.a_p, s.tick, self.vis, n, self.gn,
-                float(self.terrain.size[0]), float(self.terrain.size[1]),
-                float(self.bound[0]), float(self.bound[1]),
-                float(self.terrain.water_level), ox, oy,
+                self.a_x,
+                self.a_y,
+                self.a_xp,
+                self.a_yp,
+                self.a_heading,
+                self.a_alive,
+                self.a_damaged,
+                self.a_repair,
+                self.a_side,
+                self.a_speed,
+                self.a_weapon,
+                self.a_tracks,
+                self.a_h,
+                self.a_p,
+                s.tick,
+                self.vis,
+                n,
+                self.gn,
+                float(self.terrain.size[0]),
+                float(self.terrain.size[1]),
+                float(self.bound[0]),
+                float(self.bound[1]),
+                float(self.terrain.water_level),
+                ox,
+                oy,
+                self.a_stn,
             ],
             **common,
         )
@@ -434,10 +488,25 @@ class WarpKernel(Kernel):
             k_engage,
             dim=n,
             inputs=[
-                self.a_x, self.a_y, self.a_alive, self.a_repair, self.a_side, self.a_cd,
-                self.a_pk, self.a_weapon, self.a_reload, self.a_tracks,
-                self.a_fired, self.a_target, self.a_outcome, self.a_kill, self.a_dmg,
-                s.tick, self.vis, n, self.seed,
+                self.a_x,
+                self.a_y,
+                self.a_alive,
+                self.a_repair,
+                self.a_side,
+                self.a_cd,
+                self.a_pk,
+                self.a_weapon,
+                self.a_reload,
+                self.a_tracks,
+                self.a_fired,
+                self.a_target,
+                self.a_outcome,
+                self.a_kill,
+                self.a_dmg,
+                s.tick,
+                self.vis,
+                n,
+                self.seed,
             ],
             **common,
         )

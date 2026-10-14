@@ -48,10 +48,20 @@ class PlatformAgent(mesa.Agent):
             m.tracks[int(s.side[i])][int(j)] = s.tick + int(s.track_ttl[i])
 
     def move(self) -> None:
-        """机动决策（粗版教条）：红方冲击目标点，蓝方前出接敌或固守；在修单位不动。"""
+        """机动决策（粗版教条）：红方冲击目标点，蓝方前出接敌或固守。
+
+        在修单位后送：配置修理所时向本方修理所机动（脱离接触），
+        未配置则原地不动（旧行为）。
+        """
         m, s = self.model, self.model.state
         i = self.idx
-        if (not s.alive[i]) or s.under_repair[i]:
+        if not s.alive[i]:
+            return
+        if s.under_repair[i]:
+            stn = m.stations.get(int(s.side[i]))
+            if stn is None:
+                return
+            self._step_toward(stn[0], stn[1])
             return
 
         contact = m.nearest_tracked(i)
@@ -139,6 +149,13 @@ class MesaKernel(Kernel, mesa.Model):
         # 共享航迹：side -> {敌方 idx: 失效 tick}
         self.tracks = {RED: {}, BLUE: {}}
         self.sustain = SustainmentModel(scenario, s, self.rng)
+        # 修理所位置：在修单位的后送目标；未配置（None）时在修单位原地不动
+        spec_station = scenario.sustainment.repair_station
+        self.stations = (
+            {RED: tuple(spec_station["red"]), BLUE: tuple(spec_station["blue"])}
+            if spec_station
+            else {}
+        )
         # 多阶段任务：从第 0 阶段开始，红方进占当前目标点后顺序切换
         self.phases = scenario.mission.phase_list
         self.phase_idx = 0

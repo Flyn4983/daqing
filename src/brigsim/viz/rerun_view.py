@@ -59,6 +59,7 @@ def visualize(
     _log_passability(terrain)
     _log_static_units(info, terrain)
     _log_objective(scenario, terrain)
+    _log_repair_stations(scenario, terrain)
     _log_weather_header(scenario)
 
     pos_table = {
@@ -248,9 +249,9 @@ def _pass_quads(t: HeightField, mask: np.ndarray, color, deck: bool):
     ground = t.heights[js, is_]
     cz = np.maximum(ground, t.water_level) + 0.8 if deck else ground + 0.6
     offs = [(-half, -half), (half, -half), (half, half), (-half, half)]
-    verts = np.stack(
-        [np.column_stack([cx + dx, cy + dy, cz]) for dx, dy in offs], axis=1
-    ).reshape(-1, 3)
+    verts = np.stack([np.column_stack([cx + dx, cy + dy, cz]) for dx, dy in offs], axis=1).reshape(
+        -1, 3
+    )
     base = (np.arange(is_.size) * 4)[:, None, None]
     tris = (base + np.array([[0, 1, 2], [0, 2, 3]])[None, :, :]).reshape(-1, 3)
     colors = np.tile(np.array(color, dtype=np.uint8), (verts.shape[0], 1))
@@ -263,11 +264,7 @@ def _pass_quads(t: HeightField, mask: np.ndarray, color, deck: bool):
 
 def _dilate4(m: np.ndarray) -> np.ndarray:
     """4 邻域一像素膨胀（边界 np.roll 回绕，道路/桥均不在边界，可接受）。"""
-    return (
-        m
-        | np.roll(m, 1, 0) | np.roll(m, -1, 0)
-        | np.roll(m, 1, 1) | np.roll(m, -1, 1)
-    )
+    return m | np.roll(m, 1, 0) | np.roll(m, -1, 0) | np.roll(m, 1, 1) | np.roll(m, -1, 1)
 
 
 def _log_passability(t: HeightField) -> None:
@@ -348,6 +345,34 @@ def _log_objective(scenario: Scenario, terrain: HeightField) -> None:
                 oy + ph.success_radius_m * np.sin(th),
                 np.full_like(th, z + 2),
             ]
+        )
+        rr.log(f"{base}/ring", rr.LineStrips3D([ring], colors=[color], radii=4), static=True)
+
+
+def _log_repair_stations(scenario: Scenario, terrain: HeightField) -> None:
+    """各方修理所：方别色立柱 + 信标 + 300m 地域环（在修单位后送目标）。"""
+    stations = scenario.sustainment.repair_station
+    if not stations:
+        return
+    th = np.linspace(0, 2 * np.pi, 48)
+    labels = {0: "红方旅修理所", 1: "蓝方旅修理所"}
+    for side in (0, 1):
+        key = "red" if side == 0 else "blue"
+        if key not in stations:
+            continue
+        color = SIDE_COLOR[side]
+        ox, oy = (float(v) for v in stations[key])
+        z = float(terrain.height_at(ox, oy))
+        base = f"world/station/{key}"
+        pole = np.asarray([[ox, oy, z], [ox, oy, z + 200]])
+        rr.log(f"{base}/pole", rr.LineStrips3D([pole], colors=[color], radii=6), static=True)
+        rr.log(
+            f"{base}/beacon",
+            rr.Points3D([[ox, oy, z + 210]], radii=90, colors=[color], labels=[labels[side]]),
+            static=True,
+        )
+        ring = np.column_stack(
+            [ox + 300 * np.cos(th), oy + 300 * np.sin(th), np.full_like(th, z + 2)]
         )
         rr.log(f"{base}/ring", rr.LineStrips3D([ring], colors=[color], radii=4), static=True)
 
