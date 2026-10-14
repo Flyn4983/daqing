@@ -123,9 +123,10 @@ def test_batch_sensitivity_matches_single_per_env_params(scenario):
 
     X = np.array(
         [
-            [1.2, 0.8, 1.1, 0.5, 0.9],
-            [0.7, 1.3, 0.9, 2.0, 0.6],
-            [1.0, 1.0, 1.4, 1.0, 1.0],
+            # red_pk, blue_pk, red_det, blue_det, red_spd, blue_spd, mtbf, vis
+            [1.2, 0.8, 1.1, 0.9, 1.0, 1.0, 0.5, 0.9],
+            [0.7, 1.3, 0.9, 1.1, 1.0, 1.0, 2.0, 0.6],
+            [1.0, 1.0, 1.0, 1.4, 1.0, 1.0, 1.0, 1.0],
         ]
     )
     reps = 2
@@ -159,9 +160,10 @@ def test_cuda_graph_per_env_matches_direct(scenario):
     """per-env 参数批量（灵敏度路径）下图重放与直接启动逐位一致。"""
     X = np.array(
         [
-            [1.2, 0.8, 1.1, 0.5, 0.9],
-            [0.7, 1.3, 0.9, 2.0, 0.6],
-            [1.0, 1.0, 1.4, 1.0, 1.0],
+            # red_pk, blue_pk, red_det, blue_det, red_spd, blue_spd, mtbf, vis
+            [1.2, 0.8, 1.1, 0.9, 1.0, 1.0, 0.5, 0.9],
+            [0.7, 1.3, 0.9, 1.1, 1.0, 1.0, 2.0, 0.6],
+            [1.0, 1.0, 1.0, 1.4, 1.0, 1.0, 1.0, 1.0],
         ]
     )
     reps = 2

@@ -885,3 +885,37 @@ ms/复制 仅作量级参考）
 - 灵敏度因子方别化（red/blue 分开）、备件基数标定
 - 真实测绘 DEM 同名替换；写实装备素材待用户登录 Sketchfab/提供本机素材
 
+## 2026-10-14 | trae + 用户 | M3：灵敏度因子方别化（8 因子，消除攻防对称抵消）
+
+### 问题
+- 标定后 Sobol（5 个对称乘子）：speed 全面主导，pk/detect 的 ST 长期偏小——
+  同一乘子同时缩放红蓝，攻方火力增强带来的效应被守方火力增强对冲，
+  指标灵敏度无法归因到方别
+
+### 完成内容
+- `experiment/sensitivity.py` PROBLEM 5→8 因子：red_pk / blue_pk、
+  red_detect / blue_detect、red_speed / blue_speed、mtbf（全局）、visibility
+- `apply_point` 不再改平台 pk/detect/speed，改为经 Scenario.side_modifiers
+  按方别乘入（复用标定切片机制，Mesa 与 Warp 批量经 SimState 同时生效）；
+  因子语义是"相对标定基线的不确定度"，factor=1.0 保持想定原值
+  （含已烘焙 blue pk_scale=1.25）；mtbf 仍全局缩放平台参数
+- 测试：apply_point 测试改为经 SimState 验证方别列（红 pk×1.5 clip、
+  蓝 detect×0.5、蓝 speed×2、mtbf 全局×0.5、原想定不污染）；
+  M4 两处 per-env X 矩阵同步改 8 列；38 测试全绿、ruff 全绿
+
+### 方别化 Sobol 结果（N=64，640 点×4 复制，GPU 批量约 3 分钟）
+- success：red_speed ST=0.99（S1=0.83）主导；**blue_pk ST=0.16** 升为第二
+- attrition_red：**blue_pk S1=+0.31/ST=0.44**（防御火力杀伤攻方，强主效应），
+  red_pk ST 仅 0.06——攻防火力对调归因清晰，对称抵消消失
+- attrition_blue：red_pk S1=+0.10/ST=0.12（攻方火力杀伤守方），
+  blue_pk ST=0.04；readiness 两指标由 blue_pk 与 red_speed 主导
+- detect 双方 ST 均 ≤0.02：开阔地形 51 tick 遭遇战中探测不是瓶颈
+  （接触后火力效应主导），属真实结论而非抵消；mtbf 仍可忽略
+  （短想定故障/修复来不及显影，长想定再评估）
+- 存档：outputs/sensitivity_sobol.csv（方别版），
+  旧对称版备份 sensitivity_sobol_symmetric.csv
+
+### 下一步
+- 备件基数/补给周期标定；增大 Sobol N（现 S1 置信半宽仍偏大）
+- 真实测绘 DEM 同名替换；写实装备素材待用户登录 Sketchfab/提供本机素材
+

@@ -12,17 +12,28 @@ from brigsim.experiment.sensitivity import (
 )
 
 
-def test_apply_point_scales_and_clips():
+def test_apply_point_side_factors_and_mtbf():
+    from brigsim.kernel.state import SimState
+
     sc = YamlFileProvider("scenarios").load_scenario("example_company")
-    # pk 乘子 1.5 应放大但截断在 1.0；能见度取显式值
-    sc2 = apply_point(sc, np.array([1.5, 1.0, 2.0, 0.5, 0.7]))
+    # 顺序: red_pk, blue_pk, red_detect, blue_detect, red_speed, blue_speed, mtbf, visibility
+    sc2 = apply_point(sc, np.array([1.5, 1.0, 1.0, 0.5, 1.0, 2.0, 0.5, 0.7]))
+    base, moved = SimState(sc), SimState(sc2)
+    red, blue = moved.side == 0, moved.side == 1
+    # 红方 pk×1.5（截断 1.0）、蓝方不变；蓝方 detect×0.5、红方不变
+    np.testing.assert_allclose(moved.pk[red], np.clip(base.pk[red] * 1.5, 0.0, 1.0))
+    np.testing.assert_allclose(moved.pk[blue], base.pk[blue])
+    np.testing.assert_allclose(moved.detect_prob[red], base.detect_prob[red])
+    np.testing.assert_allclose(moved.detect_prob[blue], base.detect_prob[blue] * 0.5)
+    # 蓝方速度×2、红方不变；MTBF 全局×0.5
+    np.testing.assert_allclose(moved.speed[red], base.speed[red])
+    np.testing.assert_allclose(moved.speed[blue], base.speed[blue] * 2.0)
     for name, p in sc2.platform_types.items():
-        assert p.pk == min(sc.platform_types[name].pk * 1.5, 1.0)
-        assert abs(p.speed_m_per_tick - sc.platform_types[name].speed_m_per_tick * 2.0) < 1e-9
         assert abs(p.mtbf_ticks - sc.platform_types[name].mtbf_ticks * 0.5) < 1e-9
     assert sc2.environment.visibility_factor == 0.7
     # 原想定不被修改
     assert sc.environment.visibility_factor == 1.0
+    assert sc.side_modifiers == {}
 
 
 def test_morris_output_structure():

@@ -4,10 +4,16 @@
 - Sobol（方差分解）：Saltelli 采样 + S1（一阶主效应）/ST（含交互的总效应），
   回答"指标不确定性中各参数贡献占比"。
 
-粗版做法（两法共用，参数均为全局乘子，跨所有平台类型统一缩放）：
-- pk_scale / detect_scale / speed_scale / mtbf_scale：交战与保障参数全局缩放；
+做法（两法共用）：
+- red/blue_pk、red/blue_detect、red/blue_speed：交战参数按方别独立缩放
+  （经 Scenario.side_modifiers 乘入；早期版本双方对称缩放，进攻/防御效应
+  互相抵消，pk/detect 的 ST 被压没，方别化后才能分辨谁主导）；
+- mtbf：装备可靠性全局缩放（双方共用同一平台参数表）；
 - visibility：环境能见度系数；
 - 每个设计点跑若干蒙特卡洛复制取均值作为该点响应（公共随机数降噪）。
+
+乘子语义为"相对标定基线的不确定度"：factor=1.0 时保持想定原值
+（含已烘焙的方别乘子，如蓝方 pk_scale=1.25），因子在其基础上相乘。
 """
 
 from __future__ import annotations
@@ -23,13 +29,21 @@ from ..data.schema import Scenario
 from .runner import run_once
 
 PROBLEM = {
-    "num_vars": 5,
-    "names": ["pk_scale", "detect_scale", "speed_scale", "mtbf_scale", "visibility"],
+    "num_vars": 8,
+    "names": [
+        "red_pk", "blue_pk",
+        "red_detect", "blue_detect",
+        "red_speed", "blue_speed",
+        "mtbf", "visibility",
+    ],
     "bounds": [
-        [0.5, 1.5],   # 单次击毁概率乘子
-        [0.5, 1.5],   # 发现概率乘子
-        [0.5, 1.5],   # 机动速度乘子
-        [0.25, 3.0],  # MTBF 乘子（越大越可靠）
+        [0.5, 1.5],   # 红方单次击毁概率乘子
+        [0.5, 1.5],   # 蓝方单次击毁概率乘子
+        [0.5, 1.5],   # 红方发现概率乘子
+        [0.5, 1.5],   # 蓝方发现概率乘子
+        [0.5, 1.5],   # 红方机动速度乘子
+        [0.5, 1.5],   # 蓝方机动速度乘子
+        [0.25, 3.0],  # MTBF 全局乘子（越大越可靠）
         [0.5, 1.0],   # 能见度系数
     ],
 }
@@ -38,21 +52,41 @@ METRICS = ["success", "attrition_red", "attrition_blue", "readiness_red", "readi
 
 
 def apply_point(scenario: Scenario, x: np.ndarray) -> Scenario:
-    """把一组灵敏度乘子施加到想定（不改原对象）。"""
-    pk_s, det_s, spd_s, mtbf_s, vis = x
-    ptypes = {
-        name: p.model_copy(
+    """把一组灵敏度乘子施加到想定（不改原对象）。
+
+    交战三乘子按方别写入 side_modifiers，在想定既有方别乘子（标定烘焙值）
+    基础上相乘；pk/detect 超界由 SimState 建列时 clip 到 [0,1]。
+    """
+    from ..data.schema import SideModifiers
+
+    rpk, bpk, rdet, bdet, rspd, bspd, mtbf_s, vis = x
+
+    def _mod(side: str, pk_s: float, det_s: float, spd_s: float) -> SideModifiers:
+        m0 = scenario.side_modifiers.get(side, SideModifiers())
+        return m0.model_copy(
             update={
-                "pk": min(max(p.pk * pk_s, 0.0), 1.0),
-                "detect_prob": min(max(p.detect_prob * det_s, 0.0), 1.0),
-                "speed_m_per_tick": p.speed_m_per_tick * spd_s,
-                "mtbf_ticks": p.mtbf_ticks * mtbf_s,
+                "pk_scale": m0.pk_scale * float(pk_s),
+                "detect_scale": m0.detect_scale * float(det_s),
+                "speed_scale": m0.speed_scale * float(spd_s),
             }
         )
+
+    side_modifiers = {
+        "red": _mod("red", rpk, rdet, rspd),
+        "blue": _mod("blue", bpk, bdet, bspd),
+    }
+    ptypes = {
+        name: p.model_copy(update={"mtbf_ticks": p.mtbf_ticks * float(mtbf_s)})
         for name, p in scenario.platform_types.items()
     }
     env = scenario.environment.model_copy(update={"visibility_factor": float(vis)})
-    return scenario.model_copy(update={"platform_types": ptypes, "environment": env})
+    return scenario.model_copy(
+        update={
+            "platform_types": ptypes,
+            "environment": env,
+            "side_modifiers": side_modifiers,
+        }
+    )
 
 
 def run_sensitivity(
@@ -163,7 +197,7 @@ def run_sobol(
     """Sobol 方差分解（Saltelli 采样，不算二阶）；返回每个 (指标, 参数) 的
     S1（一阶主效应）/ST（总效应，含交互）与 95% 自助置信半宽，按 ST 排序。
 
-    设计点数 = n_base × (D + 2)；D=5，n_base=16 时为 112 点。
+    设计点数 = n_base × (D + 2)；D=8，n_base=16 时为 160 点。
     batch_device 非 None 时走 M4 Warp env 维批量（全部点×复制一次平铺）。
     """
     rng = np.random.default_rng(base_seed)
