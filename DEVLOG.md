@@ -560,3 +560,44 @@
 - SimPy 保障的批量处理策略（稀疏事件 CPU 编排 or 向量化近似）
 - M3 续：参数标定、备件库存曲线进回放
 
+## 2026-10-13 | trae + 用户 | M4 切片 2：env 维批量复制 + 旅级 N=64 Sobol 落地
+
+### 完成内容
+- 新增 `combat/warp_batch.py`：`WarpBatchKernel` / `run_batch()`
+  - E 个复制的状态按 env*n+i 平铺到同一组 wp.array，一条 launch
+    dim=E*n 推进全部环境；active[env] 冻结提前结束的环境
+  - 共享航迹 tracks 扩为 (E*2*n)；目标点 oxs/oys 按环境数组下发；
+    阶段推进在 host 向量化（每环境红方最近距离 + 阶段切换）
+  - SimPy 保障保留 CPU：每环境一个 SustainmentModel，damaged/
+    under_repair 是批量 host 大数组的切片视图，整批 H2D/D2H 每 tick 一次；
+    新战损用 flatnonzero 稀疏登记，不逐单位扫
+  - 播种：wp.rand_init(base_seed+env, tick*n+i)，与单环境公式一致
+  - 批量只收最终指标，不出逐射事件日志（回放仍走单环境内核）
+- `experiment/runner.py`：run_replications 增 batch_device/batch_size，
+  批量路径分批上设备（4GB 显存预算），事件日志由一次额外单环境运行产出
+- CLI run/sensitivity 增 `--kernel warp`、`--device`、`--batch`、`--batch-size`
+- 新增测试：批量 E=4 与同种子逐个单环境的五项指标**逐位相等**
+  （轨迹级硬保证，比分布对拍更强）；全套 32 项全绿，ruff 全绿
+
+### 性能基线（旅级 167 单位，warm 后，含快照/SimPy/host 同步）
+- E=448 一批：GPU 4.44s（**9.9 ms/复制**）、CPU 11.58s（25.8 ms/复制）
+- 对比 Mesa 1383 ms/复制：批量 GPU 约 **140×**；切片 1 单环境 Warp GPU
+  123 ms → 批量 env 维再提约 12×；E=16 首批含编译约 5s
+- 显存：448 环境状态数组约 5MB 级，4GB 显存余量充足，HashGrid 后再估
+- 旅级 N=64 Sobol（448 点 ×4 复制 = 1792 次）单环境 Warp CPU 数分钟跑完
+  （Mesa 原估约 50 分钟），outputs/sensitivity_sobol.csv 已产出
+
+### 旅级 Sobol N=64 结果要点（ST 总效应）
+- speed_scale 是全指标首要驱动：success ST≈0.60、红战损 0.77（S1=0.81
+  近纯主效应）、蓝战损 0.75、红完好 0.76——机动决定接敌节奏与暴露时间
+- mtbf_scale：success ST≈0.56、红完好 0.22（保障可用性经交互放大）
+- pk_scale：红战损 ST≈0.30（S1=0.18）；visibility 各指标 0.15–0.19；
+  detect_scale 各指标 ST≤0.09（C2 航迹共享下侦察参数不敏感）
+- 交互特征：success/mtbf 的 ST 显著大于 S1，强交互；战损类 speed 近线性
+- N=64 置信较 N=16 明显收窄；结论用于后续标定的参数优先级排序
+
+### 下一步
+- HashGrid 目标搜索替换稠密 O(n²)、ScopedCapture 图录制（再压 launch 开销）
+- Sobol 想定参数化（每设计点一批复制：批量内核支持 per-env 参数列）
+- M3 续：按灵敏度优先级做参数标定、备件库存曲线进回放
+

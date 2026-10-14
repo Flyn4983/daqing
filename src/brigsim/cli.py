@@ -27,6 +27,8 @@ def run(
     device: str = typer.Option(
         "cuda:0", "--device", help="warp 内核设备：cuda:0（默认，不可用自动回退）或 cpu"
     ),
+    batch: bool = typer.Option(False, "--batch", help="warp env 维批量复制（M4 切片 2）"),
+    batch_size: int = typer.Option(128, "--batch-size", help="批量模式每批环境数（4GB 显存预算）"),
     out: str | None = typer.Option(None, "--out", help="事件日志输出目录（Parquet）"),
 ) -> None:
     """加载想定，批量模拟，打印三大指标汇总。"""
@@ -35,15 +37,21 @@ def run(
         from .combat.mesa_kernel import MesaKernel
 
         kernel_cls = MesaKernel
+        batch_device = None
     elif kernel == "warp":
         from .combat.warp_kernel import WarpKernel
 
         kernel_cls = lambda scenario, seed=0: WarpKernel(scenario, seed, device=device)  # noqa: E731
+        batch_device = device if batch else None
     else:
         raise typer.BadParameter(f"未知内核 {kernel}（可选 mesa/warp）")
-    typer.echo(f"想定: {sc.name}    内核: {kernel}    复制次数: {runs}")
+    mode = "warp-batch" if batch else kernel
+    typer.echo(f"想定: {sc.name}    内核: {mode}    复制次数: {runs}")
 
-    rows, events = run_replications(sc, n_runs=runs, base_seed=seed, kernel_cls=kernel_cls)
+    rows, events = run_replications(
+        sc, n_runs=runs, base_seed=seed, kernel_cls=kernel_cls,
+        batch_device=batch_device, batch_size=batch_size,
+    )
     summary = summarize(rows)
     typer.echo("\n指标（均值 ± 95%CI 半宽）：")
     for name, r in summary.iterrows():
@@ -109,19 +117,34 @@ def sensitivity(
     sobol_n: int = typer.Option(16, "--sobol-n", help="Sobol 基准样本数 N（设计点 = N×(D+2)）"),
     reps: int = typer.Option(12, "--reps-per-point", help="每个设计点的蒙特卡洛复制数"),
     seed: int = typer.Option(20261013, "--seed", help="基础随机种子"),
+    kernel: str = typer.Option("mesa", "--kernel", help="mesa（智能体）或 warp（向量化）"),
+    device: str = typer.Option("cuda:0", "--device", help="warp 内核设备：cuda:0 或 cpu"),
     out: str | None = typer.Option(None, "--out", help="结果 CSV 输出目录"),
 ) -> None:
     """灵敏度扫描：Morris（μ* 排序）或 Sobol（S1/ST 方差贡献占比）。"""
     from .experiment.sensitivity import PROBLEM, run_sensitivity, run_sobol
 
     sc = YamlFileProvider().load_scenario(scenario)
+    if kernel == "mesa":
+        from .combat.mesa_kernel import MesaKernel
+
+        kernel_cls = MesaKernel
+    elif kernel == "warp":
+        from .combat.warp_kernel import WarpKernel
+
+        kernel_cls = lambda scenario, seed=0: WarpKernel(scenario, seed, device=device)  # noqa: E731
+    else:
+        raise typer.BadParameter(f"未知内核 {kernel}（可选 mesa/warp）")
     d = PROBLEM["num_vars"]
     if method == "morris":
         typer.echo(
             f"想定: {sc.name}  方法: Morris    轨道: {trajectories}    每点复制: {reps}"
             f"（共 {trajectories * (d + 1)} 个设计点 × {reps} 次模拟）"
         )
-        df = run_sensitivity(sc, trajectories=trajectories, reps_per_point=reps, base_seed=seed)
+        df = run_sensitivity(
+            scenario=sc, trajectories=trajectories, reps_per_point=reps,
+            base_seed=seed, kernel_cls=kernel_cls,
+        )
         for metric, grp in df.groupby("metric", sort=False):
             typer.echo(f"\n{metric}（按 μ* 排序，μ* 越大越敏感，σ 大表示非线性/交互）：")
             for _, r in grp.iterrows():
@@ -133,7 +156,10 @@ def sensitivity(
             f"想定: {sc.name}  方法: Sobol    N: {sobol_n}    每点复制: {reps}"
             f"（共 {n_points} 个设计点 × {reps} 次模拟）"
         )
-        df = run_sobol(sc, n_base=sobol_n, reps_per_point=reps, base_seed=seed)
+        df = run_sobol(
+            scenario=sc, n_base=sobol_n, reps_per_point=reps,
+            base_seed=seed, kernel_cls=kernel_cls,
+        )
         for metric, grp in df.groupby("metric", sort=False):
             typer.echo(f"\n{metric}（按 ST 总效应排序；ST=含交互总贡献，S1=一阶主效应）：")
             for _, r in grp.iterrows():

@@ -1,0 +1,528 @@
+"""M4 交战内核（切片 2）：env 维批量复制。
+
+把 R 次复制的状态按 env*n+i 平铺到同一组 wp.array，一条 launch 同时推进
+全部环境；提前结束的环境由 active[env] 冻结。地形/装备参数各环境共享。
+
+关键约定：
+- 每环境随机流 wp.rand_init(base_seed+env, tick*n+i)，与 WarpKernel 单环境
+  的播种公式完全相同——同种子下批量 env 与逐个单环境的轨迹逐位一致
+  （测试据此做精确相等断言，而非仅分布对拍）；
+- 保障（SimPy）仍在 CPU：每环境一个 SustainmentModel，状态列是批量 host
+  大数组的切片视图，每 tick 一次整批 H2D/D2H（不为每环境单独传输）；
+- 批量模式不产出逐射事件日志（回放用单环境 WarpKernel），只收最终指标。
+"""
+
+from __future__ import annotations
+
+import numpy as np
+import warp as wp
+
+from ..data.schema import Scenario
+from ..experiment.metrics import per_run_metrics
+from ..kernel.state import SimState
+from .warp_kernel import _move_factor, resolve_device
+
+RED = 0
+
+
+@wp.func
+def _b_nearest(
+    env: int,
+    i: int,
+    n: int,
+    tick: int,
+    base: int,
+    x: wp.array(dtype=wp.float32),
+    y: wp.array(dtype=wp.float32),
+    alive: wp.array(dtype=wp.int32),
+    side: wp.array(dtype=wp.int32),
+    tracks: wp.array(dtype=wp.int32),
+) -> int:
+    """批量布局下的共享航迹最近敌方；返回 env 内局部索引，无则 -1。"""
+    si = side[base + i]
+    xi = x[base + i]
+    yi = y[base + i]
+    best = int(-1)
+    best_d = float(1.0e30)
+    for k in range(base, base + n):
+        j = k - base
+        if side[k] == si or alive[k] != 1:
+            continue
+        if tracks[(env * 2 + si) * n + j] > tick:
+            dx = x[k] - xi
+            dy = y[k] - yi
+            d = wp.sqrt(dx * dx + dy * dy)
+            if d < best_d:
+                best_d = d
+                best = j
+    return best
+
+
+@wp.kernel
+def k_b_cooldown(
+    cd: wp.array(dtype=wp.int32), alive: wp.array(dtype=wp.int32),
+    active: wp.array(dtype=wp.int32), n: int,
+):
+    g = wp.tid()
+    env = g / n
+    if active[env] == 0:
+        return
+    if alive[g] == 1 and cd[g] > 0:
+        cd[g] = cd[g] - 1
+
+
+@wp.kernel
+def k_b_sense(
+    x: wp.array(dtype=wp.float32),
+    y: wp.array(dtype=wp.float32),
+    alive: wp.array(dtype=wp.int32),
+    side: wp.array(dtype=wp.int32),
+    sensor: wp.array(dtype=wp.float32),
+    detect: wp.array(dtype=wp.float32),
+    ttl: wp.array(dtype=wp.int32),
+    tracks: wp.array(dtype=wp.int32),
+    active: wp.array(dtype=wp.int32),
+    tick: int,
+    vis: float,
+    n: int,
+    base_seed: int,
+):
+    g = wp.tid()
+    env = g / n
+    i = g - env * n
+    if active[env] == 0 or alive[g] != 1:
+        return
+    si = side[g]
+    state = wp.rand_init(base_seed + env, tick * n + i)
+    reach = sensor[g] * vis
+    xi = x[g]
+    yi = y[g]
+    for j in range(0, n):
+        k = env * n + j
+        if side[k] == si or alive[k] != 1:
+            continue
+        dx = x[k] - xi
+        dy = y[k] - yi
+        d = wp.sqrt(dx * dx + dy * dy)
+        if d > reach:
+            continue
+        r = wp.randf(state)
+        prob = detect[g] * (1.0 - d / reach)
+        if r < prob:
+            wp.atomic_max(tracks, (env * 2 + si) * n + j, tick + ttl[g])
+
+
+@wp.kernel
+def k_b_clear(buf: wp.array(dtype=wp.int32)):
+    buf[wp.tid()] = 0
+
+
+@wp.kernel
+def k_b_move(
+    x: wp.array(dtype=wp.float32),
+    y: wp.array(dtype=wp.float32),
+    heading: wp.array(dtype=wp.float32),
+    alive: wp.array(dtype=wp.int32),
+    damaged: wp.array(dtype=wp.int32),
+    under_repair: wp.array(dtype=wp.int32),
+    side: wp.array(dtype=wp.int32),
+    speed: wp.array(dtype=wp.float32),
+    weapon: wp.array(dtype=wp.float32),
+    tracks: wp.array(dtype=wp.int32),
+    heights: wp.array(dtype=wp.float32),
+    passab: wp.array(dtype=wp.float32),
+    active: wp.array(dtype=wp.int32),
+    oxs: wp.array(dtype=wp.float32),
+    oys: wp.array(dtype=wp.float32),
+    tick: int,
+    vis: float,
+    n: int,
+    gn: int,
+    sx: float,
+    sy: float,
+    bx: float,
+    by: float,
+    water: float,
+):
+    g = wp.tid()
+    env = g / n
+    i = g - env * n
+    if active[env] == 0 or alive[g] != 1 or under_repair[g] == 1:
+        return
+    base = env * n
+    tgt = _b_nearest(env, i, n, tick, base, x, y, alive, side, tracks)
+    if side[g] == RED:
+        dx = oxs[env] - x[g]
+        dy = oys[env] - y[g]
+        d = wp.sqrt(dx * dx + dy * dy)
+        if d > 0.0:
+            heading[g] = wp.atan2(dy, dx)
+            f = _move_factor(heights, passab, gn, sx, sy, water, x[g], y[g])
+            if damaged[g] == 1:
+                f = f * 0.5
+            step = wp.min(speed[g] * f, d)
+            x[g] = wp.clamp(x[g] + step * dx / d, 0.0, bx)
+            y[g] = wp.clamp(y[g] + step * dy / d, 0.0, by)
+    else:
+        if tgt < 0:
+            return
+        k = base + tgt
+        dx = x[k] - x[g]
+        dy = y[k] - y[g]
+        d = wp.sqrt(dx * dx + dy * dy)
+        heading[g] = wp.atan2(dy, dx)
+        if d > weapon[g] * vis:
+            f = _move_factor(heights, passab, gn, sx, sy, water, x[g], y[g])
+            step = wp.min(speed[g] * f, d)
+            x[g] = wp.clamp(x[g] + step * dx / d, 0.0, bx)
+            y[g] = wp.clamp(y[g] + step * dy / d, 0.0, by)
+
+
+@wp.kernel
+def k_b_engage(
+    x: wp.array(dtype=wp.float32),
+    y: wp.array(dtype=wp.float32),
+    alive: wp.array(dtype=wp.int32),
+    under_repair: wp.array(dtype=wp.int32),
+    side: wp.array(dtype=wp.int32),
+    cooldown: wp.array(dtype=wp.int32),
+    pk: wp.array(dtype=wp.float32),
+    weapon: wp.array(dtype=wp.float32),
+    reload: wp.array(dtype=wp.int32),
+    tracks: wp.array(dtype=wp.int32),
+    want_kill: wp.array(dtype=wp.int32),
+    want_dmg: wp.array(dtype=wp.int32),
+    active: wp.array(dtype=wp.int32),
+    tick: int,
+    vis: float,
+    n: int,
+    base_seed: int,
+):
+    g = wp.tid()
+    env = g / n
+    i = g - env * n
+    if (
+        active[env] == 0
+        or alive[g] != 1
+        or under_repair[g] == 1
+        or cooldown[g] > 0
+    ):
+        return
+    base = env * n
+    tgt = _b_nearest(env, i, n, tick, base, x, y, alive, side, tracks)
+    if tgt < 0:
+        return
+    k = base + tgt
+    dx = x[k] - x[g]
+    dy = y[k] - y[g]
+    d = wp.sqrt(dx * dx + dy * dy)
+    if d > weapon[g] * vis:
+        return
+    state = wp.rand_init(base_seed + env, tick * n + n + i)
+    r = wp.randf(state)
+    if r < pk[g]:
+        wp.atomic_max(want_kill, k, 1)
+    elif r < pk[g] + 0.25:
+        wp.atomic_max(want_dmg, k, 1)
+    cooldown[g] = reload[g]
+
+
+@wp.kernel
+def k_b_apply(
+    alive: wp.array(dtype=wp.int32),
+    damaged: wp.array(dtype=wp.int32),
+    under_repair: wp.array(dtype=wp.int32),
+    want_kill: wp.array(dtype=wp.int32),
+    want_dmg: wp.array(dtype=wp.int32),
+    active: wp.array(dtype=wp.int32),
+    n: int,
+):
+    g = wp.tid()
+    env = g / n
+    if active[env] == 0:
+        return
+    if want_kill[g] == 1:
+        alive[g] = 0
+        damaged[g] = 0
+        under_repair[g] = 0
+    elif want_dmg[g] == 1:
+        damaged[g] = 1
+
+
+class WarpBatchKernel:
+    """同一想定 E 个复制在设备上锁步进推进；host 端仅保留指标所需镜像。"""
+
+    def __init__(
+        self,
+        scenario: Scenario,
+        seeds: list[int],
+        device: str | None = None,
+        verbose: bool = False,
+    ) -> None:
+        self.sc = scenario
+        self.seeds = list(seeds)
+        self.E = len(seeds)
+        self.dev = resolve_device(device)
+        self.verbose = verbose
+
+        # host 镜像：每环境一个 SimState（供 SimPy 与最终指标），其关键列
+        # 指向批量大数组的切片视图，零拷贝
+        ref = SimState(scenario)
+        self.n = ref.n
+        self.states = [SimState(scenario) for _ in range(self.E)]
+        E, n = self.E, self.n
+        self.h_x = np.zeros(E * n, dtype=np.float32)
+        self.h_y = np.zeros(E * n, dtype=np.float32)
+        self.h_alive = np.ones(E * n, dtype=np.int32)
+        self.h_damaged = np.zeros(E * n, dtype=np.int32)
+        self.h_repair = np.zeros(E * n, dtype=np.int32)
+        for e, st in enumerate(self.states):
+            sl = slice(e * n, (e + 1) * n)
+            self.h_x[sl] = st.x
+            self.h_y[sl] = st.y
+            st.x = self.h_x[sl].view()
+            st.y = self.h_y[sl].view()
+            st.alive = self.h_alive[sl].view().astype(bool)  # astype 会复制
+            st.damaged = np.zeros(n, dtype=bool)
+            st.under_repair = np.zeros(n, dtype=bool)
+        # 注意：astype(bool) 得到独立副本，sustain 在该副本上改，
+        # 每 tick 由 _sync_to_device/_sync_from_device 与 i32 大数组交换
+
+        self._sustain = []
+        from ..sustainment.repair import SustainmentModel
+
+        for st in self.states:
+            rng = np.random.default_rng(self.seeds[len(self._sustain)])
+            self._sustain.append(SustainmentModel(scenario, st, rng))
+
+        d = self.dev
+
+        def col(name, dtype):
+            return wp.array(np.tile(np.asarray(getattr(ref, name), dtype=dtype), E),
+                           dtype={np.float32: wp.float32, np.int32: wp.int32}[dtype],
+                           device=d)
+
+        self.a_x = wp.array(self.h_x, dtype=wp.float32, device=d)
+        self.a_y = wp.array(self.h_y, dtype=wp.float32, device=d)
+        self.a_heading = wp.array(
+            np.tile(np.asarray(ref.heading, dtype=np.float32), E), dtype=wp.float32, device=d
+        )
+        self.a_alive = wp.array(self.h_alive, dtype=wp.int32, device=d)
+        self.a_damaged = wp.array(self.h_damaged, dtype=wp.int32, device=d)
+        self.a_repair = wp.array(self.h_repair, dtype=wp.int32, device=d)
+        self.a_cd = wp.array(np.zeros(E * n, dtype=np.int32), dtype=wp.int32, device=d)
+        self.a_side = col("side", np.int32)
+        self.a_sensor = col("sensor_range", np.float32)
+        self.a_weapon = col("weapon_range", np.float32)
+        self.a_pk = col("pk", np.float32)
+        self.a_speed = col("speed", np.float32)
+        self.a_reload = col("reload_ticks", np.int32)
+        self.a_detect = col("detect_prob", np.float32)
+        self.a_ttl = col("track_ttl", np.int32)
+
+        self.a_tracks = wp.zeros(E * 2 * n, dtype=wp.int32, device=d)
+        self.a_kill = wp.zeros(E * n, dtype=wp.int32, device=d)
+        self.a_dmg = wp.zeros(E * n, dtype=wp.int32, device=d)
+        self.a_active = wp.array(np.ones(E, dtype=np.int32), dtype=wp.int32, device=d)
+        # 每环境当前阶段目标点（f32，host 推进阶段后下发）
+        self.phases = scenario.mission.phase_list
+        self.phase_idx = np.zeros(E, dtype=np.int32)
+        self.accomplished = np.zeros(E, dtype=bool)
+        self.h_ox = np.tile(
+            np.asarray(self.phases[0].objective, dtype=np.float32)[0], E
+        ).astype(np.float32)
+        self.h_oy = np.tile(
+            np.asarray(self.phases[0].objective, dtype=np.float32)[1], E
+        ).astype(np.float32)
+        self.a_ox = wp.array(self.h_ox, dtype=wp.float32, device=d)
+        self.a_oy = wp.array(self.h_oy, dtype=wp.float32, device=d)
+
+        from ..kernel.terrain import HeightField
+
+        t = HeightField.from_spec(scenario.terrain)
+        self.terrain = t
+        self.gn = t.n
+        self.a_h = wp.array(
+            np.asarray(t.heights.reshape(-1), dtype=np.float32), dtype=wp.float32, device=d
+        )
+        self.a_p = wp.array(
+            np.asarray(t.passability.reshape(-1), dtype=np.float32), dtype=wp.float32, device=d
+        )
+        self.vis = float(scenario.environment.visibility_factor)
+        self.bound = scenario.terrain.size_m
+        self.duration = scenario.mission.duration_ticks
+        self.tick = 0
+        # 每环境随机流基准种子（+env 在设备端做）
+        self.base_seed = min(self.seeds)
+
+    def run(self) -> list[dict]:
+        while self.active_count() > 0 and self.tick < self.duration:
+            self._step()
+        return self._collect_metrics()
+
+    def active_count(self) -> int:
+        if self.tick == 0:
+            return self.E
+        return int(self._host_active.sum())
+
+    def _step(self) -> None:
+        E, n, d = self.E, self.n, self.dev
+        self.tick += 1
+        tick = self.tick
+
+        # 1) 保障：每环境 SimPy 推进到 tick（仅 active 环境；冻结环境不再产生事件）
+        for e, sust in enumerate(self._sustain):
+            if self._host_active[e]:
+                sust.advance(tick)
+        self._push_repair()
+
+        common = dict(device=d)
+        wp.launch(k_b_cooldown, dim=E * n,
+                  inputs=[self.a_cd, self.a_alive, self.a_active, n], **common)
+        wp.launch(
+            k_b_sense, dim=E * n,
+            inputs=[self.a_x, self.a_y, self.a_alive, self.a_side, self.a_sensor,
+                    self.a_detect, self.a_ttl, self.a_tracks, self.a_active,
+                    tick, self.vis, n, self.base_seed],
+            **common,
+        )
+        wp.launch(k_b_clear, dim=E * n, inputs=[self.a_kill], **common)
+        wp.launch(k_b_clear, dim=E * n, inputs=[self.a_dmg], **common)
+        wp.launch(
+            k_b_move, dim=E * n,
+            inputs=[self.a_x, self.a_y, self.a_heading, self.a_alive, self.a_damaged,
+                    self.a_repair, self.a_side, self.a_speed, self.a_weapon, self.a_tracks,
+                    self.a_h, self.a_p, self.a_active, self.a_ox, self.a_oy,
+                    tick, self.vis, n, self.gn,
+                    float(self.terrain.size[0]), float(self.terrain.size[1]),
+                    float(self.bound[0]), float(self.bound[1]),
+                    float(self.terrain.water_level)],
+            **common,
+        )
+        wp.launch(
+            k_b_engage, dim=E * n,
+            inputs=[self.a_x, self.a_y, self.a_alive, self.a_repair, self.a_side, self.a_cd,
+                    self.a_pk, self.a_weapon, self.a_reload, self.a_tracks,
+                    self.a_kill, self.a_dmg, self.a_active,
+                    tick, self.vis, n, self.base_seed],
+            **common,
+        )
+        wp.launch(
+            k_b_apply, dim=E * n,
+            inputs=[self.a_alive, self.a_damaged, self.a_repair,
+                    self.a_kill, self.a_dmg, self.a_active, n],
+            **common,
+        )
+        wp.synchronize_device(d)
+
+        # 2) 设备 -> host 批量镜像
+        self.h_x = self.a_x.numpy()
+        self.h_y = self.a_y.numpy()
+        self.h_alive = self.a_alive.numpy()
+        self.h_damaged = self.a_damaged.numpy()
+        self._pull_repair()
+
+        # 3) 新战损登记各环境 SimPy 抢修通道
+        dmg_idx = np.flatnonzero(self.a_dmg.numpy())
+        for g in dmg_idx:
+            e, i = divmod(int(g), n)
+            if self.h_alive[g] and self._host_active[e]:
+                self._sustain[e].combat_damage(i)
+
+        # 4) 阶段推进（向量化）与 active 更新
+        self._update_phases()
+
+    # ---- host 镜像/阶段 ----
+
+    @property
+    def _host_active(self) -> np.ndarray:
+        if not hasattr(self, "_active_cache"):
+            self._active_cache = np.ones(self.E, dtype=np.int32)
+        return self._active_cache
+
+    def _push_repair(self) -> None:
+        rep = np.zeros(self.E * self.n, dtype=np.int32)
+        dam = np.zeros(self.E * self.n, dtype=np.int32)
+        for e, st in enumerate(self.states):
+            sl = slice(e * self.n, (e + 1) * self.n)
+            rep[sl] = st.under_repair
+            dam[sl] = st.damaged
+        self.a_repair.assign(rep)
+        self.a_damaged.assign(dam)
+
+    def _pull_repair(self) -> None:
+        for e, st in enumerate(self.states):
+            sl = slice(e * self.n, (e + 1) * self.n)
+            st.x = self.h_x[sl]
+            st.y = self.h_y[sl]
+            st.alive = self.h_alive[sl].astype(bool)
+            st.damaged = self.h_damaged[sl].astype(bool)
+            st.tick = self.tick
+
+    def _update_phases(self) -> None:
+        E, n = self.E, self.n
+        side = np.asarray(self.states[0].side)  # 各环境编制相同
+        red = side == RED
+        alive_b = self.h_alive.reshape(E, n).astype(bool)
+        xb = self.h_x.reshape(E, n)
+        yb = self.h_y.reshape(E, n)
+        red_alive = alive_b & red[None, :]
+        red_any = red_alive.any(axis=1)
+
+        ox = self.h_ox.copy()
+        oy = self.h_oy.copy()
+        for e in range(E):
+            if not self._host_active[e]:
+                continue
+            last = len(self.phases) - 1
+            rx = xb[e][red_alive[e]]
+            ry = yb[e][red_alive[e]]
+            while self.phase_idx[e] < last:
+                ph = self.phases[int(self.phase_idx[e])]
+                if rx.size == 0 or np.hypot(
+                    rx - ph.objective[0], ry - ph.objective[1]
+                ).min() > ph.success_radius_m:
+                    break
+                self.phase_idx[e] += 1
+                nxt = self.phases[int(self.phase_idx[e])]
+                ox[e], oy[e] = nxt.objective[0], nxt.objective[1]
+            ph = self.phases[int(self.phase_idx[e])]
+            if (
+                rx.size
+                and self.phase_idx[e] == last
+                and np.hypot(rx - ph.objective[0], ry - ph.objective[1]).min()
+                <= ph.success_radius_m
+            ):
+                self.accomplished[e] = True
+            st = self.states[e]
+            st.phase = int(self.phase_idx[e])
+            st.objective = np.asarray(self.phases[int(self.phase_idx[e])].objective)
+            st.alive = self.h_alive[e * n:(e + 1) * n].astype(bool)
+
+        # 末段达成 / 红方被歼 / 到时 -> 冻结
+        active = (self.tick < self.duration) & red_any & (~self.accomplished)
+        self._active_cache = active.astype(np.int32)
+        self.a_active.assign(self._active_cache)
+        self.h_ox, self.h_oy = ox.astype(np.float32), oy.astype(np.float32)
+        self.a_ox.assign(self.h_ox)
+        self.a_oy.assign(self.h_oy)
+
+    def _collect_metrics(self) -> list[dict]:
+        rows = []
+        for e, st in enumerate(self.states):
+            st.alive = self.h_alive[e * self.n:(e + 1) * self.n].astype(bool)
+            st.damaged = self.h_damaged[e * self.n:(e + 1) * self.n].astype(bool)
+            rows.append(per_run_metrics(st, bool(self.accomplished[e])))
+        return rows
+
+
+def run_batch(
+    scenario: Scenario,
+    base_seed: int,
+    n_runs: int,
+    device: str | None = None,
+    verbose: bool = False,
+) -> list[dict]:
+    """同一想定 n_runs 次复制的设备端批量运行（种子 base_seed..+n_runs-1）。"""
+    seeds = [base_seed + r for r in range(n_runs)]
+    return WarpBatchKernel(scenario, seeds, device=device, verbose=verbose).run()

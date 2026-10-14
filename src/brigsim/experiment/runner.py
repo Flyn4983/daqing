@@ -26,17 +26,40 @@ def run_replications(
     base_seed: int = 20261013,
     kernel_cls: Callable[..., Kernel] | None = None,
     keep_events_of: int = 0,
+    batch_device: str | None = None,
+    batch_size: int = 128,
 ) -> tuple[list[dict], tuple[pd.DataFrame, pd.DataFrame] | None]:
     """返回 (每次运行指标列表, 某次运行的事件日志)。
 
-    M4 计划：本函数的循环体替换为 Warp GPU 上的批量复制，接口保持不变。
+    batch_device 非 None 时走 M4 Warp 批量后端（同一想定的复制按 env 维平铺，
+    分批上设备）；事件日志由一次额外的单环境 WarpKernel 运行产出。
     """
+    if batch_device is not None:
+        from ..combat.warp_batch import run_batch
+        from ..combat.warp_kernel import WarpKernel
+
+        rows: list[dict] = []
+        for start in range(0, n_runs, batch_size):
+            count = min(batch_size, n_runs - start)
+            rows.extend(
+                run_batch(scenario, base_seed + start, count, device=batch_device)
+            )
+        event_frames = None
+        if keep_events_of is not None and 0 <= keep_events_of < n_runs:
+            _, kernel = run_once(
+                scenario,
+                seed=base_seed + keep_events_of,
+                kernel_cls=lambda sc, seed=0: WarpKernel(sc, seed, device=batch_device),
+            )
+            event_frames = kernel.log.to_frames()
+        return rows, event_frames
+
     if kernel_cls is None:
         from ..combat.mesa_kernel import MesaKernel
 
         kernel_cls = MesaKernel
 
-    rows: list[dict] = []
+    rows = []
     event_frames = None
     for r in range(n_runs):
         metrics, kernel = run_once(scenario, base_seed + r, kernel_cls)

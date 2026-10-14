@@ -13,6 +13,7 @@ import pandas as pd
 import pytest
 
 from brigsim.combat.mesa_kernel import MesaKernel
+from brigsim.combat.warp_batch import run_batch
 from brigsim.combat.warp_kernel import WarpKernel
 from brigsim.data.provider import YamlFileProvider
 from brigsim.experiment.runner import run_once
@@ -83,3 +84,21 @@ def test_warp_mesa_distribution_parity(scenario):
     assert abs(mesa_df["success"].mean() - warp_df["success"].mean()) <= 0.30
     # 两侧都确实发生交战，避免静默不打的退化
     assert warp_df["attrition_blue"].mean() > 0.2
+
+
+def test_batch_matches_single_environments_bit_exact(scenario):
+    """批量 env 与同种子逐个单环境必须逐轨迹一致（播种公式相同的硬保证）。"""
+    base = 9300
+    E = 4
+    single = []
+    for e in range(E):
+        metrics, _ = run_once(
+            scenario, seed=base + e,
+            kernel_cls=lambda sc, seed=0: WarpKernel(sc, seed, device="cpu"),
+        )
+        single.append(metrics)
+    batch = run_batch(scenario, base_seed=base, n_runs=E, device="cpu")
+    for e in range(E):
+        assert batch[e]["success"] == single[e]["success"]
+        for key in ("attrition_red", "attrition_blue", "readiness_red", "readiness_blue"):
+            assert abs(batch[e][key] - single[e][key]) < 1e-9, (e, key)
