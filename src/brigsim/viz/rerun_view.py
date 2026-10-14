@@ -46,6 +46,7 @@ def visualize(
     spawn: bool = False,
     eye: tuple[float, float, float] | None = None,
     look: tuple[float, float, float] | None = None,
+    supply: pd.DataFrame | None = None,
     app_id: str = "brigsim",
 ) -> None:
     rr.init(app_id, spawn=spawn)
@@ -122,6 +123,8 @@ def visualize(
         _log_weather(tick, scenario, terrain)
         _log_engagements(tick, engagements, pos_table, terrain, info)
         _log_metrics(tick, cur)
+        if supply is not None and not supply.empty:
+            _log_supply(tick, supply)
         if tick == 0 or tick % 10 == 0:
             _log_tally(tick, cur)
 
@@ -563,6 +566,15 @@ def _log_metrics(tick: int, cur: pd.DataFrame) -> None:
         rr.log(f"metrics/{name}/readiness", rr.Scalars(float(ready.mean())))
 
 
+def _log_supply(tick: int, supply: pd.DataFrame) -> None:
+    """备件库存与在修数时间曲线（每 tick 每方一条摘要）。"""
+    row = supply[supply["tick"] == tick]
+    for _, r in row.iterrows():
+        name = "red" if int(r["side"]) == 0 else "blue"
+        rr.log(f"supply/{name}/spares", rr.Scalars(float(r["spares"])))
+        rr.log(f"supply/{name}/in_repair", rr.Scalars(float(r["in_repair"])))
+
+
 def _log_tally(tick: int, cur: pd.DataFrame) -> None:
     r = cur[cur["side"] == 0]
     b = cur[cur["side"] == 1]
@@ -600,8 +612,9 @@ def _make_blueprint(
     side_panel = rrb.Tabs(
         rrb.TimeSeriesView(name="红方 战损/完好", origin="/metrics/red"),
         rrb.TimeSeriesView(name="蓝方 战损/完好", origin="/metrics/blue"),
+        rrb.TimeSeriesView(name="备件库存/在修", origin="/supply"),
         rrb.TextLogView(name="交战统计", origin="/feed"),
-        active_tab=2,
+        active_tab=3,
     )
     return rrb.Blueprint(
         rrb.Horizontal(scene, side_panel, column_shares=[3.1, 1.05]),

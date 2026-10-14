@@ -97,6 +97,7 @@ def replay(
         terrain=kernel.terrain,
         rrd_path=rrd_path,
         spawn=False,
+        supply=kernel.log.supply_frame(),
     )
     if show:
         viewer = Path(sys.executable).parent / "rerun.exe"

@@ -162,7 +162,7 @@ class MesaKernel(Kernel, mesa.Model):
         self.agents.do("engage")
         # 6) 任务阶段推进（红方进占当前目标点 -> 切换下一阶段 / 末段达成）
         self._update_phases()
-        self.log.snapshot(s.tick, s)
+        self.log.snapshot(s.tick, s, self.sustain)
 
     def _purge_tracks(self) -> None:
         """丢弃过期与已战毁目标的航迹。"""

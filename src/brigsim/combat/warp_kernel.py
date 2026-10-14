@@ -471,7 +471,7 @@ class WarpKernel(Kernel):
 
         # 7) 阶段推进与快照
         self._update_phases()
-        self.log.snapshot(s.tick, s)
+        self.log.snapshot(s.tick, s, self.sustain)
 
     # ---- 任务阶段（与 MesaKernel 同逻辑，numpy 镜像上执行） ----
 
