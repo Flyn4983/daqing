@@ -971,3 +971,17 @@ ms/复制 仅作量级参考）
 - 真实保障数据（基数标准/修理周期）替换原型假设；增大 Sobol N
 - 真实测绘 DEM 同名替换；写实装备素材待用户登录 Sketchfab/提供本机素材
 
+## 2026-10-14 | trae + 用户 | M3：备件网格标定器固化进 src
+
+### 完成内容
+- 新增 `experiment/supply_calibration.py`：把 outputs/calibrate_supply.py 的
+  一次性网格标定逻辑提炼为可复用模块——`apply_supply`（库存同比缩放+
+  补给周期施加，model_copy 不污染原想定；未启用 spare_stock 直接报错）、
+  `point_record`（单点 CRN 均值 + fill/交战双带判定）、`grid_calibrate`
+  （z_stock×interval 穷举）、`select_feasible`（可行点按携行经济性排序）
+- 目标带显式留痕：FILL_BAND=(0.85,0.97)，交战带复用 calibration.BANDS
+- 新增 tests/test_m3_supply_calibration.py 3 项纯函数测试（缩放/周期/
+  qty 施加且原想定不变、缺库存报错、可行点筛选与库存和排序）
+- 全套 41 测试全绿、ruff lint 全绿（新增两文件按 line-length=100 格式化）
+
+
