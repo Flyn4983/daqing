@@ -15,8 +15,10 @@
   （旅级 1.38s→0.08s/复制），env 维批量 E=448 时 GPU 9.9ms/复制（约 140×），
   批量与单环境同种子逐轨迹一致；切片 3 支持 per-env 参数列，Sobol 设计点×
   复制可整体平铺上 GPU（全量 448 点对拍 max diff 0.0，旅级 1792 次 GPU 45s）；
+  HashGrid 邻域查询替换 sense/engage 的 O(n²) 扫描（蓝方追击因 C2 无界航迹
+  保留稠密；当前规模吞吐持平，复杂度降为 O(n·k)）；
   SimPy 保障留 CPU tick 边界同步；
-  待办：HashGrid 目标搜索、图捕获
+  待办：CUDA 图捕获压 launch 开销
 
 ## 快速开始
 

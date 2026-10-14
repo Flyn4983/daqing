@@ -29,6 +29,11 @@ RED, BLUE = 0, 1
 
 _warp_inited = False
 
+# 感知段每 (tick, 射手 i, 候选 j) 随机流的高位偏移：与交战段 (tick*n+n+i)
+# 错开键空间。键最大约 2^28 + duration*n^2 < 2^31。
+# 按候选身份播种后，候选遍历顺序（稠密 j 升序 / HashGrid 任意序）不影响判定。
+SENSE_KEY_OFF = 1 << 28
+
 
 # ---------- 设备端地形：双线性 + 坡度/水面/通行性（与 HeightField.move_factor 同式） ----------
 
@@ -145,7 +150,6 @@ def k_sense(
     if alive[i] != 1:
         return
     si = side[i]
-    state = wp.rand_init(seed, tick * n + i)
     reach = sensor[i] * vis
     xi = x[i]
     yi = y[i]
@@ -157,7 +161,9 @@ def k_sense(
         d = wp.sqrt(dx * dx + dy * dy)
         if d > reach:
             continue
-        r = wp.randf(state)
+        # 每候选独立流（键含 j）：与批量 HashGrid 的任意遍历顺序逐位等价
+        cstate = wp.rand_init(seed, SENSE_KEY_OFF + (tick * n + i) * n + j)
+        r = wp.randf(cstate)
         prob = detect[i] * (1.0 - d / reach)
         if r < prob:
             wp.atomic_max(tracks, si * n + j, tick + ttl[i])

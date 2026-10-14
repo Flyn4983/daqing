@@ -1,12 +1,21 @@
-"""M4 交战内核（切片 2）：env 维批量复制。
+"""M4 交战内核：env 维批量复制 + HashGrid 邻域查询。
 
 把 R 次复制的状态按 env*n+i 平铺到同一组 wp.array，一条 launch 同时推进
-全部环境；提前结束的环境由 active[env] 冻结。地形/装备参数各环境共享。
+全部环境；提前结束的环境由 active[env] 冻结。每环境可用独立想定
+（灵敏度 per-env 参数列，切片 3）。
 
 关键约定：
-- 每环境随机流 wp.rand_init(base_seed+env, tick*n+i)，与 WarpKernel 单环境
-  的播种公式完全相同——同种子下批量 env 与逐个单环境的轨迹逐位一致
-  （测试据此做精确相等断言，而非仅分布对拍）；
+- 每环境随机流 wp.rand_init(seed0[env], tick*n+i)，感知段按候选身份 j
+  单独播种（SENSE_KEY_OFF + (tick*n+i)*n+j）——与 WarpKernel 单环境
+  的播种公式完全相同，且与候选遍历顺序无关；同种子下批量 env 与逐个
+  单环境的轨迹逐位一致（测试据此做精确相等断言，而非仅分布对拍）；
+- 目标搜索用单个 wp.HashGrid（切片 4）：各环境坐标沿 x 平移 env*stride
+  做空间隔离；网格每 tick 重建两次——sense 前一次（机动前位置）、
+  engage 前一次（单位每 tick 走一个步长，不重建会漏掉新进入射程的
+  目标）；sense（半径=探测距）与 engage（半径=武器射程）走网格邻域
+  查询，等距取小编号消歧；蓝方追击转向保留稠密扫描——C2 共享航迹
+  无距离上界（目标只在某友邻探测距内，开火单位自身可在任意远），
+  半径查询无法覆盖；
 - 保障（SimPy）仍在 CPU：每环境一个 SustainmentModel，状态列是批量 host
   大数组的切片视图，每 tick 一次整批 H2D/D2H（不为每环境单独传输）；
 - 批量模式不产出逐射事件日志（回放用单环境 WarpKernel），只收最终指标。
@@ -20,13 +29,27 @@ import warp as wp
 from ..data.schema import Scenario
 from ..experiment.metrics import per_run_metrics
 from ..kernel.state import SimState
-from .warp_kernel import _move_factor, resolve_device
+from .warp_kernel import SENSE_KEY_OFF, _move_factor, resolve_device
 
 RED = 0
 
 
+@wp.kernel
+def k_b_gridpoints(
+    pts: wp.array(dtype=wp.vec3),
+    x: wp.array(dtype=wp.float32),
+    y: wp.array(dtype=wp.float32),
+    n: int,
+    stride: float,
+):
+    """HashGrid 建网点：各环境坐标沿 x 平移 env*stride 做环境间隔离。"""
+    g = wp.tid()
+    env = g / n
+    pts[g] = wp.vec3(x[g] + float(env) * stride, y[g], 0.0)
+
+
 @wp.func
-def _b_nearest(
+def _b_nearest_dense(
     env: int,
     i: int,
     n: int,
@@ -38,7 +61,12 @@ def _b_nearest(
     side: wp.array(dtype=wp.int32),
     tracks: wp.array(dtype=wp.int32),
 ) -> int:
-    """批量布局下的共享航迹最近敌方；返回 env 内局部索引，无则 -1。"""
+    """稠密全扫描共享航迹最近敌方（蓝方追击转向用）。
+
+    C2 航迹全方共享：目标出生时只在某友邻探测距内，开火单位自身可距
+    目标任意远，故无距离上界、不能套半径查询。仅蓝方调用且无随机数，
+    规模 O(蓝*n)，保留稠密。
+    """
     si = side[base + i]
     xi = x[base + i]
     yi = y[base + i]
@@ -53,6 +81,49 @@ def _b_nearest(
             dy = y[k] - yi
             d = wp.sqrt(dx * dx + dy * dy)
             if d < best_d:
+                best_d = d
+                best = j
+    return best
+
+
+@wp.func
+def _b_nearest_grid(
+    grid: wp.uint64,
+    env: int,
+    i: int,
+    n: int,
+    tick: int,
+    base: int,
+    x: wp.array(dtype=wp.float32),
+    y: wp.array(dtype=wp.float32),
+    alive: wp.array(dtype=wp.int32),
+    side: wp.array(dtype=wp.int32),
+    tracks: wp.array(dtype=wp.int32),
+    stride: float,
+    radius: float,
+) -> int:
+    """网格查询半径内的共享航迹最近敌方；返回 env 内局部索引，无则 -1。
+
+    交战段只关心射程内目标：全局最近者在射程外时开火必然不发生，
+    故半径=武器射程的查询与稠密全扫描语义等价。等距取较小索引消歧。
+    """
+    g = base + i
+    si = side[g]
+    qx = x[g] + float(env) * stride
+    query = wp.hash_grid_query(grid, wp.vec3(qx, y[g], 0.0), radius)
+    best = int(-1)
+    best_d = float(1.0e30)
+    for k in query:
+        if k / n != env:
+            continue  # 哈希碰撞/环绕落入的其他环境点
+        j = k - base
+        if side[k] == si or alive[k] != 1:
+            continue
+        if tracks[(env * 2 + si) * n + j] > tick:
+            dx = x[k] - x[g]
+            dy = y[k] - y[g]
+            d = wp.sqrt(dx * dx + dy * dy)
+            if d <= radius and (d < best_d or (d == best_d and j < best)):
                 best_d = d
                 best = j
     return best
@@ -82,9 +153,11 @@ def k_b_sense(
     ttl: wp.array(dtype=wp.int32),
     tracks: wp.array(dtype=wp.int32),
     active: wp.array(dtype=wp.int32),
+    grid: wp.uint64,
     tick: int,
     vis: wp.array(dtype=wp.float32),
     n: int,
+    stride: float,
     seed0: wp.array(dtype=wp.int32),
 ):
     g = wp.tid()
@@ -93,20 +166,23 @@ def k_b_sense(
     if active[env] == 0 or alive[g] != 1:
         return
     si = side[g]
-    state = wp.rand_init(seed0[env], tick * n + i)
     reach = sensor[g] * vis[env]
-    xi = x[g]
-    yi = y[g]
-    for j in range(0, n):
-        k = env * n + j
+    qx = x[g] + float(env) * stride
+    query = wp.hash_grid_query(grid, wp.vec3(qx, y[g], 0.0), reach)
+    for k in query:
+        if k / n != env:
+            continue
+        j = k - env * n
         if side[k] == si or alive[k] != 1:
             continue
-        dx = x[k] - xi
-        dy = y[k] - yi
+        dx = x[k] - x[g]
+        dy = y[k] - y[g]
         d = wp.sqrt(dx * dx + dy * dy)
         if d > reach:
             continue
-        r = wp.randf(state)
+        # 每候选独立流（键含 j），网格遍历顺序不影响判定
+        cstate = wp.rand_init(seed0[env], SENSE_KEY_OFF + (tick * n + i) * n + j)
+        r = wp.randf(cstate)
         prob = detect[g] * (1.0 - d / reach)
         if r < prob:
             wp.atomic_max(tracks, (env * 2 + si) * n + j, tick + ttl[g])
@@ -150,7 +226,6 @@ def k_b_move(
     if active[env] == 0 or alive[g] != 1 or under_repair[g] == 1:
         return
     base = env * n
-    tgt = _b_nearest(env, i, n, tick, base, x, y, alive, side, tracks)
     if side[g] == RED:
         dx = oxs[env] - x[g]
         dy = oys[env] - y[g]
@@ -164,6 +239,10 @@ def k_b_move(
             x[g] = wp.clamp(x[g] + step * dx / d, 0.0, bx)
             y[g] = wp.clamp(y[g] + step * dy / d, 0.0, by)
     else:
+        # 追击转向需要全局最近航迹（C2 共享下无距离上界），保留稠密
+        tgt = _b_nearest_dense(
+            env, i, n, tick, base, x, y, alive, side, tracks
+        )
         if tgt < 0:
             return
         k = base + tgt
@@ -197,6 +276,8 @@ def k_b_engage(
     vis: wp.array(dtype=wp.float32),
     n: int,
     seed0: wp.array(dtype=wp.int32),
+    grid: wp.uint64,
+    stride: float,
 ):
     g = wp.tid()
     env = g / n
@@ -209,7 +290,11 @@ def k_b_engage(
     ):
         return
     base = env * n
-    tgt = _b_nearest(env, i, n, tick, base, x, y, alive, side, tracks)
+    # 只需射程内最近航迹：全局最近在射程外则不可能开火，网格半径=射程
+    wrange = weapon[g] * vis[env]
+    tgt = _b_nearest_grid(
+        grid, env, i, n, tick, base, x, y, alive, side, tracks, stride, wrange
+    )
     if tgt < 0:
         return
     k = base + tgt
@@ -375,6 +460,22 @@ class WarpBatchKernel:
         self.duration = self.scs[0].mission.duration_ticks
         self.tick = 0
 
+        # 空间哈希网格（切片 4）：所有环境共用一张表，沿 x 平移隔离。
+        # 单元格边长取最大探测 reach（武器射程均 ≤ 探测距）；sense 与
+        # engage 的查询半径都不超过 cell，3×3 邻格 stencil 足够。
+        # 蓝方追击转向用稠密扫描（C2 共享航迹无距离上界，见 _b_nearest_dense）。
+        h_sensor = np.concatenate(
+            [np.asarray(st.sensor_range, dtype=np.float32) for st in self.states]
+        )
+        vis_full = np.repeat(self.h_vis, n).astype(np.float32)
+        self.cell = float((h_sensor * vis_full).max())
+        # 环境间隔：地形宽 + 4 单元格（查询环至多外探约 2 cell，不跨环境）
+        self.stride = float(self.bound[0]) + 4.0 * self.cell
+        dim_x = int(np.ceil(E * self.stride / self.cell)) + 2
+        dim_y = int(np.ceil(float(self.bound[1]) / self.cell)) + 2
+        self.grid = wp.HashGrid(dim_x, dim_y, 1, device=d)
+        self.a_pts = wp.zeros(E * n, dtype=wp.vec3, device=d)
+
     def run(self) -> list[dict]:
         while self.active_count() > 0 and self.tick < self.duration:
             self._step()
@@ -399,11 +500,19 @@ class WarpBatchKernel:
         common = dict(device=d)
         wp.launch(k_b_cooldown, dim=E * n,
                   inputs=[self.a_cd, self.a_alive, self.a_active, n], **common)
+        # 重建空间哈希网格（坐标平移隔离各环境）
+        wp.launch(
+            k_b_gridpoints, dim=E * n,
+            inputs=[self.a_pts, self.a_x, self.a_y, n, float(self.stride)],
+            **common,
+        )
+        self.grid.build(self.a_pts, float(self.cell))
         wp.launch(
             k_b_sense, dim=E * n,
             inputs=[self.a_x, self.a_y, self.a_alive, self.a_side, self.a_sensor,
                     self.a_detect, self.a_ttl, self.a_tracks, self.a_active,
-                    tick, self.a_vis, n, self.a_seed0],
+                    self.grid.id, tick, self.a_vis, n, float(self.stride),
+                    self.a_seed0],
             **common,
         )
         wp.launch(k_b_clear, dim=E * n, inputs=[self.a_kill], **common)
@@ -419,12 +528,21 @@ class WarpBatchKernel:
                     float(self.terrain.water_level)],
             **common,
         )
+        # engage 在 move 之后：单位每 tick 可机动一个步长，必须用机动后
+        # 位置重建网格，否则新进入射程的目标还留在旧格里被漏掉
+        wp.launch(
+            k_b_gridpoints, dim=E * n,
+            inputs=[self.a_pts, self.a_x, self.a_y, n, float(self.stride)],
+            **common,
+        )
+        self.grid.build(self.a_pts, float(self.cell))
         wp.launch(
             k_b_engage, dim=E * n,
             inputs=[self.a_x, self.a_y, self.a_alive, self.a_repair, self.a_side, self.a_cd,
                     self.a_pk, self.a_weapon, self.a_reload, self.a_tracks,
                     self.a_kill, self.a_dmg, self.a_active,
-                    tick, self.a_vis, n, self.a_seed0],
+                    tick, self.a_vis, n, self.a_seed0,
+                    self.grid.id, float(self.stride)],
             **common,
         )
         wp.launch(
@@ -484,8 +602,10 @@ class WarpBatchKernel:
         side = np.asarray(self.states[0].side)  # 各环境编制相同
         red = side == RED
         alive_b = self.h_alive.reshape(E, n).astype(bool)
-        xb = self.h_x.reshape(E, n)
-        yb = self.h_y.reshape(E, n)
+        # 与单环境 WarpKernel._update_phases 一致用 float64 算距离，
+        # 避免成功半径边界上 f32/f64 判定翻转导致结束 tick 不一致
+        xb = self.h_x.reshape(E, n).astype(np.float64)
+        yb = self.h_y.reshape(E, n).astype(np.float64)
         red_alive = alive_b & red[None, :]
         red_any = red_alive.any(axis=1)
 
