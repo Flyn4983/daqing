@@ -1349,5 +1349,84 @@ ms/复制 仅作量级参考）
 - 全量回归 82 项通过（68 基线 + 14 新增），约 113s
 - 说明：C5 不新增第三方依赖（仅标准库 + 既有 sklearn/pandas/numpy）
 
+## 2026-10-14 | trae + 用户 | 比赛 C6：一屏式指挥大屏（内嵌 rerun 3D 回放）+ 全量数据包
+
+### 形态（按用户三项决策落地）
+- **首页大屏式布局**：1920×1080 设计基准、12 列网格一屏展示（顶栏 6 KPI；
+  左列四率卡/四率时序/MC 分布；中列 3D 主画面；右列 Pareto/Sobol/代理模型），
+  1440×900 同步验收；智能参谋（C5）收进全屏抽屉，不占主屏
+- **内嵌 3D**：中央 iframe 直接嵌入 rerun 0.39 自带 WASM web viewer，
+  完整复用 M2 写实 3D（地形/道路/红蓝军标/射界/目标信标/修理所/烟柱/中文标签），
+  同源本地托管、无 X-Frame-Options、断网可录屏
+- **录屏外部完成**：不做页内 MediaRecorder/自动分镜（测试显式断言不含相关 API）
+
+### 后端：C1–C5 产物 → 6 个前端 JSON（零新依赖）
+- 新模块 src/brigsim/dashboard/：labels.py（中文标签，与 C1 GJB 口径、
+  C3/C4/C5 同源）、build.py（6 构建器 + 全量编排）
+  - 四纯转换：sensitivity（Sobol S1/ST）、surrogate（9 目标 parity + 加速比）、
+    pareto（71 方案+三标签星+基线+C4 复验表）、manifest（产物清单/rrd 状态）
+  - 两仿真件：timeseries（knee/基线双方四率逐 tick 均值±std，8 复制）、
+    distribution（200 蒙特卡洛复制成败直方图+九指标五分位）
+  - 全部 JSON `allow_nan=False`，NaN/Inf→null；缺失资产跳过不拖垮全量
+- 加速比口径一致性：标题数锚定 C3 DEVLOG 端到端 0.003 ms/方案（≈4.1 万倍），
+  活体纯推理微基准（随硬件/批量漂移，实测 0.0007–0.003ms）仅存副字段
+- agent/replay_host.py：`rr.serve_grpc(cors_allow_origin=["*"])` +
+  `rr.log_file_from_path` + `rr.serve_web_viewer`，端口连续探测 10 个、
+  失败返回 ready=False 不抛异常；前端降级卡提示 dash-build
+- CLI：`brigsim dash-build [想定] --ts-reps/--dist-reps/--batch-size/
+  --kernel/--device/--only/--no-rrd/--out`；agent-serve 增加 --replay/--no-replay
+
+### 3D 轻量回放（rrd 不入库，本地生成）
+- visualize() 增加 use_models（盒体图元不嵌 GLB）、tick_stride（隔帧录制）、
+  embed（嵌入蓝图）三参数；旅级 knee 方案 rrd 仅 **21MB**（桌面含 GLB 版数百 MB，
+  GitHub 100MB 上限不可入库），outputs/dash/ 已 gitignore
+- 盒体状态色（真机逐帧确认）：红 (214,69,55)/蓝 (64,132,240)/受损琥珀
+  (239,170,23)/在修紫 (168,85,247)/残骸深灰扁盒 (72,72,80)，
+  末帧实测 红方 50 残骸+1 受损+1 在修、蓝方 49 残骸+13 受损+13 在修
+- **嵌入专用蓝图** _make_embed_blueprint：Spatial3DView 独占（蓝图/选择/
+  时间轴面板全收起），相机斜视角全战场入镜；`TimePanel(play_state="playing",
+  loop_mode="all", timeline="tick", fps=12)` 实现加载即自动循环播放，
+  录屏无需点播放；桌面 `brigsim replay` 蓝图保持不变
+- 射界扇面嵌入版改细线轮廓（两边+弧，alpha150）：桌面版的半透明填充扇面
+  在旅级几十个单位叠加后呈刺眼尖刺、喧宾夺主，轮廓线干净且军事标图感更强
+- 悬浮层：左上 knee 方案标签避让 viewer 顶栏（top:52px）、右下五色图例，
+  全部 pointer-events:none 不抢画布交互
+
+### 前端：零依赖手写 SVG 图表（无 CDN）
+- agent/web/ 下 css/base.css（C5 搬迁+变量）、css/dash.css；
+  js/common.js（工具/路由/抽屉/viewer 接入）、js/agent.js（C5 全部交互）、
+  js/charts.js（line/hBar/scatter/vBar 四类，多系列置信带、hover 十字线、
+  色标散点+星标+点击、ResizeObserver 防抖重绘）、js/views/{rates,pareto,
+  sensitivity,surrogate}.js、js/main.js（6 JSON Promise.allSettled 预载，
+  缺件降级空图不阻断）
+- 修复一屏布局 bug：body 缺 `display:flex;flex-direction:column`（C5 搬迁
+  丢失），导致网格高度被内容撑破 1080、底部 MC 分布/parity/图例被 overflow
+  裁掉；修复后两档分辨率真机确认一屏完整无滚动
+
+### 开源选型记录
+- 继续零自研渲染：rerun-sdk 0.39 WASM web viewer + rrb 蓝图（面板/播放
+  状态/眼点控制全部原生 API）；图表放弃引入 ECharts 等 CDN 依赖，
+  约 600 行手写 SVG 满足断网深色大屏需求
+- 无新增第三方依赖（http.server + sklearn/pandas/numpy + rerun）
+
+### 测试与验证
+- tests/test_c6_dashboard.py 14 项：JSON schema/NaN 过滤/口径数值、
+  四率时序均值 std、200 复制分布汇总、Sobol 转换、parity/加速比锚定、
+  Pareto 三标签/复验表、manifest（含 rrd 存在性如实报告）、
+  replay_host 缺文件/真实启动（rerun 缺失 skip）、index.html 契约
+  （6KPI/6 svg/抽屉 C5 元素/无 MediaRecorder）、CLI 冒烟
+- 全量回归 **96 项通过**（82 + 14），约 129s；ruff 全仓净（顺手修掉
+  C3/C4 遗留 3 处 E501 + 4 处 import 排序）
+- 真机（真实 Chrome，非 headless）多轮验收：iframe 3D 渲染/自动循环/
+  无侧栏无时间轴面板/三色状态/烟柱/轮廓扇面/抽屉滑入恢复/图表与 KPI
+  全渲染/无控制台红错；1920×1080 与 1440×900 headless 复核一屏布局
+
+### 入库物与复现
+- 入库：6 JSON（src/brigsim/agent/web/data/，200 复制全量口径）、
+  全部前后端源码与测试；rrd 不入库
+- clone 后复现 3D：`brigsim dash-build example_brigade`（GPU 约 1 分钟；
+  --kernel mesa 可纯 CPU）生成 outputs/dash/replay_knee.rrd，再
+  `brigsim agent-serve` 打开 http://127.0.0.1:8848/
+
 
 

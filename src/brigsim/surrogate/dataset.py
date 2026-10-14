@@ -66,7 +66,9 @@ def evaluate_points(
                 print(f"  推演 {p + 1}/{n_points} 设计点")
 
     elapsed = time.perf_counter() - t0
-    return values.mean(axis=1), values.std(axis=1, ddof=1) if reps > 1 else np.zeros_like(values[:, 0, :]), elapsed
+    mean = values.mean(axis=1)
+    std = values.std(axis=1, ddof=1) if reps > 1 else np.zeros_like(values[:, 0, :])
+    return mean, std, elapsed
 
 
 def build_dataset(

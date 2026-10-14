@@ -250,7 +250,8 @@ def surrogate_train(
             train_seconds=0.0,
         ),
     )
-    report = model.evaluate(hold[TARGETS + [f"{t}_std" for t in TARGETS]], model.predict(hold[FEATURE_NAMES]))
+    eval_targets = TARGETS + [f"{t}_std" for t in TARGETS]
+    report = model.evaluate(hold[eval_targets], model.predict(hold[FEATURE_NAMES]))
     typer.echo("\n留出集精度（R² 越接近 1 越好；MAE 为绝对误差；噪声地板=标签蒙特卡洛波动）：")
     for _, r in report.iterrows():
         typer.echo(
@@ -272,10 +273,15 @@ def surrogate_train(
 @app.command("optimize")
 def optimize_cmd(
     model: str = typer.Argument(..., help="代理模型 joblib（surrogate-train 产出）"),
-    scenario: str = typer.Option("example_brigade", "--scenario", help="基线想定（取任务时长；--validate 时回仿真）"),
+    scenario: str = typer.Option(
+        "example_brigade", "--scenario",
+        help="基线想定（取任务时长；--validate 时回仿真）"
+    ),
     pop: int = typer.Option(80, "--pop", help="NSGA-II 种群规模"),
     gens: int = typer.Option(60, "--gens", help="进化代数"),
-    min_readiness: float = typer.Option(0.0, "--min-readiness", help="红方完好率保底约束（0=不启用）"),
+    min_readiness: float = typer.Option(
+        0.0, "--min-readiness", help="红方完好率保底约束（0=不启用）"
+    ),
     validate: bool = typer.Option(False, "--validate", help="对代表方案回蒙特卡洛仿真复验"),
     reps: int = typer.Option(16, "--reps", help="复验复制次数"),
     kernel: str = typer.Option("warp", "--kernel", help="复验内核 warp/mesa"),
@@ -391,21 +397,108 @@ def agent_serve_cmd(
     host: str = typer.Option("127.0.0.1", "--host", help="监听地址"),
     port: int = typer.Option(8848, "--port", help="监听端口"),
     delay: bool = typer.Option(True, "--delay/--no-delay", help="是否模拟流式生成等待"),
+    replay: str = typer.Option(
+        "outputs/dash/replay_knee.rrd", "--replay", help="内嵌 3D 回放 rrd 路径"
+    ),
+    no_replay: bool = typer.Option(False, "--no-replay", help="不启动 3D 回放（仅数据大屏）"),
 ) -> None:
-    """C5：启动本地推理服务 Web 界面（服务监控 + 对话 + 一键保障方案）。"""
+    """C5/C6：启动指挥大屏（3D 回放 + 四率态势 + 智能参谋）。"""
     import time
 
     from .agent.server import AgentWebServer
 
-    server = AgentWebServer(host=host, port=port, simulate_delay=delay)
+    server = AgentWebServer(
+        host=host,
+        port=port,
+        simulate_delay=delay,
+        rrd_path=None if no_replay else replay,
+        enable_replay=not no_replay,
+    )
     url = server.start()
-    typer.echo(f"本地推理服务已启动：{url}（Ctrl+C 停止）")
+    typer.echo(f"指挥大屏已启动：{url}（Ctrl+C 停止）")
+    if server.viewer_status.get("ready"):
+        typer.echo(f"3D 回放服务：{server.viewer_status['viewer_url']}")
+    else:
+        typer.echo(f"3D 回放未挂载：{server.viewer_status.get('reason', '')}")
     try:
         while True:
             time.sleep(3600)
     except KeyboardInterrupt:
         server.stop()
         typer.echo("服务已停止。")
+
+
+@app.command("dash-build")
+def dash_build_cmd(
+    scenario: str = typer.Argument("example_brigade", help="想定名称或 YAML 路径"),
+    out: Path = typer.Option(
+        Path("src/brigsim/agent/web/data"), "--out", help="6 个 JSON 产物目录（入库）"
+    ),
+    kernel: str = typer.Option("warp", "--kernel", help="warp（GPU/CPU 自动回退）或 mesa"),
+    device: str = typer.Option("cuda:0", "--device", help="warp 设备（不可用自动回退）"),
+    ts_reps: int = typer.Option(8, "--ts-reps", help="四率时序每方案复制次数"),
+    dist_reps: int = typer.Option(200, "--dist-reps", help="蒙特卡洛分布复制次数"),
+    batch_size: int = typer.Option(256, "--batch-size", help="warp 批量每批环境数"),
+    seed: int = typer.Option(20261014, "--seed", help="基础随机种子"),
+    sensitivity: Path = typer.Option(
+        Path("outputs/sensitivity_sobol_n128r8_v3baseline.csv"), "--sensitivity"
+    ),
+    pareto: Path = typer.Option(Path("models/pareto_brigade_v1.csv"), "--pareto"),
+    validation: Path = typer.Option(
+        Path("models/pareto_brigade_v1_validation.csv"), "--validation"
+    ),
+    parquet: Path = typer.Option(
+        Path("outputs/datasets/surrogate_brigade_v1.parquet"), "--parquet"
+    ),
+    model: Path = typer.Option(
+        Path("models/surrogate_brigade_v1.joblib"), "--model", help="代理模型 joblib"
+    ),
+    only: str = typer.Option(
+        "", "--only", help="只构建部分产物，逗号分隔："
+        "timeseries,distribution,sensitivity,surrogate,pareto,replay,manifest"
+    ),
+    no_rrd: bool = typer.Option(False, "--no-rrd", help="不生成 3D 回放 rrd"),
+    rrd_out: Path = typer.Option(
+        Path("outputs/dash/replay_knee.rrd"), "--rrd-out", help="3D 回放输出路径（不入库）"
+    ),
+) -> None:
+    """C6：预生成指挥大屏全部数据（6 JSON 入库 + 轻量 rrd 回放，本地生成）。"""
+    from .dashboard.build import build_all, load_scenario
+
+    sc = load_scenario(scenario)
+    only_set = {s.strip() for s in only.split(",") if s.strip()} or None
+    results = build_all(
+        out,
+        scenario_name=scenario,
+        duration_ticks=int(sc.mission.duration_ticks),
+        paths={
+            "sensitivity": sensitivity,
+            "pareto": pareto,
+            "validation": validation,
+            "parquet": parquet,
+            "model": model,
+        },
+        replay_path=rrd_out,
+        only=only_set,
+        ts_reps=ts_reps,
+        dist_reps=dist_reps,
+        batch_size=batch_size,
+        seed=seed,
+        kernel=kernel,
+        device=device,
+        make_rrd=not no_rrd,
+    )
+    typer.echo(f"想定: {sc.name}（{sc.mission.duration_ticks} ticks）  内核: {kernel}")
+    for name, res in results.items():
+        if isinstance(res, tuple) and res[0] == "skipped":
+            typer.echo(f"  [跳过] {name}: {res[1]}")
+        else:
+            size = ""
+            if Path(res).suffix == ".json":
+                size = f"（{Path(res).stat().st_size / 1024:.1f} KB）"
+            elif Path(res).suffix == ".rrd":
+                size = f"（{Path(res).stat().st_size / 1024 / 1024:.1f} MB）"
+            typer.echo(f"  [完成] {name}: {res}{size}")
 
 
 if __name__ == "__main__":

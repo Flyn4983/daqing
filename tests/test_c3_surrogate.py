@@ -11,6 +11,7 @@ import pandas as pd
 import pytest
 
 from brigsim.data.provider import YamlFileProvider
+from brigsim.surrogate.dataset import build_dataset, evaluate_points
 from brigsim.surrogate.design import (
     FEATURE_NAMES,
     SPACE,
@@ -18,7 +19,6 @@ from brigsim.surrogate.design import (
     apply_features,
     sample_lhs,
 )
-from brigsim.surrogate.dataset import build_dataset, evaluate_points
 from brigsim.surrogate.model import SurrogateModel
 
 

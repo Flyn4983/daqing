@@ -20,7 +20,7 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
-from .design import FEATURE_NAMES, TARGETS, TARGET_BOUNDS
+from .design import FEATURE_NAMES, TARGET_BOUNDS, TARGETS
 
 MODEL_FORMAT = "brigsim-surrogate/0.1"
 
@@ -63,7 +63,9 @@ class SurrogateModel:
         self.metadata: TrainMetadata | None = None
 
     # ---- 训练 / 预测 ----
-    def fit(self, X: pd.DataFrame, y: pd.DataFrame, metadata: TrainMetadata | None = None) -> "SurrogateModel":
+    def fit(
+        self, X: pd.DataFrame, y: pd.DataFrame, metadata: TrainMetadata | None = None
+    ) -> "SurrogateModel":
         Xs = self.x_scaler.fit_transform(X[self.feature_names].to_numpy(float))
         ys = self.y_scaler.fit_transform(y[self.target_names].to_numpy(float))
         self.mlp.fit(Xs, ys)
@@ -71,7 +73,10 @@ class SurrogateModel:
         return self
 
     def predict(self, X: pd.DataFrame | np.ndarray) -> pd.DataFrame:
-        arr = X[self.feature_names].to_numpy(float) if isinstance(X, pd.DataFrame) else np.asarray(X, float)
+        if isinstance(X, pd.DataFrame):
+            arr = X[self.feature_names].to_numpy(float)
+        else:
+            arr = np.asarray(X, float)
         pred = self.mlp.predict(self.x_scaler.transform(arr))
         # MLP 单样本时 predict 返回一维
         if pred.ndim == 1:

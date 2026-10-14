@@ -1,0 +1,164 @@
+/* C6 一屏式指挥大屏：顶栏 KPI + 12 列网格 + 3D 主画面 + 智能参谋全屏抽屉 */
+
+/* ---------- 顶栏 ---------- */
+.topbar {
+  height: 52px; flex: none; display: flex; align-items: center; gap: 18px;
+  padding: 0 16px; border-bottom: 1px solid var(--line);
+  background: linear-gradient(180deg, rgba(18,29,51,.95), rgba(10,18,34,.85));
+}
+.topbar .brand .title { font-size: 16px; }
+.topbar .brand .sub { font-size: 11px; letter-spacing: 1px; }
+.kpis { display: flex; gap: 8px; flex: 1; justify-content: center; min-width: 0; }
+.kpi {
+  min-width: 118px; padding: 4px 14px 5px; border: 1px solid var(--line);
+  background: #0b1526; border-radius: 9px; display: flex; flex-direction: column;
+  line-height: 1.25;
+}
+.kpi .kpi-v { font: 700 17px var(--mono); color: #e8f1ff; white-space: nowrap; }
+.kpi .kpi-v small { font-size: 10px; color: var(--muted); font-weight: 400; }
+.kpi .kpi-l { font-size: 11px; color: var(--muted); }
+.kpi .kpi-s { font: 10px var(--mono); color: #556b8d; }
+.kpi.good .kpi-v { color: #7ff0d2; }
+.kpi.warn .kpi-v { color: var(--warn); }
+.kpi.bad .kpi-v { color: #ff9c9c; }
+.top-actions { display: flex; align-items: center; gap: 10px; flex: none; }
+.mini-pill {
+  display: flex; align-items: center; gap: 7px; border: 1px solid var(--line);
+  background: var(--panel-2); border-radius: 999px; padding: 6px 13px;
+  font: 11.5px var(--mono); color: #a9c3e6;
+}
+.mini-pill b { color: #d7e5fa; font-weight: 600; }
+.btn-agent {
+  height: 34px; padding: 0 18px; border-radius: 999px; font-weight: 700;
+  display: flex; align-items: center; gap: 7px;
+}
+
+/* ---------- 主网格 ---------- */
+.dash-grid {
+  flex: 1; min-height: 0;
+  display: grid; grid-template-columns: repeat(12, 1fr);
+  grid-template-rows: 1.05fr 1.25fr 1fr;
+  gap: 10px; padding: 10px;
+}
+.panel {
+  background: linear-gradient(180deg, rgba(18,29,51,.82), rgba(12,20,36,.86));
+  border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px;
+  display: flex; flex-direction: column; min-height: 0; overflow: hidden;
+}
+.panel > h3 {
+  font-size: 12.5px; font-weight: 700; color: #b9cbe6; letter-spacing: 1px;
+  margin-bottom: 8px; display: flex; align-items: center; gap: 8px; flex: none;
+}
+.panel > h3::before { content: ""; width: 4px; height: 13px; border-radius: 2px;
+                      background: linear-gradient(180deg, var(--accent), var(--accent-2)); }
+.panel > h3 .tag-en { margin-left: auto; color: #42546f; font-size: 9.5px; font-family: var(--mono); }
+.panel-body { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+
+.col-left { grid-column: 1 / span 3; grid-row: 1 / -1; display: flex; flex-direction: column; gap: 10px; min-height: 0; }
+.col-center { grid-column: 4 / span 6; grid-row: 1 / -1; min-height: 0; position: relative;
+              border: 1px solid var(--line); border-radius: 12px; overflow: hidden; background: #050a14; }
+.col-right { grid-column: 10 / span 3; grid-row: 1 / -1; display: flex; flex-direction: column; gap: 10px; min-height: 0; }
+.col-right .panel { flex: 1; }
+
+/* ---------- 左列：四率卡 / 时序 / 分布 ---------- */
+.rate-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; flex: none; }
+.rate-card { background: #0a1426; border: 1px solid #182740; border-radius: 9px; padding: 8px 11px; }
+.rate-card .rc-l { font-size: 11px; color: var(--muted); display: flex; justify-content: space-between; }
+.rate-card .rc-l .side { font-family: var(--mono); color: #55709a; }
+.rate-card .rc-v { font: 700 21px/1.3 var(--mono); color: #e8f1ff; }
+.rate-card .rc-v small { font-size: 11px; color: var(--muted); font-weight: 400; }
+.rate-card .rc-d { font: 10.5px var(--mono); }
+.rc-d.up { color: var(--good); } .rc-d.down { color: var(--bad); } .rc-d.flat { color: var(--muted); }
+.rate-card.readiness { border-color: #1d4d44; }
+.rate-card.attrition { border-color: #4d2a2a; }
+.rate-card.repair { border-color: #1d3a5c; }
+.rate-card.failure { border-color: #4d3d1d; }
+
+.toggle-row { display: flex; gap: 6px; flex: none; margin-bottom: 6px; flex-wrap: wrap; }
+.seg {
+  font: 11px var(--mono); color: #93a8cc; background: #0a1426; border: 1px solid #1d2e4b;
+  border-radius: 999px; padding: 2px 10px; cursor: pointer; user-select: none;
+}
+.seg.on { color: #06121f; background: linear-gradient(135deg, var(--accent), var(--accent-2));
+          border-color: transparent; font-weight: 700; }
+.chart-box { flex: 1; min-height: 0; position: relative; }
+.chart-box svg { width: 100%; height: 100%; display: block; }
+.dist-meta { flex: none; font: 11px var(--mono); color: var(--muted); margin-top: 4px;
+             display: flex; justify-content: space-between; gap: 8px; }
+
+/* ---------- 中列：3D 回放 ---------- */
+#replay-frame { width: 100%; height: 100%; border: 0; display: block; background: #050a14; }
+.replay-overlay {
+  position: absolute; z-index: 3; pointer-events: none;
+  background: rgba(8,16,30,.72); border: 1px solid rgba(54,182,245,.35);
+  backdrop-filter: blur(4px); border-radius: 9px;
+}
+/* 让出 viewer 自身顶栏（约 44px），避免标签与工具条重叠 */
+.replay-tag { top: 52px; left: 12px; padding: 7px 13px; }
+.replay-tag b { font-size: 13px; color: #bfe9ff; letter-spacing: 1px; }
+.replay-tag .sub { font: 10.5px var(--mono); color: #8fb4d8; display: block; }
+.replay-legend { right: 12px; bottom: 12px; padding: 8px 12px; font-size: 11px;
+                display: flex; flex-direction: column; gap: 4px; }
+.replay-legend .lg { display: flex; align-items: center; gap: 7px; color: #a9c3e6; }
+.replay-legend .sw { width: 11px; height: 11px; border-radius: 3px; flex: none; }
+.replay-fallback {
+  position: absolute; inset: 0; z-index: 5; display: flex;
+  flex-direction: column; align-items: center; justify-content: center; gap: 12px;
+  background: radial-gradient(600px 300px at 50% 40%, rgba(54,182,245,.08), transparent), #050a14;
+  text-align: center; padding: 40px;
+}
+.replay-fallback .fb-ico { font-size: 40px; }
+.replay-fallback .fb-t { font-size: 16px; font-weight: 700; color: #bfe9ff; }
+.replay-fallback .fb-c { font: 12px var(--mono); color: #7e90ad; max-width: 460px; line-height: 1.8; }
+.replay-fallback code {
+  color: #7ff0d2; background: #0a1426; border: 1px solid #1d2e4b; border-radius: 5px;
+  padding: 2px 7px;
+}
+.replay-loading {
+  position: absolute; inset: 0; z-index: 4; display: flex; align-items: center; justify-content: center;
+  background: #050a14; color: var(--muted); font-size: 13px; gap: 10px;
+}
+.spinner { width: 18px; height: 18px; border: 2px solid #1d2e4b; border-top-color: var(--accent);
+           border-radius: 50%; animation: spin 0.9s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* ---------- 右列：Pareto / 灵敏度 / 代理模型 ---------- */
+.pareto-detail {
+  flex: none; margin-top: 6px; background: #0a1426; border: 1px solid #182740;
+  border-radius: 8px; padding: 7px 10px; font: 11px var(--mono); color: #a9c3e6;
+  min-height: 44px; line-height: 1.7;
+}
+.pareto-detail b { color: #d7e5fa; }
+.pareto-detail .pd-tag { color: var(--accent-2); }
+.surr-stats { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; flex: none; margin-bottom: 6px; }
+.surr-stats .ss { background: #0a1426; border: 1px solid #182740; border-radius: 7px; padding: 6px 9px; }
+.surr-stats .ss .n { font: 700 15px var(--mono); color: #7ff0d2; }
+.surr-stats .ss .l { font-size: 10.5px; color: var(--muted); }
+
+/* SVG 图表公共 */
+.tip {
+  position: absolute; z-index: 20; pointer-events: none; display: none;
+  background: rgba(7,15,28,.95); border: 1px solid #2a4166; border-radius: 7px;
+  padding: 6px 10px; font: 11px/1.6 var(--mono); color: #cfe0f7; white-space: nowrap;
+}
+.ax-text { fill: #6680a5; font: 10px var(--mono); }
+.grid-line { stroke: #16233b; stroke-width: 1; }
+
+/* ---------- 智能参谋全屏抽屉 ---------- */
+.agent-drawer {
+  position: fixed; inset: 0; z-index: 50; background: var(--bg);
+  display: flex; flex-direction: column;
+  transform: translateX(102%); transition: transform .28s cubic-bezier(.22,.8,.3,1);
+}
+.agent-drawer.open { transform: translateX(0); }
+.btn-ghost {
+  background: transparent; border: 1px solid #2a4166; color: #a9c3e6;
+  border-radius: 999px; height: 32px; padding: 0 16px;
+}
+.btn-ghost:hover { border-color: var(--accent); color: #e8f4ff; filter: none; }
+
+@media (max-width: 1500px) {
+  .kpi { min-width: 102px; padding: 4px 10px; }
+  .kpi .kpi-v { font-size: 15px; }
+  .topbar .brand .sub { display: none; }
+}

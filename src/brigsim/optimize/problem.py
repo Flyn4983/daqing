@@ -22,7 +22,7 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
-from ..surrogate.design import FEATURES, FEATURE_NAMES
+from ..surrogate.design import FEATURE_NAMES, FEATURES
 
 # 我方可调的决策变量（FEATURES 前 6 维中的红方 4 项；蓝方 2 项属敌情）
 DECISION_VARS = [

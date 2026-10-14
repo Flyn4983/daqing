@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import math
 from pathlib import Path
 
 import numpy as np
@@ -36,6 +37,10 @@ C_ROCK = (120, 108, 92)
 C_SNOW = (228, 230, 228)
 
 
+REPAIR_C = (168, 85, 247)  # 在修单位图元色（紫）
+WRECK_C = (72, 72, 80)  # 战损残骸图元色（深灰）
+
+
 def visualize(
     snapshots: pd.DataFrame,
     engagements: pd.DataFrame,
@@ -48,16 +53,30 @@ def visualize(
     look: tuple[float, float, float] | None = None,
     supply: pd.DataFrame | None = None,
     app_id: str = "brigsim",
+    use_models: bool = True,
+    tick_stride: int = 1,
+    embed: bool = False,
 ) -> None:
+    """录制 3D 回放。
+
+    use_models=False 时不嵌 GLB（C6 大屏轻量 rrd）：单位用盒体图元，
+    颜色区分 正常（方别色）/受损（琥珀）/在修（紫）/战损残骸（深灰）。
+    tick_stride>1 时动态帧隔 tick 记录（rerun latest-at 自动保持，体积减半），
+    静态要素照常、最后一帧始终记录。
+    embed=True 时写入大屏 iframe 专用极简蓝图（3D 视口独占，面板全收起）；
+    默认 False 保持 ``brigsim replay`` 桌面蓝图（侧栏时序/交战日志 + 时间轴）。
+    """
     rr.init(app_id, spawn=spawn)
     if rrd_path is not None:
         rr.save(str(rrd_path))
-    rr.send_blueprint(_make_blueprint(eye, look))
+    rr.send_blueprint(
+        _make_embed_blueprint(eye, look) if embed else _make_blueprint(eye, look)
+    )
 
     info = _unit_info(scenario)
     _log_terrain(terrain)
     _log_passability(terrain)
-    _log_static_units(info, terrain)
+    _log_static_units(info, terrain, use_models)
     _log_objective(scenario, terrain)
     _log_repair_stations(scenario, terrain)
     _log_weather_header(scenario)
@@ -67,13 +86,21 @@ def visualize(
         for t, uid, x, y in snapshots[["tick", "unit_id", "x", "y"]].itertuples(False)
     }
     # 各型装备的接地高度（按实际 GLB 包围盒，支持同名资产无缝替换）
-    z_off = {typ: ground_offset(typ) for typ in {v[0] for v in info.values()}}
+    z_off = (
+        {typ: ground_offset(typ) for typ in {v[0] for v in info.values()}}
+        if use_models
+        else {}
+    )
     model_state: dict[str, str] = {}
     phases = scenario.mission.phase_list
     shown_phase = -1
+    all_ticks = sorted(int(t) for t in snapshots["tick"].unique())
+    last_tick = all_ticks[-1] if all_ticks else 0
 
     for tick, grp in snapshots.groupby("tick", sort=True):
         tick = int(tick)
+        if tick_stride > 1 and tick != last_tick and tick % tick_stride != 0:
+            continue
         rr.set_time("tick", sequence=tick)
         rr.set_time("sim_clock", duration=float(tick * scenario.mission.dt_seconds))
 
@@ -95,31 +122,37 @@ def visualize(
         ys = cur["y"].to_numpy()
         zs = terrain.height_at(xs, ys)
         alive_idx, dead_idx = [], []
-        for k, uid in enumerate(cur.index):
-            ent = f"world/units/{uid}"
-            alive, damaged = bool(cur.at[uid, "alive"]), bool(cur.at[uid, "damaged"])
-            rr.log(
-                ent,
-                rr.Transform3D(
-                    # 按模型实际包围盒接地
-                    translation=[
-                        float(xs[k]),
-                        float(ys[k]),
-                        float(zs[k]) + z_off[info[uid][0]],
-                    ],
-                    rotation=rr.RotationAxisAngle(
-                        axis=[0, 0, 1], radians=float(cur.at[uid, "heading"])
+        if use_models:
+            for k, uid in enumerate(cur.index):
+                ent = f"world/units/{uid}"
+                alive, damaged = bool(cur.at[uid, "alive"]), bool(cur.at[uid, "damaged"])
+                rr.log(
+                    ent,
+                    rr.Transform3D(
+                        # 按模型实际包围盒接地
+                        translation=[
+                            float(xs[k]),
+                            float(ys[k]),
+                            float(zs[k]) + z_off[info[uid][0]],
+                        ],
+                        rotation=rr.RotationAxisAngle(
+                            axis=[0, 0, 1], radians=float(cur.at[uid, "heading"])
+                        ),
                     ),
-                ),
-            )
-            state = "dead" if not alive else ("damaged" if damaged else "ok")
-            if model_state.get(uid) != state:
-                _tint_model(ent, info[uid][0], state)
-                model_state[uid] = state
-            (dead_idx if not alive else alive_idx).append(k)
+                )
+                state = "dead" if not alive else ("damaged" if damaged else "ok")
+                if model_state.get(uid) != state:
+                    _tint_model(ent, info[uid][0], state)
+                    model_state[uid] = state
+                (dead_idx if not alive else alive_idx).append(k)
+        else:
+            for k, uid in enumerate(cur.index):
+                alive = bool(cur.at[uid, "alive"])
+                (dead_idx if not alive else alive_idx).append(k)
+            _log_units_primitives(cur, zs, info)
 
         _log_markers(cur=cur, zs=zs, info=info)
-        _log_fans(cur, zs, info)
+        _log_fans(cur, zs, info, outline=embed)
         _log_smoke(tick, cur, zs)
         _log_weather(tick, scenario, terrain)
         _log_engagements(tick, engagements, pos_table, terrain, info)
@@ -288,10 +321,64 @@ def _log_passability(t: HeightField) -> None:
         rr.log("world/passability/bridges", mesh, static=True)
 
 
-def _log_static_units(info, terrain: HeightField) -> None:
+def _log_static_units(info, terrain: HeightField, use_models: bool = True) -> None:
+    if not use_models:
+        return
     for uid, (typ, *_rest) in info.items():
         glb = ensure_model(typ)
         rr.log(f"world/units/{uid}/model", rr.Asset3D(path=str(glb)), static=True)
+
+
+def _log_units_primitives(cur: pd.DataFrame, zs: np.ndarray, info) -> None:
+    """C6 轻量图元单位：盒体 + 状态色（正常方别色/受损琥珀/在修紫/残骸深灰）。"""
+    alive_centers: list = []
+    alive_rot: list = []
+    alive_colors: list = []
+    wreck_centers: list = []
+    wreck_rot: list = []
+    for k, uid in enumerate(cur.index):
+        x, y, z = float(cur.at[uid, "x"]), float(cur.at[uid, "y"]), float(zs[k])
+        hz = float(cur.at[uid, "heading"]) * 0.5
+        quat = [0.0, 0.0, math.sin(hz), math.cos(hz)]  # xyzw，绕 z 轴
+        if not bool(cur.at[uid, "alive"]):
+            wreck_centers.append([x, y, z + 1.0])
+            wreck_rot.append(quat)
+            continue
+        side = info[uid][1]
+        if bool(cur.at[uid, "under_repair"]):
+            color = REPAIR_C
+        elif bool(cur.at[uid, "damaged"]):
+            color = DAMAGED_C
+        else:
+            color = SIDE_COLOR[side]
+        alive_centers.append([x, y, z + 2.5])
+        alive_rot.append(quat)
+        alive_colors.append(color)
+
+    if alive_centers:
+        rr.log(
+            "world/units/primitives",
+            rr.Boxes3D(
+                centers=alive_centers,
+                sizes=[12.0, 7.0, 5.0],
+                rotations=np.asarray(alive_rot),
+                colors=alive_colors,
+            ),
+        )
+    else:
+        rr.log("world/units/primitives", rr.Clear(recursive=False))
+    if wreck_centers:
+        rr.log(
+            "world/units/wrecks",
+            rr.Boxes3D(
+                centers=wreck_centers,
+                sizes=[10.0, 5.0, 2.0],
+                rotations=np.asarray(wreck_rot),
+                colors=[WRECK_C] * len(wreck_centers),
+            ),
+        )
+    else:
+        rr.log("world/units/wrecks", rr.Clear(recursive=False))
 
 
 def _tint_model(ent: str, typ: str, state: str) -> None:
@@ -405,11 +492,42 @@ def _log_markers(*, cur, zs, info) -> None:
         )
 
 
-def _log_fans(cur, zs, info) -> None:
-    """存活单位射界扇面（半透明三角网格，扇形半角随当前武器，粗取 ±10°）。"""
-    verts, colors = [], []
+def _log_fans(cur, zs, info, *, outline: bool = False) -> None:
+    """存活单位射界扇面（半角粗取 ±10°）。
+
+    桌面版用半透明三角网格填充；C6 大屏嵌入版（outline=True）改用细线轮廓
+    （两条射界边 + 弧），避免几十个半透明扇面叠加成刺眼尖刺、喧宾夺主。
+    """
     half = np.deg2rad(10)
     arc = np.linspace(-half, half, 11)
+
+    if outline:
+        strips, strip_colors = [], []
+        for k, uid in enumerate(cur.index):
+            if not bool(cur.at[uid, "alive"]):
+                continue
+            side = info[uid][1]
+            rng_ = info[uid][3]
+            h = float(cur.at[uid, "heading"])
+            ox, oy, oz = float(cur.at[uid, "x"]), float(cur.at[uid, "y"]), float(zs[k]) + 2
+            arc_pts = [
+                [ox + rng_ * np.cos(h + a), oy + rng_ * np.sin(h + a), oz]
+                for a in arc
+            ]
+            c = SIDE_COLOR[side] + (150,)
+            strips += [[arc_pts[0], [ox, oy, oz]], arc_pts,
+                       [arc_pts[-1], [ox, oy, oz]]]
+            strip_colors += [c, c, c]
+        if strips:
+            rr.log(
+                "world/fans",
+                rr.LineStrips3D(strips, colors=strip_colors, radii=4.0),
+            )
+        else:
+            rr.log("world/fans", rr.Clear(recursive=False))
+        return
+
+    verts, colors = [], []
     for k, uid in enumerate(cur.index):
         if not bool(cur.at[uid, "alive"]):
             continue
@@ -623,16 +741,9 @@ def _make_blueprint(
     eye: tuple[float, float, float] | None = None,
     look: tuple[float, float, float] | None = None,
 ) -> rrb.Blueprint:
-    scene = rrb.Spatial3DView(
-        name="战场态势",
-        origin="/world",
-        background=(15, 17, 22),
-        line_grid=rrb.LineGrid3D(spacing=1000.0, color=(60, 66, 78)),
-        eye_controls=rrb.EyeControls3D(
-            position=list(eye) if eye else [3600.0, -5200.0, 6800.0],
-            look_target=list(look) if look else [5200.0, 5000.0, 120.0],
-            eye_up=[0.0, 0.0, 1.0],
-        ),
+    scene = _scene_view(
+        eye or (3600.0, -5200.0, 6800.0),
+        look or (5200.0, 5000.0, 120.0),
     )
     side_panel = rrb.Tabs(
         rrb.TimeSeriesView(name="红方 战损/完好", origin="/metrics/red"),
@@ -646,4 +757,47 @@ def _make_blueprint(
         rrb.BlueprintPanel(expanded=False),
         rrb.SelectionPanel(expanded=False),
         rrb.TimePanel(expanded=True),
+    )
+
+
+def _make_embed_blueprint(
+    eye: tuple[float, float, float] | None = None,
+    look: tuple[float, float, float] | None = None,
+) -> rrb.Blueprint:
+    """C6 大屏 iframe 嵌入用：3D 视口独占，侧栏/蓝图/选择/时间轴全部收起。
+
+    时间轴面板虽收起，但通过蓝图 play_state=playing + loop_mode=all 让回放
+    加载即自动循环播放（录屏无需手动点播放）；timeline 锚定序列轴 tick。
+    """
+    scene = _scene_view(
+        eye or (2400.0, -7600.0, 9200.0),
+        look or (5200.0, 4600.0, 160.0),
+    )
+    return rrb.Blueprint(
+        scene,
+        rrb.BlueprintPanel(expanded=False),
+        rrb.SelectionPanel(expanded=False),
+        rrb.TimePanel(
+            expanded=False,
+            timeline="tick",
+            play_state="playing",
+            loop_mode="all",
+            fps=12.0,
+        ),
+    )
+
+
+def _scene_view(
+    eye: tuple[float, float, float], look: tuple[float, float, float]
+) -> rrb.Spatial3DView:
+    return rrb.Spatial3DView(
+        name="战场态势",
+        origin="/world",
+        background=(15, 17, 22),
+        line_grid=rrb.LineGrid3D(spacing=1000.0, color=(60, 66, 78)),
+        eye_controls=rrb.EyeControls3D(
+            position=list(eye),
+            look_target=list(look),
+            eye_up=[0.0, 0.0, 1.0],
+        ),
     )

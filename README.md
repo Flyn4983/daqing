@@ -28,6 +28,14 @@
   SimPy 保障留 CPU tick 边界同步；
   待办：host 侧自研向量化 DES 经评估暂缓（与开源优先冲突、
   当前 9.4ms/复制可接受）
+- [x] **比赛主线 C1–C6：合成旅装备"四率"智能分析与决策支持平台**
+  （[DEVLOG](DEVLOG.md) 各 C 条目）——
+  C1 四率 GJB 口径对齐；C2 数据接口规范+参数模板（真实数据留白）；
+  C3 四率代理预测模型（MLP，留出 R²=0.881，端到端 0.003ms/方案≈4.1 万倍加速）；
+  C4 pymoo NSGA-II 多目标保障决策（71 方案 Pareto 前沿 + 蒙特卡洛复验）；
+  C5 国产大模型智能体（**模拟本地化部署**：服务监控+函数调用+对话/一键方案，规则引擎驱动真实数据）；
+  **C6 一屏式指挥大屏**（1920×1080，内嵌 rerun WASM 3D 回放自动循环、
+  四率卡/时序/MC 分布/Pareto/灵敏度/parity 零依赖手写 SVG、C5 收为全屏抽屉）
 
 ## 快速开始
 
@@ -37,21 +45,28 @@ uv pip install -e ".[dev,viz]"
 uv run brigsim run scenarios/example_company.yaml --runs 100
 uv run brigsim run example_battalion --runs 40        # 营级 44v27 三阶段进攻
 uv run brigsim run example_brigade --runs 100 --kernel warp   # Warp 向量化内核（自动用 GPU）
-uv run brigsim replay scenarios/example_company.yaml   # 打开 rerun 3D 回放
+uv run brigsim replay scenarios/example_company.yaml   # 打开 rerun 桌面 3D 回放
 uv run brigsim surrogate-gen example_brigade --points 512 --reps 8 --out outputs/datasets/sur.parquet
 uv run brigsim surrogate-train outputs/datasets/sur.parquet --model-out models/surrogate_brigade_v1.joblib
 uv run brigsim optimize models/surrogate_brigade_v1.joblib --pop 80 --gens 60 --validate --out models/pareto_brigade_v1.csv
 uv run brigsim agent --plan knee          # C5：本地大模型智能参谋（对话问答/一键保障方案）
-uv run brigsim agent-serve --port 8848    # C5：本地推理服务 Web 界面（监控面板+对话+一键方案）
+
+# C6：先构建大屏数据（6 JSON 入库，rrd 不入库），再起指挥大屏（含内嵌 3D）
+uv run brigsim dash-build example_brigade --kernel warp   # 生成 3D 回放 outputs/dash/replay_knee.rrd（约 21MB）
+uv run brigsim agent-serve --port 8848    # 浏览器打开：一屏大屏（中央 3D）+「智能参谋」抽屉
 uv run pytest
 ```
+
+> **clone 后注意**：3D 回放文件（rrd）不入库，首次使用需先运行一次
+> `brigsim dash-build`（可用 `--kernel mesa` 纯 CPU 生成）；
+> 未生成时大屏其余功能正常，中央显示降级提示卡。
 
 ## 分层架构
 
 | 层 | 目录 | 职责 | 主要开源组件 |
 |---|---|---|---|
-| L4 应用 | `brigsim/cli.py`、`brigsim/agent/` | 想定加载、跑批、报告；**本地大模型智能参谋**（模拟本地部署：推理服务监控 + 对话问答 + 保障方案一键生成，函数调用直连代理/Pareto/复验真实数据） | Typer；标准库 http.server（无新依赖） |
-| L3 可视化 | `brigsim/viz/` | 态势回放、指标看板 | rerun-sdk（M1.5） |
+| L4 应用 | `brigsim/cli.py`、`brigsim/agent/`、`brigsim/dashboard/` | 想定加载、跑批、报告；**本地大模型智能参谋**（模拟本地部署：推理服务监控 + 对话问答 + 保障方案一键生成，函数调用直连代理/Pareto/复验真实数据）；**C6 指挥大屏**（C1–C5 产物→6 JSON，一屏仪表盘 + 内嵌 3D） | Typer；标准库 http.server（无新依赖） |
+| L3 可视化 | `brigsim/viz/`、`agent/web/` | rerun 桌面/嵌入 WASM 3D 态势回放；一屏大屏 SVG 图表（时序/分布/Pareto/灵敏度/parity） | rerun-sdk（桌面 + 0.39 web viewer iframe）；手写 SVG（零前端依赖） |
 | L2 实验 | `brigsim/experiment/`、`brigsim/surrogate/`、`brigsim/optimize/` | 蒙特卡洛、灵敏度、**四率代理模型**（轻量 MLP，R²=0.88）、**NSGA-II 保障决策 Pareto 优化** | pandas / SALib / scikit-learn / pymoo |
 | L1 内核 | `brigsim/kernel combat sustainment/` | 交战 ABM ＋ 保障 DES | Mesa + SimPy；Warp 向量化后端（M4 切片 1） |
 | L0 数据 | `brigsim/data/` | 想定/装备/地形参数资产 | Pydantic + YAML，Provider 可替换 |
