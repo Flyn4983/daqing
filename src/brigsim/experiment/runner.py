@@ -27,7 +27,7 @@ def run_replications(
     kernel_cls: Callable[..., Kernel] | None = None,
     keep_events_of: int = 0,
     batch_device: str | None = None,
-    batch_size: int = 128,
+    batch_size: int = 512,
 ) -> tuple[list[dict], tuple[pd.DataFrame, pd.DataFrame] | None]:
     """返回 (每次运行指标列表, 某次运行的事件日志)。
 

@@ -28,7 +28,9 @@ def run(
         "cuda:0", "--device", help="warp 内核设备：cuda:0（默认，不可用自动回退）或 cpu"
     ),
     batch: bool = typer.Option(False, "--batch", help="warp env 维批量复制（M4 切片 2）"),
-    batch_size: int = typer.Option(128, "--batch-size", help="批量模式每批环境数（4GB 显存预算）"),
+    batch_size: int = typer.Option(
+        512, "--batch-size", help="批量模式每批环境数（实测 E=2048 <120MB）"
+    ),
     out: str | None = typer.Option(None, "--out", help="事件日志输出目录（Parquet）"),
 ) -> None:
     """加载想定，批量模拟，打印三大指标汇总。"""
@@ -122,7 +124,9 @@ def sensitivity(
     batch: bool = typer.Option(
         False, "--batch", help="warp 设计点×复制 env 维全批量（需 --kernel warp）"
     ),
-    batch_size: int = typer.Option(128, "--batch-size", help="每批环境数（4GB 显存预算）"),
+    batch_size: int = typer.Option(
+        512, "--batch-size", help="每批环境数（实测 E=2048 <120MB）"
+    ),
     out: str | None = typer.Option(None, "--out", help="结果 CSV 输出目录"),
 ) -> None:
     """灵敏度扫描：Morris（μ* 排序）或 Sobol（S1/ST 方差贡献占比）。"""

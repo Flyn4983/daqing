@@ -63,7 +63,7 @@ def run_sensitivity(
     num_levels: int = 4,
     kernel_cls=None,
     batch_device: str | None = None,
-    batch_size: int = 128,
+    batch_size: int = 512,
 ) -> pd.DataFrame:
     """Morris 灵敏度扫描；返回每个 (指标, 参数) 的 μ*/σ/置信半宽与 μ* 排序。
 
@@ -128,7 +128,7 @@ def _evaluate_points_batch(
     reps_per_point: int,
     base_seed: int,
     device: str,
-    batch_size: int = 128,
+    batch_size: int = 512,
 ) -> np.ndarray:
     """M4：全部 (设计点×复制) 作为 env 维批量上设备。
 
@@ -158,7 +158,7 @@ def run_sobol(
     base_seed: int = 20261013,
     kernel_cls=None,
     batch_device: str | None = None,
-    batch_size: int = 128,
+    batch_size: int = 512,
 ) -> pd.DataFrame:
     """Sobol 方差分解（Saltelli 采样，不算二阶）；返回每个 (指标, 参数) 的
     S1（一阶主效应）/ST（总效应，含交互）与 95% 自助置信半宽，按 ST 排序。
