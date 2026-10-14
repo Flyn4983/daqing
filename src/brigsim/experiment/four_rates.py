@@ -71,6 +71,13 @@ def four_rates_summary(
             rate = sustain.failures_natural[side] / exposure if exposure > 0 else 0.0
             out[f"failure_rate_{name}"] = rate
             out[f"failure_rate_100h_{name}"] = rate * (3600.0 / dt) * 100.0
+        elif totals[side] > 0 and sustain.exposure.get(side, 0.0) > 0:
+            # 批量后端无快照：故障率分母用 sustain 逐 tick 累计的暴露量
+            # （availability_mean 时序平均键仍仅快照路径产出）
+            exposure = sustain.exposure[side]
+            rate = sustain.failures_natural[side] / exposure
+            out[f"failure_rate_{name}"] = rate
+            out[f"failure_rate_100h_{name}"] = rate * (3600.0 / dt) * 100.0
     return out
 
 

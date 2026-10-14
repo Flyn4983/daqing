@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import numpy as np
 import pandas as pd
 import simpy
 
@@ -62,6 +63,10 @@ class SustainmentModel:
         self.failures_combat = {RED: 0, BLUE: 0}
         self.repairs_required = {RED: 0, BLUE: 0}
         self.repairs_done = {RED: 0, BLUE: 0}
+        # 逐 tick 累计的"可用单位·tick"暴露量（C3：无快照批量后端算故障率用，
+        # 口径同 four_rates 时序快照的 available 累加）；由步进循环 tick 末调用
+        # count_exposure() 维护，单环境 Mesa 路径不调用（其故障率直接由快照算）
+        self.exposure = {RED: 0.0, BLUE: 0.0}
         # 本 tick 战斗受损待入队集合：交战段只登记、tick 末统一进通道，
         # 与 GPU 批量内核"设备侧下 tick 才见 under_repair"的时序对齐
         # （否则 Mesa 受损当 tick 立即免疫，Warp 当 tick 仍可被打，分布分叉）
@@ -103,6 +108,20 @@ class SustainmentModel:
     def event_frame(self) -> pd.DataFrame:
         """C1 四率事件流表：tick（DES 时刻）/unit/side/type。"""
         return pd.DataFrame(self.events, columns=["tick", "unit", "side", "type"])
+
+    def count_exposure(self) -> None:
+        """tick 末累计"可用单位·tick"暴露量（存活 且 未受损 且 不在修）。
+
+        批量后端无逐单位快照，靠本计数给故障率提供分母；调用方须保证在
+        tick 末全部状态（alive/damaged/under_repair）同步并完成入队后调用。
+        """
+        alive = np.asarray(self.state.alive).astype(bool)
+        damaged = np.asarray(self.state.damaged).astype(bool)
+        under = np.asarray(self.state.under_repair).astype(bool)
+        sides = np.asarray(self.state.side)
+        avail = alive & ~damaged & ~under
+        for side in (RED, BLUE):
+            self.exposure[side] += float((avail & (sides == side)).sum())
 
     def _record(self, i: int, side: int, type_: str) -> None:
         self.events.append(

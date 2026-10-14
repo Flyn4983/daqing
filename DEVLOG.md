@@ -1197,5 +1197,60 @@ ms/复制 仅作量级参考）
 - 新增 5 项全过；模板想定 brigsim run 冒烟 4 复制可端到端跑并产出四率
 - 全量回归 53 项通过（48 基线 + 5 新增），79.0s
 
+## 2026-10-14 | trae + 用户 | 比赛 C3：四率代理预测模型（仿真大数据 → 轻量 NN 秒级预测）
+
+### 设计对齐评审三原则（用户明确要求，已写入项目记忆）
+- 智能化用于装备管理：AI 不做"更炫的推演"，而是让保障参谋秒级获得四率研判，
+  为 C4 保障方案多目标优化提供可内嵌万次评估的快速目标函数；
+- 落地/业务对齐：10 维输入中前 6 维是参谋**实际可调**的保障资源旋钮
+  （红蓝抢修组数、红蓝备件基数、前送周期、前送批量），后 4 维是装备可靠性
+  与敌情/气象情景因子；输出是 GJB 口径四率（分方）+任务完成率共 9 目标；
+- 可推广：特征在标定基线上做乘子扰动、域取自 C2 param_catalog，
+  换想定/装备数据后重采样重训即可复用，不绑死 example_brigade。
+
+### 内核小改动：批量端故障率分母补齐
+- 原 warp_batch 无逐单位快照，four_rates_summary 不产出 failure_rate*。
+  SustainmentModel 新增 exposure 计数（每 tick 末累计"可用单位·tick"，
+  口径同 C1 快照 available 累加），warp_batch._step tick 末对 active 环境
+  调用 count_exposure()；four_rates_summary 增加无快照分支
+  （availability_mean 仍仅快照路径产出）。自此 GPU 批量端四率键齐全。
+
+### 开源选型（不重复造轮子）
+- scikit-learn 1.9.1 MLPRegressor（加入 analysis extra）：64×64 两隐层约 4.5k
+  参数，x/y 双 StandardScaler，early stopping；9 目标共享隐层；输出按物理界
+  clip（概率 0-1、故障率≥0）；joblib 单文件 bundle（含特征/目标名+元数据）
+
+### 新模块 src/brigsim/surrogate/
+- design.py：FEATURES（10 维名称/域/整数标记）、LHS+均匀随机采样、
+  apply_features（sustainment 旋钮覆盖 + mtbf/pk 乘子在烘焙值上累乘 +
+  visibility；地形编制任务不变）；TARGETS 9 目标与物理界表
+- dataset.py：CRN 公共随机数（所有点共用复制种子，把仿真噪声转为点间差异）；
+  evaluate_points 支持 warp 批量 / mesa 回退；build_dataset 一次产出
+  train(LHS)+holdout(随机) 单表（均值+逐点 std 噪声地板）
+- model.py：SurrogateModel fit/predict/evaluate(R²/MAE/RMSE/噪声地板)/
+  predict_benchmark/save/load
+- cli.py：surrogate-gen（批量推演出数据集 parquet）、
+  surrogate-train（训练+留出评估+速度取证+存模型）
+
+### 数据集与训练结果（example_brigade，GPU cuda:0）
+- 512 训练点×8 复制（CRN）+ 96 留出点×12 复制 = 5248 次推演，
+  GPU 批量总耗时 82.3s（约 15.7ms/复制）；数据集 outputs/datasets/
+  surrogate_brigade_v1.parquet（608 行×30 列，不入库）
+- 留出集 R²：success 0.824 / 红战损 0.942 / 蓝战损 0.887 /
+  红完好 0.896 / 蓝完好 0.844 / 红修复 0.839 / 蓝修复 0.815 /
+  红故障率 0.960 / 蓝故障率 0.923，**平均 R²=0.881**；
+  全部目标 RMSE 显著小于标签蒙特卡洛噪声地板（如红故障率 RMSE 2.43 vs 噪声 8.37）
+- 速度：端到端 predict 10000 方案 30.5ms（0.0031ms/方案），
+  对比 8 复制蒙特卡洛约 125.6ms/方案，**加速约 4.1 万倍**；模型 136KB
+- 模型入库 models/surrogate_brigade_v1.joblib（供 C4 优化/C5 大模型工具/
+  C6 仪表盘直接 load，开箱即用）
+
+### 测试与验证
+- 新增 tests/test_c3_surrogate.py（8 项）：采样落域与整数维、apply_features
+  只改副本、数据集列结构、Mesa 端到端训练预测物理界、无噪声合成响应面
+  R²>0.9（管线学习能力，隔离仿真噪声）、模型存取一致、Mesa 评估矩阵、
+  CUDA 存在时批量端 failure_rate_100h 键
+- 全量回归 61 项通过（53 基线 + 8 新增），96.9s
+
 
 

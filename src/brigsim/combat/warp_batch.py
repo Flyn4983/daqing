@@ -602,6 +602,11 @@ class WarpBatchKernel:
         for e in touched_envs:
             self._sustain[e].commit_combat_damage()
 
+        # 3.5) 暴露量累计（tick 末口径；冻结环境已脱离战斗不再计暴露）
+        for e in range(self.E):
+            if self._host_active[e]:
+                self._sustain[e].count_exposure()
+
         # 4) 阶段推进（向量化）与 active 更新
         self._update_phases()
 

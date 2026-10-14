@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pandas as pd
 import typer
 
 from .data.provider import YamlFileProvider
@@ -187,6 +188,85 @@ def sensitivity(
         path = out_dir / csv_name
         df.to_csv(path, index=False)
         typer.echo(f"\n结果已写出: {path}")
+
+
+@app.command("surrogate-gen")
+def surrogate_gen(
+    scenario: str = typer.Argument(..., help="想定名称或 YAML 路径（代理模型的标定基线）"),
+    points: int = typer.Option(512, "--points", help="训练设计点数（LHS 抽样）"),
+    holdout: int = typer.Option(96, "--holdout", help="留出测试点数（均匀随机）"),
+    reps: int = typer.Option(8, "--reps", help="训练点每点蒙特卡洛复制数（CRN）"),
+    reps_holdout: int = typer.Option(12, "--reps-holdout", help="留出点复制数（标签更稳）"),
+    seed: int = typer.Option(20261014, "--seed", help="基础随机种子"),
+    kernel: str = typer.Option("warp", "--kernel", help="warp（GPU 批量，推荐）或 mesa"),
+    device: str = typer.Option("cuda:0", "--device", help="warp 设备：cuda:0 或 cpu"),
+    batch_size: int = typer.Option(512, "--batch-size", help="每批环境数"),
+    out: str = typer.Option(..., "--out", help="数据集 Parquet 输出路径"),
+) -> None:
+    """C3：在保障旋钮×情景因子空间批量推演，生成代理模型训练数据集。"""
+    from .surrogate.dataset import build_dataset
+
+    sc = YamlFileProvider().load_scenario(scenario)
+    dev = None if kernel == "mesa" else device
+    typer.echo(
+        f"想定: {sc.name}  特征空间: 保障旋钮6 + 情景因子4"
+        f"  训练: {points}点×{reps}复制  留出: {holdout}点×{reps_holdout}复制"
+    )
+    df = build_dataset(
+        sc, n_train=points, n_holdout=holdout, reps_train=reps, reps_holdout=reps_holdout,
+        base_seed=seed, device=dev, batch_size=batch_size, echo=True,
+    )
+    out_path = Path(out)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    df.to_parquet(out_path, index=False)
+    typer.echo(f"\n数据集已写出: {out_path}（{len(df)} 行 × {df.shape[1]} 列）")
+
+
+@app.command("surrogate-train")
+def surrogate_train(
+    data: str = typer.Argument(..., help="surrogate-gen 产出的 Parquet"),
+    model_out: str = typer.Option(..., "--model-out", help="模型 joblib 输出路径"),
+    scenario: str = typer.Option("", "--scenario", help="基线想定名（记入模型元数据）"),
+) -> None:
+    """C3：训练轻量 MLP 四率代理模型，报告留出集精度与'秒级预测'加速比。"""
+    from .surrogate.design import FEATURE_NAMES, TARGETS
+    from .surrogate.model import SurrogateModel, TrainMetadata
+
+    df = pd.read_parquet(data)
+    train = df[df["split"] == "train"]
+    hold = df[df["split"] == "holdout"]
+    typer.echo(f"训练点 {len(train)} / 留出点 {len(hold)}")
+
+    model = SurrogateModel()
+    model.fit(
+        train[FEATURE_NAMES],
+        train[TARGETS],
+        metadata=TrainMetadata(
+            scenario=scenario or Path(data).stem,
+            n_train=len(train),
+            n_holdout=len(hold),
+            reps_train=int(train['n_reps'].iloc[0]),
+            reps_holdout=int(hold['n_reps'].iloc[0]),
+            train_seconds=0.0,
+        ),
+    )
+    report = model.evaluate(hold[TARGETS + [f"{t}_std" for t in TARGETS]], model.predict(hold[FEATURE_NAMES]))
+    typer.echo("\n留出集精度（R² 越接近 1 越好；MAE 为绝对误差；噪声地板=标签蒙特卡洛波动）：")
+    for _, r in report.iterrows():
+        typer.echo(
+            f"  {r['target']:>22}: R²={r['r2']:+.3f}  MAE={r['mae']:.3f}  "
+            f"RMSE={r['rmse']:.3f}  噪声≈{r['label_noise_mean']:.3f}"
+        )
+    typer.echo(f"  {'平均':>22}: R²={report['r2'].mean():+.3f}")
+
+    pred_seconds, n_pred = model.predict_benchmark(10000)
+    typer.echo(f"\n推理速度: {n_pred} 个保障方案预测耗时 {pred_seconds*1000:.1f} ms"
+               f"（约 {pred_seconds/n_pred*1000:.3f} ms/方案）")
+
+    out_path = Path(model_out)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    model.save(str(out_path))
+    typer.echo(f"模型已保存: {out_path}")
 
 
 if __name__ == "__main__":
