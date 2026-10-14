@@ -833,7 +833,12 @@ class WarpBatchKernel:
             st.alive = self.h_alive[e * self.n : (e + 1) * self.n].astype(bool)
             st.damaged = self.h_damaged[e * self.n : (e + 1) * self.n].astype(bool)
             rows.append(
-                per_run_metrics(st, bool(self.accomplished[e]), self._sustain[e].supply_stats())
+                per_run_metrics(
+                    st,
+                    bool(self.accomplished[e]),
+                    self._sustain[e].supply_stats(),
+                    sustain=self._sustain[e],
+                )
             )
         return rows
 

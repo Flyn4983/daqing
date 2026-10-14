@@ -1,8 +1,11 @@
-"""三大指标的口径定义（M0 粗版）。
+"""指标口径定义（C1 起按 GJB 术语对齐，详见 four_rates 模块）。
 
-- 装备战损率 attrition：被击毁单位数 / 参战单位数
-- 任务完成率 success：成功复制数 / 总复制数（跨多次运行统计）
-- 装备完好率 readiness：（存活且未受损单位数）/ 参战单位数
+- 装备战损率 attrition：累计战损（被击毁）数 / 参战单位数
+- 任务完成率 success：成功复制数 / 总复制数（跨多次运行统计，顶层效能指标）
+- 装备完好率 readiness：终值完好率 =（存活且未受损且不在修）/ 参战单位数
+- 故障率 / 修复率 / 时序平均完好率：传入 sustain（可选 + log）时由
+  four_rates_summary 追加（failures_*/repairs_*/repair_rate_*/
+  availability_mean_*/failure_rate_*）
 """
 
 from __future__ import annotations
@@ -13,7 +16,13 @@ import pandas as pd
 from ..kernel.state import SimState
 
 
-def per_run_metrics(state: SimState, success: bool, supply: dict | None = None) -> dict:
+def per_run_metrics(
+    state: SimState,
+    success: bool,
+    supply: dict | None = None,
+    sustain=None,
+    log=None,
+) -> dict:
     red = state.side == 0
     blue = state.side == 1
 
@@ -21,7 +30,8 @@ def per_run_metrics(state: SimState, success: bool, supply: dict | None = None) 
         return float((~state.alive[mask]).sum() / mask.sum()) if mask.any() else 0.0
 
     def ready(mask: np.ndarray) -> float:
-        ok = state.alive[mask] & (~state.damaged[mask])
+        # 完好率（GJB 口径）：可用 = 存活 且 未受损 且 不在修
+        ok = state.alive[mask] & (~state.damaged[mask]) & (~state.under_repair[mask])
         return float(ok.sum() / mask.sum()) if mask.any() else 0.0
 
     out = {
@@ -33,6 +43,13 @@ def per_run_metrics(state: SimState, success: bool, supply: dict | None = None) 
     }
     if supply:
         out.update(supply)
+    if sustain is not None:
+        from .four_rates import four_rates_summary
+
+        snap = None
+        if log is not None and getattr(log, "snapshots", None):
+            snap = log.to_frames()[0]
+        out.update(four_rates_summary(state, sustain, snap))
     return out
 
 

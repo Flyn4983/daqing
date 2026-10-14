@@ -1114,5 +1114,39 @@ ms/复制 仅作量级参考）
   两份带基线/复制数后缀的归档 CSV，compare_sobol_reps.py
   三组对照表与半宽比值（outputs/ 不入库，沿旧约定）
 
+## 2026-10-14 | trae + 用户 | 比赛 C1：装备"四率"口径对齐（GJB 口径公式 + 事件流 + 时序）
+
+### 背景
+比赛主线「智演先知，保障先行」要求四率指标分析落地；本切片把
+完好率/战损率/故障率/修复率按 GJB 术语口径（原型解释）写进代码与单测，
+作为后续代理模型、决策优化与大模型对话的统一数据底座。
+任务完成率（success）为顶层效能指标，不属装备四率。
+
+### 口径定义（详见 four_rates 模块 docstring）
+- 完好率：可用（存活且未受损且不在修）/ 参战总数；终值 = readiness，
+  新增 availability_mean（逐 tick 时序平均）
+- 战损率：累计战损（被击毁）/ 参战总数（即 attrition）；
+  战斗受损（damaged，可修复）单独计事件流，不入战损
+- 故障率：自然故障事件数 / 累计暴露时间（可用单位·tick），
+  另给 failure_rate_100h（换算"每 100 单位·小时"，用任务 tick 时长）
+- 修复率：修复完成（归建）/ 应修（入抢修通道）；战毁不计应修，
+  在修期间被战毁计应修不计完成（修复率自然下降）
+
+### 代码改动
+- sustainment/repair.py：四率事件流 events（failure_natural / damage_combat /
+  repair_start / repair_done，带 DES 时刻）+ 分方计数器 + event_frame()
+- kernel/events.py：快照新增 under_repair 列（完好率判定需要）
+- experiment/four_rates.py（新）：four_rates_summary（单运行汇总）+
+  four_rates_timeseries（每 tick 每方时序；事件按 ceil 归入 tick）
+- experiment/metrics.py：readiness 排除 under_repair（口径对齐）；
+  per_run_metrics 增 sustain/log 参数，自动并入四率汇总键
+- experiment/runner.py、combat/warp_batch.py：传入 sustain
+  （批量后端无快照表，不产出时序平均/暴露口径键，其余键齐全）
+
+### 测试与验证
+- 新增 tests/test_c1_four_rates.py（4 项）：汇总键存在与值域、
+  时序值域/单调性/末行与终值口径一致、自然故障循环计数、战损修复闭环计数
+- 全量回归 48 项通过（44 基线 + 4 新增），76.9s
+
 
 

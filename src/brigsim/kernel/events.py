@@ -29,6 +29,7 @@ class EventLog:
                     "heading": float(state.heading[i]),
                     "alive": bool(state.alive[i]),
                     "damaged": bool(state.damaged[i]),
+                    "under_repair": bool(state.under_repair[i]),
                 }
             )
         if sustain is not None and getattr(sustain, "parts", None) is not None:

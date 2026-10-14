@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import pandas as pd
 import simpy
 
 from ..data.schema import Scenario
@@ -53,6 +54,14 @@ class SustainmentModel:
             }
             for side in (RED, BLUE):
                 self.env.process(self._resupply_loop(side))
+        # C1 四率事件流与计数器（GJB 口径的故障率/修复率数据底座）：
+        # type ∈ failure_natural（自然故障）/ damage_combat（战斗受损）/
+        #        repair_start（应修，入抢修通道）/ repair_done（修复归建）
+        self.events: list[dict] = []
+        self.failures_natural = {RED: 0, BLUE: 0}
+        self.failures_combat = {RED: 0, BLUE: 0}
+        self.repairs_required = {RED: 0, BLUE: 0}
+        self.repairs_done = {RED: 0, BLUE: 0}
         # 本 tick 战斗受损待入队集合：交战段只登记、tick 末统一进通道，
         # 与 GPU 批量内核"设备侧下 tick 才见 under_repair"的时序对齐
         # （否则 Mesa 受损当 tick 立即免疫，Warp 当 tick 仍可被打，分布分叉）
@@ -70,6 +79,9 @@ class SustainmentModel:
         """交战内核判定单位受损（未毁）时调用：仅登记，tick 末 commit 入通道。"""
         self.state.damaged[i] = True
         self._pending_combat.add(int(i))
+        side = int(self.state.side[i])
+        self.failures_combat[side] += 1
+        self._record(i, side, "damage_combat")
 
     def commit_combat_damage(self) -> None:
         """tick 末把本 tick 战斗受损单位统一送入抢修通道。"""
@@ -88,6 +100,15 @@ class SustainmentModel:
             out[f"stockout_wait_{name}"] = float(self.stockout_wait[side])
         return out
 
+    def event_frame(self) -> pd.DataFrame:
+        """C1 四率事件流表：tick（DES 时刻）/unit/side/type。"""
+        return pd.DataFrame(self.events, columns=["tick", "unit", "side", "type"])
+
+    def _record(self, i: int, side: int, type_: str) -> None:
+        self.events.append(
+            {"tick": float(self.env.now), "unit": int(i), "side": side, "type": type_}
+        )
+
     # ---- SimPy 进程 ----
 
     def _failure_loop(self, i: int):
@@ -100,6 +121,9 @@ class SustainmentModel:
             if s.damaged[i] or s.under_repair[i]:
                 continue  # 已在抢修通道中（战斗受损等），修完后重新计时
             s.damaged[i] = True
+            side = int(s.side[i])
+            self.failures_natural[side] += 1
+            self._record(i, side, "failure_natural")
             self._start_repair(i)
 
     def _start_repair(self, i: int) -> None:
@@ -107,6 +131,9 @@ class SustainmentModel:
         if not s.alive[i] or s.under_repair[i]:
             return
         s.under_repair[i] = True
+        side = int(s.side[i])
+        self.repairs_required[side] += 1
+        self._record(i, side, "repair_start")
         self.env.process(self._repair_process(i))
 
     def _resupply_loop(self, side: int):
@@ -156,4 +183,6 @@ class SustainmentModel:
         # 维修期间被战毁则不归建；备件已消耗不返还，标志位无论如何都要清
         if s.alive[i]:
             s.damaged[i] = False
+            self.repairs_done[side] += 1
+            self._record(i, side, "repair_done")
         s.under_repair[i] = False

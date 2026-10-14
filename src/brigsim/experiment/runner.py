@@ -19,7 +19,10 @@ def run_once(
         kernel.step()
     sustain = getattr(kernel, "sustain", None)
     supply = sustain.supply_stats() if sustain is not None else None
-    return per_run_metrics(kernel.state, kernel.mission_success(), supply), kernel
+    metrics = per_run_metrics(
+        kernel.state, kernel.mission_success(), supply, sustain=sustain, log=kernel.log
+    )
+    return metrics, kernel
 
 
 def run_replications(
