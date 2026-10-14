@@ -40,12 +40,27 @@ class SimState:
         self.labels = np.asarray([u.org or u.unit_id for u in units], dtype=object)
 
         specs = [scenario.platform_types[t] for t in types]
+        # 方别不对称乘子（既设防御等），缺省方 = 1.0；装备基准值双方共用
+        from ..data.schema import SideModifiers
+
+        mods = [
+            scenario.side_modifiers.get(("red", "blue")[int(s)], SideModifiers())
+            for s in self.side
+        ]
         self.sensor_range = np.asarray([s.sensor_range_m for s in specs], dtype=np.float64)
         self.weapon_range = np.asarray([s.weapon_range_m for s in specs], dtype=np.float64)
-        self.pk = np.asarray([s.pk for s in specs], dtype=np.float64)
-        self.speed = np.asarray([s.speed_m_per_tick for s in specs], dtype=np.float64)
+        self.pk = np.clip(
+            np.asarray([s.pk * m.pk_scale for s, m in zip(specs, mods)]), 0.0, 1.0
+        )
+        self.speed = np.asarray(
+            [s.speed_m_per_tick * m.speed_scale for s, m in zip(specs, mods)],
+            dtype=np.float64,
+        )
         self.reload_ticks = np.asarray([s.reload_ticks for s in specs], dtype=np.int16)
-        self.detect_prob = np.asarray([s.detect_prob for s in specs], dtype=np.float64)
+        self.detect_prob = np.clip(
+            np.asarray([s.detect_prob * m.detect_scale for s, m in zip(specs, mods)]),
+            0.0, 1.0,
+        )
         self.track_ttl = np.asarray([s.track_ttl_ticks for s in specs], dtype=np.int16)
         self.mtbf = np.asarray([s.mtbf_ticks for s in specs], dtype=np.float64)
         self.mttr = np.asarray([s.mttr_ticks for s in specs], dtype=np.float64)

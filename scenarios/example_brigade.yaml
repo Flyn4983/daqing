@@ -1,12 +1,16 @@
-# 旅级示例想定（M3 规模验证）：
+# 旅级示例想定（M3 规模验证 + M3 参数标定）：
 # 红方重型合成旅 2 个合成营梯队 + 旅属侦察/火力加强（104 台）
 # 蓝方营级防御：前沿+纵深两线阵地（63 台）
 # 任务：占领进攻出发阵地 → 突破河障前沿 → 夺占纵深要点（三阶段）
-# 数值均为占位示例，等待真实数据资产替换（M3 标定）
+# M3 标定（CRN 蒙特卡洛 + scipy DE，512 新鲜种子复验，DEVLOG 2026-10-14）：
+# 接敌运动系数 0.943（标称最大越野速度×0.943）、duration 51 tick、
+# 蓝方既设防御火力乘子 1.25；复验 success 0.584±0.043、红战损 0.651、
+# 蓝战损 0.849（目标带 0.50-0.75 / 0.45-0.70 / 0.50-0.85）。
+# 其余数值仍为占位示例，等待真实数据资产替换。
 name: example_brigade
 
 mission:
-  duration_ticks: 220      # 220 * 30s = 110 分钟
+  duration_ticks: 51       # 51 * 30s ≈ 26 分钟（标定：火力下突破既设防御的时间压力）
   dt_seconds: 30
   objective: [9000, 5000]
   success_radius_m: 500
@@ -27,25 +31,29 @@ environment:
   weather: clear
   visibility_factor: 1.0
 
+# 方别不对称：蓝方既设防御火力加成（预瞄/工事/火力配系），标定值 1.25
+side_modifiers:
+  blue: {pk_scale: 1.25}
+
 platform_types:
   tank:
     sensor_range_m: 2500
     weapon_range_m: 2000
     pk: 0.35
-    speed_m_per_tick: 220
-    meta: {source: example, version: "0.1", confidence: 0.3}
+    speed_m_per_tick: 207   # 标定 220×0.943（接敌运动系数；MBT 最大越野 48-55km/h）
+    meta: {source: example, version: "0.2", confidence: 0.4}
   ifv:
     sensor_range_m: 1800
     weapon_range_m: 1200
     pk: 0.22
-    speed_m_per_tick: 260
-    meta: {source: example, version: "0.1", confidence: 0.3}
+    speed_m_per_tick: 245   # 标定 260×0.943
+    meta: {source: example, version: "0.2", confidence: 0.4}
   atgm_team:
     sensor_range_m: 2200
     weapon_range_m: 2000
     pk: 0.45
-    speed_m_per_tick: 120
-    meta: {source: example, version: "0.1", confidence: 0.3}
+    speed_m_per_tick: 113   # 标定 120×0.943
+    meta: {source: example, version: "0.2", confidence: 0.4}
 
 sustainment:
   repair_teams: {red: 6, blue: 4}

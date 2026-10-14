@@ -135,6 +135,17 @@ class UnitTemplate(BaseModel):
     spacing_lateral: float = 200.0  # 垂直 heading 方向间距（米）
 
 
+class SideModifiers(BaseModel):
+    """方别战斗乘子：既设阵地防御、训练水平等方别不对称要素的粗建模。
+
+    乘到该方所有平台类型的装备基准值上（装备参数本身保持双方共用）。
+    """
+
+    pk_scale: float = Field(1.0, gt=0.0, description="该方单次交火毁伤概率乘子")
+    detect_scale: float = Field(1.0, gt=0.0, description="该方发现概率乘子")
+    speed_scale: float = Field(1.0, gt=0.0, description="该方机动速度乘子")
+
+
 class Scenario(BaseModel):
     name: str
     mission: Mission = Mission()
@@ -142,6 +153,8 @@ class Scenario(BaseModel):
     environment: Environment = Environment()
     platform_types: dict[str, PlatformTypeSpec]
     sustainment: SustainmentSpec = SustainmentSpec()
+    # 方别不对称乘子（缺省键 = 全 1.0）；如蓝方既设防御火力加成
+    side_modifiers: dict[SideName, SideModifiers] = {}
     forces: dict[SideName, list[UnitSpec]] = {"red": [], "blue": []}
     # 成建制模板：校验时展开并入 forces（展开后 forces 即为完整显式列表）
     force_templates: dict[SideName, list[UnitTemplate]] = {
