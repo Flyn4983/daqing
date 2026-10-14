@@ -342,5 +342,71 @@ def optimize_cmd(
         typer.echo(f"\nPareto 方案表已写出: {out_path}")
 
 
+@app.command("agent")
+def agent_cmd(
+    once: str = typer.Option("", "--once", "-q", help="单次提问（不给则进入交互式问答）"),
+    plan: str = typer.Option("", "--plan", help="一键生成保障方案：knee/leanest/strongest"),
+    delay: bool = typer.Option(True, "--delay/--no-delay", help="是否模拟流式生成等待"),
+) -> None:
+    """C5：本地大模型装备保障智能参谋（对话问答 / 保障方案一键生成）。"""
+    from .agent import AgentEngine, LocalLLMService
+
+    engine = AgentEngine(service=LocalLLMService(simulate_delay=delay), simulate_delay=delay)
+
+    def _print(reply) -> None:
+        for tc in reply.tool_calls:
+            args = ", ".join(f"{k}={v}" for k, v in tc.arguments.items())
+            typer.echo(f"  [函数调用] {tc.name}({args})  {tc.elapsed_ms:.1f} ms")
+        typer.echo("\n" + reply.answer)
+        typer.echo(f"\n（意图={reply.intent}，本地推理 {reply.latency_ms:.0f} ms，"
+                   f"入参 {reply.prompt_tokens} / 生成 {reply.completion_tokens} tok）\n")
+
+    if plan:
+        _print(engine.plan(plan))
+        return
+    if once:
+        _print(engine.ask(once))
+        return
+
+    s = engine.service.status()
+    typer.echo("=" * 72)
+    typer.echo(" 本地大模型装备保障智能参谋（模拟本地化部署，数据不出场）")
+    typer.echo(f" 模型：{s['model']}    设备：{s['device']}")
+    typer.echo(" 输入问题开始对话（例：一键生成 knee 保障方案），输入 退出 结束")
+    typer.echo("=" * 72)
+    while True:
+        try:
+            text = input("参谋> ").strip()
+        except (EOFError, KeyboardInterrupt):
+            typer.echo("\n已退出。")
+            break
+        if text in ("退出", "exit", "quit"):
+            break
+        if text:
+            _print(engine.ask(text))
+
+
+@app.command("agent-serve")
+def agent_serve_cmd(
+    host: str = typer.Option("127.0.0.1", "--host", help="监听地址"),
+    port: int = typer.Option(8848, "--port", help="监听端口"),
+    delay: bool = typer.Option(True, "--delay/--no-delay", help="是否模拟流式生成等待"),
+) -> None:
+    """C5：启动本地推理服务 Web 界面（服务监控 + 对话 + 一键保障方案）。"""
+    import time
+
+    from .agent.server import AgentWebServer
+
+    server = AgentWebServer(host=host, port=port, simulate_delay=delay)
+    url = server.start()
+    typer.echo(f"本地推理服务已启动：{url}（Ctrl+C 停止）")
+    try:
+        while True:
+            time.sleep(3600)
+    except KeyboardInterrupt:
+        server.stop()
+        typer.echo("服务已停止。")
+
+
 if __name__ == "__main__":
     app()

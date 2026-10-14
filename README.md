@@ -41,6 +41,8 @@ uv run brigsim replay scenarios/example_company.yaml   # 打开 rerun 3D 回放
 uv run brigsim surrogate-gen example_brigade --points 512 --reps 8 --out outputs/datasets/sur.parquet
 uv run brigsim surrogate-train outputs/datasets/sur.parquet --model-out models/surrogate_brigade_v1.joblib
 uv run brigsim optimize models/surrogate_brigade_v1.joblib --pop 80 --gens 60 --validate --out models/pareto_brigade_v1.csv
+uv run brigsim agent --plan knee          # C5：本地大模型智能参谋（对话问答/一键保障方案）
+uv run brigsim agent-serve --port 8848    # C5：本地推理服务 Web 界面（监控面板+对话+一键方案）
 uv run pytest
 ```
 
@@ -48,7 +50,7 @@ uv run pytest
 
 | 层 | 目录 | 职责 | 主要开源组件 |
 |---|---|---|---|
-| L4 应用 | `brigsim/cli.py` | 想定加载、跑批、报告 | Typer |
+| L4 应用 | `brigsim/cli.py`、`brigsim/agent/` | 想定加载、跑批、报告；**本地大模型智能参谋**（模拟本地部署：推理服务监控 + 对话问答 + 保障方案一键生成，函数调用直连代理/Pareto/复验真实数据） | Typer；标准库 http.server（无新依赖） |
 | L3 可视化 | `brigsim/viz/` | 态势回放、指标看板 | rerun-sdk（M1.5） |
 | L2 实验 | `brigsim/experiment/`、`brigsim/surrogate/`、`brigsim/optimize/` | 蒙特卡洛、灵敏度、**四率代理模型**（轻量 MLP，R²=0.88）、**NSGA-II 保障决策 Pareto 优化** | pandas / SALib / scikit-learn / pymoo |
 | L1 内核 | `brigsim/kernel combat sustainment/` | 交战 ABM ＋ 保障 DES | Mesa + SimPy；Warp 向量化后端（M4 切片 1） |

@@ -1,0 +1,419 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>装备保障智能参谋 · 本地大模型</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath d='M16 2l12 4v9c0 8-5.5 13-12 15C9.5 28 4 23 4 15V6z' fill='%231d6fae'/%3E%3Cpath d='M11 16l4 4 7-8' fill='none' stroke='%237ff0d2' stroke-width='2.5'/%3E%3C/svg%3E">
+<style>
+  :root {
+    --bg: #070d1a;
+    --panel: #0e1729;
+    --panel-2: #121d33;
+    --line: #1e2c47;
+    --text: #dce6f5;
+    --muted: #7e90ad;
+    --accent: #36b6f5;
+    --accent-2: #34e0c0;
+    --good: #34d399;
+    --warn: #fbbf24;
+    --bad: #f87171;
+    --user: #1b3d7c;
+    --mono: "Cascadia Code", "JetBrains Mono", Consolas, "Courier New", monospace;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; }
+  body {
+    background:
+      radial-gradient(1100px 500px at 75% -10%, rgba(54,182,245,.10), transparent 60%),
+      radial-gradient(900px 500px at 10% 110%, rgba(52,224,192,.07), transparent 60%),
+      var(--bg);
+    color: var(--text);
+    font: 14px/1.6 "Microsoft YaHei", "PingFang SC", "Segoe UI", sans-serif;
+    overflow: hidden;
+  }
+  header {
+    height: 58px; display: flex; align-items: center; justify-content: space-between;
+    padding: 0 22px; border-bottom: 1px solid var(--line);
+    background: linear-gradient(180deg, rgba(18,29,51,.9), rgba(14,23,41,.7));
+  }
+  .brand { display: flex; align-items: baseline; gap: 14px; }
+  .brand .title { font-size: 18px; font-weight: 700; letter-spacing: 1px; }
+  .brand .title em { color: var(--accent); font-style: normal; }
+  .brand .sub { color: var(--muted); font-size: 12px; letter-spacing: 2px; }
+  .pill {
+    display: flex; align-items: center; gap: 9px; border: 1px solid var(--line);
+    background: var(--panel-2); border-radius: 999px; padding: 7px 15px; font-size: 12.5px;
+  }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--good);
+         box-shadow: 0 0 10px var(--good); animation: pulse 1.6s infinite; }
+  .dot.busy { background: var(--warn); box-shadow: 0 0 10px var(--warn); }
+  @keyframes pulse { 50% { opacity: .45; } }
+  .pill .sep { color: #33445f; }
+  .pill .offline { color: var(--accent-2); }
+
+  main {
+    display: grid; grid-template-columns: 292px minmax(420px, 1fr) 336px;
+    gap: 14px; padding: 14px; height: calc(100vh - 58px);
+  }
+  .col { display: flex; flex-direction: column; gap: 14px; min-height: 0; }
+  .card {
+    background: linear-gradient(180deg, rgba(18,29,51,.85), rgba(14,23,41,.85));
+    border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px;
+  }
+  .card h3 {
+    font-size: 13px; font-weight: 700; color: #b9cbe6; letter-spacing: 1px;
+    margin-bottom: 12px; display: flex; align-items: center; gap: 8px;
+  }
+  .card h3::before { content: ""; width: 4px; height: 14px; border-radius: 2px;
+                     background: linear-gradient(180deg, var(--accent), var(--accent-2)); }
+  .card h3 .tag-en { margin-left: auto; color: #42546f; font-size: 10px; font-family: var(--mono); }
+
+  .kv { display: grid; grid-template-columns: 1fr auto; gap: 6px 10px; font-size: 12.5px; }
+  .kv .k { color: var(--muted); }
+  .kv .v { font-family: var(--mono); color: #cfe0f7; text-align: right; }
+  .meter { margin: 10px 0 4px; }
+  .meter .row { display: flex; justify-content: space-between; font-size: 12px; color: var(--muted); margin-bottom: 5px; }
+  .meter .row b { color: #d7e5fa; font-family: var(--mono); font-weight: 600; }
+  .bar { height: 7px; border-radius: 4px; background: #0a1222; overflow: hidden; border: 1px solid #182740; }
+  .bar i { display: block; height: 100%; border-radius: 4px;
+           background: linear-gradient(90deg, #2f7fd6, var(--accent-2)); transition: width .5s; }
+  .stat-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 12px; }
+  .stat { background: #0a1426; border: 1px solid #182740; border-radius: 8px; padding: 8px 10px; }
+  .stat .n { font: 600 17px/1.3 var(--mono); color: #e8f1ff; }
+  .stat .n small { font-size: 11px; color: var(--muted); }
+  .stat .l { font-size: 11px; color: var(--muted); margin-top: 2px; }
+
+  /* 中间对话 */
+  .chat { flex: 1; display: flex; flex-direction: column; min-height: 0; padding: 0; overflow: hidden; }
+  .msgs { flex: 1; overflow-y: auto; padding: 18px 20px 6px; }
+  .msg { display: flex; gap: 11px; margin-bottom: 18px; }
+  .avatar { width: 30px; height: 30px; border-radius: 8px; flex: none; display: flex;
+            align-items: center; justify-content: center; font-size: 12px; font-weight: 700; }
+  .msg.user .avatar { background: var(--user); color: #dce9ff; }
+  .msg.bot .avatar { background: linear-gradient(135deg, #1565a8, #12a88b); color: #eafffb; }
+  .bubble { min-width: 0; }
+  .bubble .who { font-size: 11.5px; color: var(--muted); margin-bottom: 4px; }
+  .bubble .body {
+    background: var(--panel-2); border: 1px solid var(--line); border-radius: 0 10px 10px 10px;
+    padding: 11px 14px; font-size: 13.5px; line-height: 1.75;
+  }
+  .msg.user .bubble .body { background: #15294d; border-color: #21406f; }
+  .bubble .body p { margin: 2px 0; }
+  .bubble .body strong { color: #bcdcff; }
+  .bubble .body ul { margin: 4px 0 4px 2px; list-style: none; }
+  .bubble .body ul li { position: relative; padding-left: 14px; margin: 3px 0; }
+  .bubble .body ul li::before { content: ""; position: absolute; left: 2px; top: 10px;
+                                width: 5px; height: 5px; border-radius: 50%; background: var(--accent-2); }
+  .bubble .body table { border-collapse: collapse; width: 100%; margin: 8px 0; font-size: 12.5px; }
+  .bubble .body th, .bubble .body td { border: 1px solid #22304d; padding: 5px 9px; text-align: center; }
+  .bubble .body th { background: #16233b; color: #a9c3e6; font-weight: 600; }
+  .bubble .body td { font-family: var(--mono); }
+  .tools { margin: 7px 0 2px; display: flex; flex-direction: column; gap: 5px; }
+  .tool {
+    display: flex; align-items: center; gap: 8px; font: 11.5px/1.4 var(--mono);
+    color: #8fe7d4; background: rgba(52,224,192,.07); border: 1px dashed #25504a;
+    border-radius: 7px; padding: 5px 10px; width: fit-content; max-width: 100%;
+  }
+  .tool .fn { color: var(--accent); }
+  .tool .ms { color: var(--warn); margin-left: auto; padding-left: 14px; }
+  .meta { font: 11px var(--mono); color: #5b6f8e; margin-top: 5px; }
+  .typing { color: var(--muted); font-size: 12.5px; }
+  .typing i { display: inline-block; width: 6px; height: 6px; border-radius: 50%;
+              background: var(--accent); margin: 0 2px; animation: blink 1s infinite; }
+  .typing i:nth-child(2) { animation-delay: .2s; } .typing i:nth-child(3) { animation-delay: .4s; }
+  @keyframes blink { 0%,100% { opacity: .2 } 50% { opacity: 1 } }
+
+  .composer { border-top: 1px solid var(--line); padding: 12px 16px 14px; }
+  .chips { display: flex; flex-wrap: wrap; gap: 7px; margin-bottom: 10px; }
+  .chip {
+    font-size: 12px; color: #a9c3e6; background: #101d33; border: 1px solid #23395c;
+    border-radius: 999px; padding: 4px 12px; cursor: pointer; transition: .15s;
+  }
+  .chip:hover { border-color: var(--accent); color: #e8f4ff; }
+  .input-row { display: flex; gap: 10px; }
+  textarea {
+    flex: 1; resize: none; height: 42px; border-radius: 9px; padding: 10px 13px;
+    background: #0a1426; color: var(--text); border: 1px solid #213655; font: 13.5px/1.5 inherit;
+  }
+  textarea:focus { outline: none; border-color: var(--accent); }
+  button {
+    border: none; border-radius: 9px; padding: 0 22px; font: 600 13.5px/1 inherit;
+    cursor: pointer; color: #05131f;
+    background: linear-gradient(135deg, var(--accent), var(--accent-2));
+  }
+  button:hover { filter: brightness(1.1); }
+  button:disabled { opacity: .5; cursor: wait; }
+
+  /* 右栏 */
+  .plan-btns { display: flex; flex-direction: column; gap: 9px; }
+  .plan-btns button {
+    height: 46px; text-align: left; padding: 0 15px; display: flex; flex-direction: column;
+    justify-content: center; gap: 2px; background: var(--panel-2); color: var(--text);
+    border: 1px solid var(--line);
+  }
+  .plan-btns button b { font-size: 13.5px; }
+  .plan-btns button span { font: 11px var(--mono); color: var(--muted); }
+  .plan-btns button.primary { background: linear-gradient(135deg, #155f9e, #10917c); color: #eafffb; border: none; }
+  .plan-btns button.primary span { color: #bfeee2; }
+  .trace { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+  .trace-list { overflow-y: auto; flex: 1; display: flex; flex-direction: column; gap: 7px; }
+  .trace-item { background: #0a1426; border: 1px solid #182740; border-left: 3px solid var(--accent-2);
+                border-radius: 7px; padding: 7px 9px; font-size: 11.5px; }
+  .trace-item .t-fn { font-family: var(--mono); color: var(--accent); }
+  .trace-item .t-args { font-family: var(--mono); color: #6d809e; font-size: 10.5px;
+                        word-break: break-all; margin: 2px 0; }
+  .trace-item .t-foot { display: flex; justify-content: space-between; color: var(--muted);
+                        font-family: var(--mono); font-size: 10.5px; }
+  .empty { color: #435673; font-size: 12px; padding: 6px 2px; }
+
+  ::-webkit-scrollbar { width: 8px; }
+  ::-webkit-scrollbar-thumb { background: #20314e; border-radius: 4px; }
+</style>
+</head>
+<body>
+<header>
+  <div class="brand">
+    <div class="title"><em>智演先知 · 保障先行</em></div>
+    <div class="sub">合成旅装备"四率"智能分析与决策支持平台 / 装备保障智能参谋</div>
+  </div>
+  <div class="pill">
+    <span class="dot" id="svc-dot"></span>
+    <span id="svc-state">运行中</span>
+    <span class="sep">|</span>
+    <span class="offline">本地推理 · 数据不出场</span>
+  </div>
+</header>
+
+<main>
+  <!-- 左：服务监控 + 作战情景 -->
+  <div class="col">
+    <div class="card">
+      <h3>本地大模型推理服务 <span class="tag-en">LOCAL INFERENCE</span></h3>
+      <div class="kv">
+        <span class="k">模型</span><span class="v" id="st-model" style="font-size:11px">—</span>
+        <span class="k">设备</span><span class="v" id="st-device" style="font-size:11px">—</span>
+      </div>
+      <div class="meter">
+        <div class="row"><span>显存占用</span><b id="st-vram">—</b></div>
+        <div class="bar"><i id="bar-vram" style="width:0%"></i></div>
+      </div>
+      <div class="meter">
+        <div class="row"><span>GPU 利用率</span><b id="st-util">—</b></div>
+        <div class="bar"><i id="bar-util" style="width:0%"></i></div>
+      </div>
+      <div class="meter">
+        <div class="row"><span>上下文 KV</span><b id="st-ctx">—</b></div>
+        <div class="bar"><i id="bar-ctx" style="width:0%"></i></div>
+      </div>
+      <div class="stat-grid">
+        <div class="stat"><div class="n" id="st-req">0</div><div class="l">服务请求</div></div>
+        <div class="stat"><div class="n" id="st-tools">0</div><div class="l">函数调用</div></div>
+        <div class="stat"><div class="n" id="st-lat">0<small> ms</small></div><div class="l">平均延迟</div></div>
+        <div class="stat"><div class="n" id="st-up">0<small> s</small></div><div class="l">运行时长</div></div>
+      </div>
+    </div>
+    <div class="card" style="flex:1;min-height:0;overflow-y:auto">
+      <h3>作战情景（固定上下文） <span class="tag-en">CONTEXT</span></h3>
+      <div class="kv" id="ctx-kv"><span class="k">加载中…</span><span></span></div>
+    </div>
+  </div>
+
+  <!-- 中：对话 -->
+  <div class="col">
+    <div class="card chat">
+      <div class="msgs" id="msgs"></div>
+      <div class="composer">
+        <div class="chips">
+          <span class="chip" data-q="一键生成 knee 保障方案">一键生成 knee 保障方案</span>
+          <span class="chip" data-q="如果只派 3 个抢修组、带 30 件备件，四率会怎样？">3 组 / 30 件 会怎样</span>
+          <span class="chip" data-q="完好率和故障率是什么口径？">四率是什么口径</span>
+          <span class="chip" data-q="Pareto 前沿一共给出了哪些方案？">Pareto 方案集</span>
+        </div>
+        <div class="input-row">
+          <textarea id="input" placeholder="向本地保障智能参谋提问，例如：每 15 分钟前送 6 件，和基线比怎么样？（Enter 发送，Shift+Enter 换行）"></textarea>
+          <button id="send">发送</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 右：一键方案 + 函数调用轨迹 -->
+  <div class="col">
+    <div class="card">
+      <h3>保障方案一键生成 <span class="tag-en">NSGA-II</span></h3>
+      <div class="plan-btns">
+        <button class="primary" data-tag="knee"><b>knee 折中推荐</b><span>最大折中点 · 默认推荐</span></button>
+        <button data-tag="leanest"><b>leanest 资源最省</b><span>成本最低 · 低强度任务</span></button>
+        <button data-tag="strongest"><b>strongest 保障最强</b><span>完成率最高 · 关键方向</span></button>
+      </div>
+    </div>
+    <div class="card trace">
+      <h3>函数调用轨迹 <span class="tag-en">TOOL CALLS</span></h3>
+      <div class="trace-list" id="trace"><div class="empty">智能体调用代理预测 / Pareto / 复验工具时在此留痕</div></div>
+    </div>
+  </div>
+</main>
+
+<script>
+const $ = id => document.getElementById(id);
+const INTENT_LABEL = {plan:"方案生成", compare:"基线对比", whatif:"方案测算",
+  pareto:"前沿查询", rates_def:"四率问答", status:"状态查询", help:"能力说明",
+  greeting:"问候", fallback:"对话"};
+const CTX_LABEL = {scenario:"想定", duration_minutes:"任务时长(分钟)", tick_seconds:"tick 换算(秒)",
+  blue_repair_teams:"蓝方抢修组(敌情)", blue_spare_stock:"蓝方备件基数(敌情)",
+  mtbf_scale:"装备 MTBF 乘子", red_pk_scale:"红方交战乘子", blue_pk_scale:"蓝方交战乘子",
+  visibility:"气象能见度"};
+
+function esc(s) {
+  return String(s).replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+}
+function inline(s) {
+  return esc(s).replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
+}
+function renderMd(src) {
+  const lines = esc(src).replace(/\*\*(.+?)\*\*/g, "\u0001$1\u0002").split("\n");
+  // esc 已处理尖括号；再用占位符恢复粗体（避免 strong 标签被转义）
+  const out = [];
+  let i = 0;
+  const bold = s => s.replace(/\u0001(.+?)\u0002/g, "<strong>$1</strong>");
+  while (i < lines.length) {
+    const line = lines[i];
+    if (!line.trim()) { i++; continue; }
+    if (line.trim().startsWith("|")) {
+      const tbl = [];
+      while (i < lines.length && lines[i].trim().startsWith("|")) tbl.push(lines[i++]);
+      const rows = tbl.filter(r => !/^\s*\|[\s:|-]+\|?\s*$/.test(r))
+        .map(r => r.trim().replace(/^\|/, "").replace(/\|$/, "").split("|").map(c => c.trim()));
+      if (!rows.length) continue;
+      out.push("<table><thead><tr>" + rows[0].map(c => `<th>${bold(c)}</th>`).join("")
+        + "</tr></thead><tbody>"
+        + rows.slice(1).map(r => "<tr>" + r.map(c => `<td>${bold(c)}</td>`).join("") + "</tr>").join("")
+        + "</tbody></table>");
+      continue;
+    }
+    if (line.trim().startsWith("- ")) {
+      const items = [];
+      while (i < lines.length && lines[i].trim().startsWith("- "))
+        items.push(`<li>${bold(lines[i++].trim().slice(2))}</li>`);
+      out.push("<ul>" + items.join("") + "</ul>");
+      continue;
+    }
+    const buf = [];
+    while (i < lines.length && lines[i].trim() &&
+           !lines[i].trim().startsWith("|") && !lines[i].trim().startsWith("- "))
+      buf.push(lines[i++]);
+    out.push("<p>" + buf.map(bold).join("<br>") + "</p>");
+  }
+  return out.join("");
+}
+function argsText(tc) {
+  return Object.entries(tc.arguments).map(([k, v]) => `${k}=${v}`).join(", ");
+}
+function addTrace(tc) {
+  const el = $("trace");
+  if (el.querySelector(".empty")) el.innerHTML = "";
+  const div = document.createElement("div");
+  div.className = "trace-item";
+  div.innerHTML = `<div class="t-fn">${esc(tc.name)}</div>
+    <div class="t-args">${esc(argsText(tc))}</div>
+    <div class="t-foot"><span>${esc(tc.summary || "")}</span><span>${tc.elapsed_ms.toFixed(1)} ms</span></div>`;
+  el.prepend(div);
+}
+function addMsg(role, html) {
+  const div = document.createElement("div");
+  div.className = "msg " + role;
+  div.innerHTML = `<div class="avatar">${role === "user" ? "我" : "参"}</div>
+    <div class="bubble"><div class="who">${role === "user" ? "保障参谋（我）" : "本地保障智能参谋"}</div>
+    <div class="body">${html}</div></div>`;
+  $("msgs").appendChild(div);
+  $("msgs").scrollTop = $("msgs").scrollHeight;
+  return div.querySelector(".body");
+}
+async function sendText(text) {
+  text = text.trim();
+  if (!text) return;
+  addMsg("user", inline(text));
+  const body = addMsg("bot", '<span class="typing">本地推理中<i></i><i></i><i></i></span>');
+  $("send").disabled = true;
+  try {
+    const r = await fetch("/api/chat", {method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({text})});
+    const data = await r.json();
+    if (!r.ok) {
+      body.innerHTML = `<span style="color:var(--bad)">${esc(data.error || "请求失败")}</span>`;
+      return;
+    }
+    body.innerHTML = renderMd(data.answer)
+      + (data.tool_calls.length ? `<div class="tools">${data.tool_calls.map(tc =>
+          `<div class="tool">函数调用 <span class="fn">${esc(tc.name)}</span>(${esc(argsText(tc))})<span class="ms">${tc.elapsed_ms.toFixed(1)} ms</span></div>`).join("")}</div>` : "")
+      + `<div class="meta">${esc(INTENT_LABEL[data.intent] || data.intent)} · 本地推理 ${data.latency_ms.toFixed(1)} ms · 入参 ${data.prompt_tokens} tok / 生成 ${data.completion_tokens} tok</div>`;
+    data.tool_calls.forEach(addTrace);
+    $("msgs").scrollTop = $("msgs").scrollHeight;
+  } catch (e) {
+    body.innerHTML = '<span style="color:var(--bad)">推理服务无响应，请检查本地服务进程。</span>';
+  } finally {
+    $("send").disabled = false;
+  }
+}
+async function genPlan(tag) {
+  const body = addMsg("bot", '<span class="typing">正在调度 NSGA-II 方案库与代理模型核验<i></i><i></i><i></i></span>');
+  document.querySelectorAll(".plan-btns button").forEach(b => b.disabled = true);
+  try {
+    const r = await fetch("/api/plan", {method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({tag})});
+    const data = await r.json();
+    if (!r.ok) {
+      body.innerHTML = `<span style="color:var(--bad)">${esc(data.error || "请求失败")}</span>`;
+      return;
+    }
+    body.innerHTML = renderMd(data.answer)
+      + `<div class="tools">${data.tool_calls.map(tc =>
+          `<div class="tool">函数调用 <span class="fn">${esc(tc.name)}</span>(${esc(argsText(tc))})<span class="ms">${tc.elapsed_ms.toFixed(1)} ms</span></div>`).join("")}</div>`
+      + `<div class="meta">方案生成 · 本地推理 ${data.latency_ms.toFixed(1)} ms · 生成 ${data.completion_tokens} tok</div>`;
+    data.tool_calls.forEach(addTrace);
+    $("msgs").scrollTop = $("msgs").scrollHeight;
+  } finally {
+    document.querySelectorAll(".plan-btns button").forEach(b => b.disabled = false);
+  }
+}
+
+async function pollStatus() {
+  try {
+    const r = await fetch("/api/status");
+    const d = await r.json();
+    const s = d.service, c = d.context;
+    $("svc-dot").className = "dot" + (s.busy ? " busy" : "");
+    $("svc-state").textContent = s.busy ? "推理中" : "运行中";
+    $("st-model").textContent = s.model;
+    $("st-device").textContent = s.device;
+    $("st-vram").textContent = `${s.vram_used_gb.toFixed(2)} / ${s.vram_total_gb.toFixed(1)} GB`;
+    $("bar-vram").style.width = s.vram_percent + "%";
+    $("st-util").textContent = s.gpu_util_percent + "%";
+    $("bar-util").style.width = s.gpu_util_percent + "%";
+    $("st-ctx").textContent = `${s.context_tokens} / ${s.context_limit} tok`;
+    $("bar-ctx").style.width = (100 * s.context_tokens / s.context_limit) + "%";
+    $("st-req").innerHTML = s.requests_total;
+    $("st-tools").innerHTML = s.tools_served;
+    $("st-lat").innerHTML = s.avg_latency_ms.toFixed(0) + "<small> ms</small>";
+    $("st-up").innerHTML = s.uptime_s.toFixed(0) + "<small> s</small>";
+    const rows = [["scenario", c.scenario], ["duration_minutes", c.duration_minutes.toFixed(1)],
+      ["tick_seconds", c.tick_seconds], ...Object.entries(c.context)];
+    $("ctx-kv").innerHTML = rows.map(([k, v]) =>
+      `<span class="k">${esc(CTX_LABEL[k] || k)}</span><span class="v">${esc(v)}</span>`).join("");
+  } catch (e) { /* 轮询静默失败 */ }
+}
+
+$("send").onclick = () => { sendText($("input").value); $("input").value = ""; };
+$("input").addEventListener("keydown", e => {
+  if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); $("send").click(); }
+});
+document.querySelectorAll(".chip").forEach(c => c.onclick = () => sendText(c.dataset.q));
+document.querySelectorAll(".plan-btns button").forEach(b => b.onclick = () => genPlan(b.dataset.tag));
+pollStatus();
+setInterval(pollStatus, 2000);
+addMsg("bot", "<p>本地保障智能参谋已就绪。可直接提问，或在右侧一键生成 NSGA-II 保障方案。"
+  + "所有回答数字均来自代理模型对蒙特卡洛仿真的秒级预测与代表方案仿真复验。</p>");
+</script>
+</body>
+</html>
