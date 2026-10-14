@@ -11,7 +11,10 @@
 - [x] **M1.5 可视化提前**：rerun 3D 态势回放（轨迹/交火/目标点）+ 战损完好率曲线
 - [x] **M1 最小闭环**：Mesa 交战（侦察/C2/机动/交战四阶段）+ SimPy 故障-抢修耦合，三大指标含 95% 置信区间
 - [~] **M3 合成旅规模**：SALib Morris 灵敏度 + Sobol 方差分解（S1/ST）、ORBAT 成建制模板（横队/纵队/前三角）营级（44v27）与旅级想定（104v63，双梯队进攻 vs 两线防御）、多阶段进攻任务（出发阵地→突破→夺占纵深要点）、GeoTIFF 双栅格地形接入（DEM + 通行性：道路/桥梁/无桥河面，合成峡谷已上线，真实测绘文件可同名替换）、SimPy 备件供应链（库存约束 + 周期补给）；待办：参数标定
-- [ ] **M4 GPU 后端**：NVIDIA Warp kernel 批量加速（本机 GTX 1650 Ti / Ubuntu 工作站）
+- [~] **M4 GPU 后端**：Warp 向量化交战内核切片 1 已落地（sense/机动/交战 wp.kernel，
+  SimPy 保障留 CPU、tick 边界单次同步；与 Mesa 跨 20 复制分布对拍通过）——
+  单环境 Warp CPU 已比 Mesa 快约 17×（旅级 1.38s→0.08s/复制）；
+  待办：env 维批量复制 + HashGrid 目标搜索 + 图捕获（GPU 4GB 分批）
 
 ## 快速开始
 
@@ -20,6 +23,7 @@ uv venv --python 3.12
 uv pip install -e ".[dev,viz]"
 uv run brigsim run scenarios/example_company.yaml --runs 100
 uv run brigsim run example_battalion --runs 40        # 营级 44v27 三阶段进攻
+uv run brigsim run example_brigade --runs 100 --kernel warp   # Warp 向量化内核（自动用 GPU）
 uv run brigsim replay scenarios/example_company.yaml   # 打开 rerun 3D 回放
 uv run pytest
 ```
@@ -31,7 +35,7 @@ uv run pytest
 | L4 应用 | `brigsim/cli.py` | 想定加载、跑批、报告 | Typer |
 | L3 可视化 | `brigsim/viz/` | 态势回放、指标看板 | rerun-sdk（M1.5） |
 | L2 实验 | `brigsim/experiment/` | 蒙特卡洛复制、指标统计 | pandas / SALib |
-| L1 内核 | `brigsim/kernel combat sustainment/` | 交战 ABM ＋ 保障 DES | Mesa + SimPy；Warp 预留 |
+| L1 内核 | `brigsim/kernel combat sustainment/` | 交战 ABM ＋ 保障 DES | Mesa + SimPy；Warp 向量化后端（M4 切片 1） |
 | L0 数据 | `brigsim/data/` | 想定/装备/地形参数资产 | Pydantic + YAML，Provider 可替换 |
 
 ## 数据接口（核心约定）

@@ -23,13 +23,27 @@ def run(
     scenario: str = typer.Argument(..., help="想定名称或 YAML 路径"),
     runs: int = typer.Option(100, "--runs", "-n", help="蒙特卡洛复制次数"),
     seed: int = typer.Option(20261013, "--seed", help="基础随机种子"),
+    kernel: str = typer.Option("mesa", "--kernel", help="mesa（智能体）或 warp（向量化）"),
+    device: str = typer.Option(
+        "cuda:0", "--device", help="warp 内核设备：cuda:0（默认，不可用自动回退）或 cpu"
+    ),
     out: str | None = typer.Option(None, "--out", help="事件日志输出目录（Parquet）"),
 ) -> None:
     """加载想定，批量模拟，打印三大指标汇总。"""
     sc = YamlFileProvider().load_scenario(scenario)
-    typer.echo(f"想定: {sc.name}    复制次数: {runs}")
+    if kernel == "mesa":
+        from .combat.mesa_kernel import MesaKernel
 
-    rows, events = run_replications(sc, n_runs=runs, base_seed=seed)
+        kernel_cls = MesaKernel
+    elif kernel == "warp":
+        from .combat.warp_kernel import WarpKernel
+
+        kernel_cls = lambda scenario, seed=0: WarpKernel(scenario, seed, device=device)  # noqa: E731
+    else:
+        raise typer.BadParameter(f"未知内核 {kernel}（可选 mesa/warp）")
+    typer.echo(f"想定: {sc.name}    内核: {kernel}    复制次数: {runs}")
+
+    rows, events = run_replications(sc, n_runs=runs, base_seed=seed, kernel_cls=kernel_cls)
     summary = summarize(rows)
     typer.echo("\n指标（均值 ± 95%CI 半宽）：")
     for name, r in summary.iterrows():

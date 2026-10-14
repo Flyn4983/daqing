@@ -501,3 +501,62 @@
 - 可视化：备件库存时间曲线进回放
 - M4：Warp GPU 批量后端
 
+## 2026-10-13 | trae + 用户 | M4 切片 1：Warp 向量化交战内核（单环境，CPU/GPU 双后端）
+
+### 开源调研（开源优先原则，两路）
+- Mesa 侧：Mesa core 无任何 GPU/JAX/CuPy/Warp 后端；官方扩展
+  mesa-frames（Apache-2.0，列式 AgentSet）GPU 仍在 Roadmap——等不来，自建
+- Warp 模式借鉴（NVIDIA/warp Apache-2.0，本机 1.12.1）：
+  example_dem/sph 的 HashGrid 邻居循环（目标搜索后续用）、
+  example_graph_capture 的 ScopedCapture（消除逐 tick launch 开销，批量用）；
+  mujoco_warp 的 nworld 批量 SoA（env 维平铺模式）
+- 交战语义参考 TABX（MIT，JAX 高吞吐战斗沙盒，FOV/hurtbox 全向量化）、
+  SAGESim（MIT，CuPy ABM，薄壳+列存形态最近）；FLAMEGPU2(AGPL)/bvr_sim(GPL)
+  仅看架构不拷代码
+- 素材线：免登录直链渠道已穷尽——GitHub 全量搜索/Khronos 官方资产/
+  three.js/Cesium/PlayCanvas/Wikimedia 均无写实现代 MBT 成品 GLB；
+  仅 OGA Stridsvagn103（CC-BY，84MB 7z+Blender 工程，无炮塔 S 坦克）
+  与 CC0 Abrams .blend 素模，均需 Blender 转换且非成品。
+  写实 M1A2/T-72 维持待用户登录 Sketchfab 或提供本机专有素材
+
+### 完成内容
+- `uv pip install warp-lang==1.12.1` 进 .venv（此前仅全局 Python3.9 有）；
+  wp.init 识别 cuda:0（GTX 1650 Ti 4GB，sm_75）
+- 新增 `combat/warp_kernel.py`（约 470 行）：
+  - SimState numpy 列作 host 镜像，真值在 wp.array（f32/i32 SoA），
+    每 tick 边界与 host 同步一次
+  - `@wp.func` 设备端 `_grid_at/_move_factor`：双线性地形 + 坡度/水面/
+    通行性连乘，与 HeightField.move_factor 同式（含 size/n 的口径）
+  - `_nearest_tracked`：共享航迹内稠密 O(n²) 最近敌方（n≤200 每 tick 几万对，
+    批量 env 维再换 HashGrid）
+  - 内核序列：k_cooldown → k_sense（每线程 rand_init 独立流，
+    atomic_max 写航迹失效 tick）→ k_clear×4 → k_move（红蓝教条机动）
+    → k_engage（outcome 0/1/2 + want_kill/want_dmg）→ k_apply
+  - SimPy 保障留 CPU：tick 初 advance 后 H2D damaged/under_repair，
+    tick 末 D2H 后把新战损登记 combat_damage；阶段推进/快照/指标沿用 host
+  - `WarpKernel(scenario, seed, device=None)`：None 优先 cuda:0 自动回退 cpu
+- CLI `run` 增 `--kernel mesa|warp`、`--device cuda:0|cpu`
+- 新增 `tests/test_m4_warp_kernel.py`（4 项，CPU 后端跑 CI 安全）：
+  指标合法、事件日志结构/outcome 互斥、存活单调+死亡冻结+机动不越界、
+  与 Mesa 跨 20 复制分布对拍（战损/完好率均值差 ≤0.12，success ≤0.30）
+- 全套 31 项全绿，ruff 全绿
+
+### 已知语义差异（并行 ABM 标准取舍，DEVLOG 留痕）
+- 航迹：Mesa 按单位索引顺序 last-writer；Warp atomic_max 取更晚失效
+- 交战：Mesa 同 tick 顺序激活，先被杀者不开火；Warp tick 初存活者齐射，
+  可能同 tick 互杀（战损/完好率分布对拍差异在噪声内）
+- RNG：numpy 全局流 vs warp 每线程流，不同源故只比分布不比轨迹
+
+### 性能基线（旅级 167 单位，含快照/SimPy，warm 后均值）
+- Mesa 1.383 s/复制 → Warp CPU 0.081 s/复制（**约 17×**，向量化 +
+  去掉 Python agent/字典开销，CPU 后端本身多线程）
+- Warp GPU 单环境 0.123 s/复制：launch + tick 边界同步占主导，
+  单环境不划算，符合预期——收益在 env 维批量（切片 2）
+- 旅级 N=64 Sobol（约 1800 复制）：Mesa ~42 分钟 → Warp CPU 粗估 ~2.5 分钟
+
+### 下一步
+- M4 切片 2：env 维批量复制（状态按 env*n+i 平铺，4GB 显存分批）、
+  HashGrid 目标搜索、ScopedCapture 整 tick 图录制 replay
+- SimPy 保障的批量处理策略（稀疏事件 CPU 编排 or 向量化近似）
+- M3 续：参数标定、备件库存曲线进回放
+
