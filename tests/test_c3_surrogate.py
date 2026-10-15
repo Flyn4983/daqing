@@ -31,22 +31,48 @@ def test_feature_space_sampling():
             assert np.allclose(X[:, j], np.rint(X[:, j]))
 
 
-def test_apply_features_mutates_copy_only():
+def test_apply_features_old_scenario_zero_drift():
+    """旧想定 example_company 无战损分级/保障实体结构：只改抢修组与乘子，
+    a2 口径的档级/波次/实体旋钮全部条件跳过（零漂移）。"""
     sc = YamlFileProvider("scenarios").load_scenario("example_company")
-    x = np.array([5, 3, 12, 6, 20, 6, 1.5, 1.1, 0.9, 0.7])
+    x = np.array([5, 3, 2, 2, 2, 20, 2, 1.5, 1.1, 0.9])
     sc2 = apply_features(sc, x)
-    # 新想定字段
-    assert sc2.sustainment.repair_teams == {"red": 5, "blue": 3}
-    assert sc2.sustainment.spare_stock == {"red": 12, "blue": 6}
-    assert sc2.sustainment.resupply_interval_ticks == 20
-    assert sc2.sustainment.resupply_qty == 6
-    assert sc2.environment.visibility_factor == pytest.approx(0.7)
+    # 红方抢修组被特征覆盖；蓝方保障不再是决策变量，沿用想定值（company=1）
+    assert sc2.sustainment.repair_teams == {"red": 5, "blue": 1}
+    assert sc2.sustainment.spare_stock is None
+    assert sc2.sustainment.support_echelon is None
+    # 情景乘子：MTBF 累乘 1.5，红蓝 pk 分别乘 1.1/0.9
     assert sc2.platform_types["tank"].mtbf_ticks == pytest.approx(
         sc.platform_types["tank"].mtbf_ticks * 1.5
     )
+    assert sc2.side_modifiers["red"].pk_scale == pytest.approx(1.1)
+    assert sc2.side_modifiers["blue"].pk_scale == pytest.approx(0.9)
+    # 旧想定无 rarv/rsup 保障编组，实体旋钮不动 forces
+    assert len(sc2.forces.get("red", [])) == len(sc.forces.get("red", []))
     # 原想定不被修改
-    assert sc.sustainment.spare_stock is None
-    assert sc.environment.visibility_factor == 1.0
+    assert sc.sustainment.repair_teams["red"] != 5
+    assert sc2 is not sc
+
+
+def test_apply_features_brigade_levels_and_entities():
+    """合成兵种想定：档级/波次覆盖红方部件配置，抢救车/器材车改编制实体数。"""
+    sc = YamlFileProvider("scenarios").load_scenario("example_brigade")
+    from brigsim.surrogate.design import CARRY_LEVELS, OPERATING_LEVELS
+
+    n_red_base = len(sc.forces["red"])
+    # 角点：最大档级与实体扩编
+    x_hi = np.array([10, 6, 3, 4, 3, 10, 4, 1.0, 1.0, 1.0])
+    sc_hi = apply_features(sc, x_hi)
+    assert sc_hi.sustainment.part_stock["red"] == CARRY_LEVELS[4]
+    ech = sc_hi.sustainment.support_echelon
+    assert ech.operating_stock["red"] == OPERATING_LEVELS[3]
+    assert ech.wave_interval_ticks == 10 and ech.wave_qty == 4
+    assert len(sc_hi.forces["red"]) > n_red_base  # 扩编计入参战总数
+    # 基线档级 2
+    x_base = np.array([6, 4, 2, 2, 2, 20, 2, 1.0, 1.0, 1.0])
+    sc_base = apply_features(sc, x_base)
+    assert sc_base.sustainment.part_stock["red"] == CARRY_LEVELS[2]
+    assert len(sc_base.forces["red"]) == n_red_base
 
 
 @pytest.fixture(scope="module")

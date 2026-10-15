@@ -107,14 +107,16 @@
 
     <div class="replay-overlay replay-tag">
       <b>3D 态势回放 · knee 保障方案</b>
-      <span class="sub">3 抢修组 / 30 件备件 / 40tick 前送 / 每次 2 件</span>
+      <span class="sub" id="replay-knee-sub">NSGA-II 七旋钮折中方案（加载 Pareto 数据后显示配置）</span>
     </div>
     <div class="replay-overlay replay-legend">
       <span class="lg"><i class="sw" style="background:rgb(214,69,55)"></i>红方单位</span>
       <span class="lg"><i class="sw" style="background:rgb(64,132,240)"></i>蓝方单位</span>
-      <span class="lg"><i class="sw" style="background:rgb(239,170,23)"></i>受损（可修复）</span>
-      <span class="lg"><i class="sw" style="background:rgb(168,85,247)"></i>在修单位</span>
-      <span class="lg"><i class="sw" style="background:rgb(72,72,80)"></i>战损残骸</span>
+      <span class="lg"><i class="sw" style="background:rgb(50,110,210)"></i>M 失动</span>
+      <span class="lg"><i class="sw" style="background:rgb(239,170,23)"></i>F 火力受损</span>
+      <span class="lg"><i class="sw" style="background:rgb(168,85,247)"></i>在修</span>
+      <span class="lg"><i class="sw" style="background:rgb(180,60,60)"></i>重损后送</span>
+      <span class="lg"><i class="sw" style="background:rgb(96,46,34)"></i>K 战毁</span>
     </div>
 
     <div class="replay-loading" id="replay-loading">
@@ -234,12 +236,12 @@
         <div class="composer">
           <div class="chips">
             <span class="chip" data-q="一键生成 knee 保障方案">一键生成 knee 保障方案</span>
-            <span class="chip" data-q="如果只派 3 个抢修组、带 30 件备件，四率会怎样？">3 组 / 30 件 会怎样</span>
+            <span class="chip" data-q="如果只派 3 个抢修组、4 辆抢救车，四率会怎样？">3 组 / 4 抢救车 会怎样</span>
             <span class="chip" data-q="完好率和故障率是什么口径？">四率是什么口径</span>
             <span class="chip" data-q="Pareto 前沿一共给出了哪些方案？">Pareto 方案集</span>
           </div>
           <div class="input-row">
-            <textarea id="input" placeholder="向本地保障智能参谋提问，例如：每 15 分钟前送 6 件，和基线比怎么样？（Enter 发送，Shift+Enter 换行）"></textarea>
+            <textarea id="input" placeholder="向本地保障智能参谋提问，例如：每 10 分钟一个波次、每波每部件 2 件，和基线比怎么样？（Enter 发送，Shift+Enter 换行）"></textarea>
             <button id="send">发送</button>
           </div>
         </div>

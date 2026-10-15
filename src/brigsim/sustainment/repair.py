@@ -429,8 +429,12 @@ class SustainmentModel:
             tiers = self.parts[side]
             for pid, n in cargo.items():
                 n_carry = int(round(int(n) * ech.carry_share))
-                tiers["carry"][pid].put(n_carry)
-                tiers["operating"][pid].put(int(n) - n_carry)
+                # 单件波次（n=1, carry_share=.5 银行家舍入得 0）时跳过空投递，
+                # simpy Container.put 要求 amount>0
+                if n_carry > 0:
+                    tiers["carry"][pid].put(n_carry)
+                if int(n) - n_carry > 0:
+                    tiers["operating"][pid].put(int(n) - n_carry)
             self.waves_completed[side] += 1
             ev = self._wave_event[side]
             self._wave_event[side] = self.env.event()

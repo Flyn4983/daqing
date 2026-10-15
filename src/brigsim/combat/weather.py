@@ -49,11 +49,16 @@ _MAX_WIND_MPS = 12.0
 
 
 def sensor_factors(env: Environment) -> dict[str, float]:
-    """返回 optical/ir/radar/fused 四类通道的作用距离乘子。"""
+    """返回 optical/ir/radar/fused 四类通道的作用距离乘子。
+
+    visibility_factor 是连续光学视程乘子（0.5-1.0，M3 灵敏度因子之一）：
+    只压光学/红外光电通道，雷达波不受能见度影响；默认 1.0 零漂移。
+    """
     w = _WEATHER[env.weather]
     il = _ILLUM[env.illumination]
-    optical = w[0] * il[0]
-    ir = w[1] * il[1]
+    vis = float(env.visibility_factor)
+    optical = w[0] * il[0] * vis
+    ir = w[1] * il[1] * vis
     radar = w[2] * il[2]
     return {"optical": optical, "ir": ir, "radar": radar, "fused": max(optical, ir, radar)}
 

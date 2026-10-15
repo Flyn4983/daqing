@@ -18,6 +18,10 @@
 
 from __future__ import annotations
 
+import multiprocessing as mp
+import time
+from concurrent.futures import ProcessPoolExecutor
+
 import numpy as np
 import pandas as pd
 from SALib.analyze.morris import analyze as morris_analyze
@@ -89,6 +93,50 @@ def apply_point(scenario: Scenario, x: np.ndarray) -> Scenario:
     )
 
 
+def _sens_worker(task: tuple) -> list[float]:
+    """进程池顶层 worker（spawn 安全）：单点单复制 → METRICS 行。"""
+    scenario, x, seed = task
+    from ..combat.mesa_kernel import MesaKernel
+
+    metrics, _ = run_once(
+        apply_point(scenario, np.asarray(x, dtype=float)),
+        seed=seed, kernel_cls=MesaKernel,
+    )
+    return [float(metrics[m]) for m in METRICS]
+
+
+def _evaluate_points_pool(
+    scenario: Scenario,
+    X: np.ndarray,
+    reps_per_point: int,
+    base_seed: int,
+    n_workers: int,
+    echo: bool = False,
+) -> np.ndarray:
+    """Mesa spawn 多进程评估全部 (设计点×复制)，返回点级均值矩阵。
+
+    C7-a3 起合成兵种想定单局 96tick 约 7-9s，Morris/Sobol 设计点多，
+    靠进程并行把墙钟压到可接受范围（与 surrogate.dataset 同一模式）。
+    """
+    n_points = X.shape[0]
+    tasks = [
+        (scenario, X[p], base_seed + r)
+        for p in range(n_points)
+        for r in range(reps_per_point)
+    ]
+    values = np.zeros((len(tasks), len(METRICS)))
+    ctx = mp.get_context("spawn")
+    t0 = time.perf_counter()
+    with ProcessPoolExecutor(max_workers=n_workers, mp_context=ctx) as pool:
+        for k, row in enumerate(pool.map(_sens_worker, tasks, chunksize=4)):
+            values[k] = row
+            if echo and (k + 1) % 40 == 0:
+                print(f"  推演 {k + 1}/{len(tasks)} 复制")
+    if echo:
+        print(f"  全部推演墙钟 {time.perf_counter() - t0:.1f}s")
+    return values.reshape(n_points, reps_per_point, len(METRICS)).mean(axis=1)
+
+
 def run_sensitivity(
     scenario: Scenario,
     trajectories: int = 12,
@@ -98,16 +146,23 @@ def run_sensitivity(
     kernel_cls=None,
     batch_device: str | None = None,
     batch_size: int = 512,
+    n_workers: int = 1,
+    echo: bool = False,
 ) -> pd.DataFrame:
     """Morris 灵敏度扫描；返回每个 (指标, 参数) 的 μ*/σ/置信半宽与 μ* 排序。
 
-    batch_device 非 None 时走 M4 Warp env 维批量（设计点×复制整体上设备）。
+    batch_device 非 None 时走 M4 Warp env 维批量（设计点×复制整体上设备）；
+    n_workers>1 且非批量时走 Mesa spawn 多进程。
     """
     rng = np.random.default_rng(base_seed)
     X = morris_sample(PROBLEM, N=trajectories, num_levels=num_levels, seed=rng)
     if batch_device is not None:
         Y = _evaluate_points_batch(
             scenario, X, reps_per_point, base_seed, batch_device, batch_size
+        )
+    elif n_workers and n_workers > 1:
+        Y = _evaluate_points_pool(
+            scenario, X, reps_per_point, base_seed, n_workers, echo=echo
         )
     else:
         if kernel_cls is None:
@@ -193,18 +248,25 @@ def run_sobol(
     kernel_cls=None,
     batch_device: str | None = None,
     batch_size: int = 512,
+    n_workers: int = 1,
+    echo: bool = False,
 ) -> pd.DataFrame:
     """Sobol 方差分解（Saltelli 采样，不算二阶）；返回每个 (指标, 参数) 的
     S1（一阶主效应）/ST（总效应，含交互）与 95% 自助置信半宽，按 ST 排序。
 
     设计点数 = n_base × (D + 2)；D=8，n_base=16 时为 160 点。
-    batch_device 非 None 时走 M4 Warp env 维批量（全部点×复制一次平铺）。
+    batch_device 非 None 时走 M4 Warp env 维批量（全部点×复制一次平铺）；
+    n_workers>1 且非批量时走 Mesa spawn 多进程。
     """
     rng = np.random.default_rng(base_seed)
     X = sobol_sample(PROBLEM, N=n_base, calc_second_order=False, seed=rng)
     if batch_device is not None:
         Y = _evaluate_points_batch(
             scenario, X, reps_per_point, base_seed, batch_device, batch_size
+        )
+    elif n_workers and n_workers > 1:
+        Y = _evaluate_points_pool(
+            scenario, X, reps_per_point, base_seed, n_workers, echo=echo
         )
     else:
         if kernel_cls is None:

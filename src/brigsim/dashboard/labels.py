@@ -41,12 +41,15 @@ PARAM_LABELS: dict[str, str] = {
     "visibility": "气象能见度",
 }
 
-# 保障 4 旋钮（C4 决策变量，C6 方案详情用）
+# 保障 7 旋钮（C7-a3 a2 实体化口径 C4 决策变量，C6 方案详情用；与 agent/tools.py 同源）
 KNOB_LABELS: dict[str, str] = {
-    "red_repair_teams": "抢修组数(组)",
-    "red_spare_stock": "初始备件(件)",
-    "resupply_interval_ticks": "前送间隔(tick)",
-    "resupply_qty": "每次前送(件)",
+    "red_repair_teams": "前沿抢修组(组)",
+    "red_arv": "装甲抢救车(辆)",
+    "red_supply_veh": "器材补给车(辆)",
+    "carry_level": "携行档基数(档)",
+    "operating_level": "运行档基数(档)",
+    "wave_interval_ticks": "前送波次间隔(tick)",
+    "wave_qty": "每波每部件(件)",
 }
 
 # Pareto 三标签

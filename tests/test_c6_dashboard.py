@@ -144,8 +144,9 @@ def test_build_timeseries_structure(tmp_path, company_scenario):
     metrics = ("availability", "attrition", "repair_rate", "failure_rate")
     for plan in d["plans"]:
         assert set(plan["decisions"]) == {
-            "red_repair_teams", "red_spare_stock",
-            "resupply_interval_ticks", "resupply_qty",
+            "red_repair_teams", "red_arv", "red_supply_veh",
+            "carry_level", "operating_level",
+            "wave_interval_ticks", "wave_qty",
         }
         for side in ("red", "blue"):
             for m in metrics:
@@ -183,6 +184,35 @@ def test_build_distribution(tmp_path, company_scenario):
         assert s["label"] and s["kind"] in {"pct", "num"}
         assert s["min"] <= s["q1"] <= s["median"] <= s["q3"] <= s["max"]
     json.dumps(d, allow_nan=False)
+
+
+def test_pool_matches_serial_distribution_and_timeseries(tmp_path, company_scenario):
+    """spawn 多进程与串行同种子结果必须逐复制一致（CRN 确定性，仅执行载体不同）。"""
+    from brigsim.dashboard.build import (
+        BASELINE_X,
+        KNEE_X,
+        _run_replicate_rows,
+        build_timeseries,
+    )
+
+    sc = company_scenario
+    rows_serial = _run_replicate_rows(sc, 8, 31003, "mesa", "cuda:0", 256, 1)
+    rows_pool = _run_replicate_rows(sc, 8, 31003, "mesa", "cuda:0", 256, 2)
+    assert rows_serial == rows_pool
+
+    ts_serial = build_timeseries(
+        tmp_path / "ts_serial.json", sc,
+        {"knee": KNEE_X, "baseline": BASELINE_X},
+        reps=2, seed=31004, kernel="mesa", n_workers=1,
+    )
+    ts_pool = build_timeseries(
+        tmp_path / "ts_pool.json", sc,
+        {"knee": KNEE_X, "baseline": BASELINE_X},
+        reps=2, seed=31004, kernel="mesa", n_workers=2,
+    )
+    d_serial = json.loads(ts_serial.read_text(encoding="utf-8"))
+    d_pool = json.loads(ts_pool.read_text(encoding="utf-8"))
+    assert d_serial["plans"] == d_pool["plans"]
 
 
 # ---------------------------------------------------------------------------
@@ -307,20 +337,24 @@ def test_build_pareto_mini(tmp_path, synth_assets):
     import pandas as pd
 
     from brigsim.dashboard.build import build_pareto
+    from brigsim.optimize.problem import DECISION_VARS
     from brigsim.surrogate.design import TARGETS
 
     model_path, _, _ = synth_assets
     cols = (
-        ["red_repair_teams", "red_spare_stock", "resupply_interval_ticks", "resupply_qty"]
+        DECISION_VARS
         + TARGETS + ["f_success_neg", "f_attrition_red", "f_cost"]
     )
     rng = np.random.default_rng(0)
     rows = []
-    for i, (teams, stock, iv, qty, tag) in enumerate(
-        [(2, 4, 40, 2, "leanest"), (3, 30, 40, 2, "knee"), (7, 30, 39, 2, "strongest")]
-    ):
+    plans7 = [
+        ([2, 2, 1, 0, 0, 40, 1], "leanest"),
+        ([6, 4, 2, 2, 2, 20, 2], "knee"),
+        ([10, 6, 3, 4, 3, 10, 4], "strongest"),
+    ]
+    for i, (decisions7, tag) in enumerate(plans7):
         vals = rng.uniform(0.2, 0.9, size=9)
-        row = [teams, stock, iv, qty] + list(vals) + [-vals[0], vals[1], 0.3 + i * 0.05]
+        row = list(decisions7) + list(vals) + [-vals[0], vals[1], 0.3 + i * 0.05]
         rows.append(row)
     pareto_csv = tmp_path / "pareto.csv"
     pd.DataFrame(rows, columns=cols).assign(
@@ -343,8 +377,10 @@ def test_build_pareto_mini(tmp_path, synth_assets):
     assert d["n_plans"] == 3
     assert d["tags"] == {"leanest": 0, "knee": 1, "strongest": 2}
     knee = d["plans"][1]
-    assert knee["red_repair_teams"] == 3 and knee["red_spare_stock"] == 30
+    assert knee["red_repair_teams"] == 6 and knee["red_arv"] == 4
+    assert knee["carry_level"] == 2 and knee["wave_qty"] == 2
     assert "f_cost" not in knee
+    assert set(d["knob_labels"]) == set(DECISION_VARS)
     assert set(["success", "cost"] + TARGETS) <= set(d["baseline"].keys())
     assert len(d["validation"]) == 6
     assert d["validation"][0]["metric_label"]

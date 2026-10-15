@@ -7,9 +7,7 @@
     pareto: "前沿查询", rates_def: "四率问答", status: "状态查询", help: "能力说明",
     greeting: "问候", fallback: "对话" };
   const CTX_LABEL = { scenario: "想定", duration_minutes: "任务时长(分钟)", tick_seconds: "tick 换算(秒)",
-    blue_repair_teams: "蓝方抢修组(敌情)", blue_spare_stock: "蓝方备件基数(敌情)",
-    mtbf_scale: "装备 MTBF 乘子", red_pk_scale: "红方交战乘子", blue_pk_scale: "蓝方交战乘子",
-    visibility: "气象能见度" };
+    mtbf_scale: "装备 MTBF 乘子", red_pk_scale: "红方交战乘子", blue_pk_scale: "蓝方交战乘子(敌情)" };
 
   function addTrace(tc) {
     const el = $("trace");

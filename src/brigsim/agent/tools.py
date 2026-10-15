@@ -1,12 +1,11 @@
 """智能体"函数调用"工具集：每个工具都返回真实数据，不编造。
 
-数据底座（C3/C4 已入库产物）：
-- models/surrogate_brigade_v1.joblib：C3 四率代理 MLP，单次预测毫秒级
-  （由 5248 次 Warp GPU 蒙特卡洛推演数据训练，留出集平均 R²=0.88）；
-- models/pareto_brigade_v1.csv：C4 NSGA-II 产出的 71 个 Pareto 非支配
-  保障方案（含 knee/leanest/strongest 标签）；
-- models/pareto_brigade_v1_validation.csv：代表方案 3×24 次蒙特卡洛
-  仿真复验明细（代理-仿真误差，方案风险提示的证据来源）。
+数据底座（C3/C4 入库产物，C7-a3 起为 a2 实体化口径）：
+- models/surrogate_brigade_v1.joblib：四率代理 MLP（a3 在 10 维新特征空间
+  「7 保障决策 + 3 情景因子」上用 Mesa 多进程 CRN 数据集重训）；
+- models/pareto_brigade_v1.csv：C4 NSGA-II 产出的 Pareto 非支配保障方案
+  （含 knee/leanest/strongest 标签，文件名沿用 v1）；
+- models/pareto_brigade_v1_validation.csv：代表方案蒙特卡洛仿真复验明细。
 
 工具对应大模型 function-calling 的 schema：TOOLS 注册表给出名称、
 业务说明与参数；engine 识别意图后按名调度，真实计时（毫秒）并留痕。
@@ -36,12 +35,17 @@ DEFAULT_PARETO_PATH = REPO_ROOT / "models" / "pareto_brigade_v1.csv"
 DEFAULT_VALIDATION_PATH = REPO_ROOT / "models" / "pareto_brigade_v1_validation.csv"
 
 TICK_SECONDS = 30  # 1 tick = 30 秒（C1 口径，见 docs/data-interface.md)
+N_PARTS = 4        # 器材部件种类（行走/动力/火控/武器）
 
+# 7 个 a2 口径保障旋钮的中文名
 KNOB_LABELS = {
-    "red_repair_teams": "前沿抢修组",
-    "red_spare_stock": "初始备件基数",
-    "resupply_interval_ticks": "周期前送间隔",
-    "resupply_qty": "每次前送批量",
+    "red_repair_teams": "前沿抢修组(组)",
+    "red_arv": "装甲抢救车(辆)",
+    "red_supply_veh": "器材补给车(辆)",
+    "carry_level": "携行档基数(档)",
+    "operating_level": "运行档基数(档)",
+    "wave_interval_ticks": "前送波次间隔(tick)",
+    "wave_qty": "每波每部件(件)",
 }
 PLAN_TAGS = {
     "knee": "折中推荐(knee)",
@@ -66,12 +70,14 @@ KEY_METRICS = ["success", "attrition_red", "readiness_red", "repair_rate_red"]
 # 函数调用注册表（C6 工具轨迹面板按此渲染名称与说明）
 TOOLS: dict[str, dict] = {
     "predict_four_rates": {
-        "desc": "四率代理秒级预测（输入 4 个保障旋钮，返回 GJB 口径四率+任务完成率）",
-        "args": ["teams", "stock", "interval_ticks", "qty"],
+        "desc": "四率代理秒级预测（输入 7 个 a2 口径保障旋钮，返回 GJB 四率+任务完成率）",
+        "args": ["teams", "arv", "supply_veh", "carry", "operating",
+                 "interval_ticks", "wave_qty"],
     },
     "compare_with_baseline": {
-        "desc": "自定义方案与 v3 标定基线及 Pareto 前沿对比（含被支配判定）",
-        "args": ["teams", "stock", "interval_ticks", "qty"],
+        "desc": "自定义方案与 v4 标定基线及 Pareto 前沿对比（含被支配判定）",
+        "args": ["teams", "arv", "supply_veh", "carry", "operating",
+                 "interval_ticks", "wave_qty"],
     },
     "query_pareto_front": {
         "desc": "查询 NSGA-II Pareto 保障方案集（knee/leanest/strongest 或成本最低 N 个）",
@@ -85,6 +91,17 @@ TOOLS: dict[str, dict] = {
         "desc": "查询 GJB 口径四率与任务完成率的定义、分母口径与模型适用边界",
         "args": [],
     },
+}
+
+# 决策名 → 工具参数名
+_ARG_TO_KNOB = {
+    "teams": "red_repair_teams",
+    "arv": "red_arv",
+    "supply_veh": "red_supply_veh",
+    "carry": "carry_level",
+    "operating": "operating_level",
+    "interval_ticks": "wave_interval_ticks",
+    "wave_qty": "wave_qty",
 }
 
 
@@ -102,11 +119,17 @@ class AgentToolkit:
         pareto_path: str | Path = DEFAULT_PARETO_PATH,
         validation_path: str | Path = DEFAULT_VALIDATION_PATH,
         scenario_name: str = "example_brigade",
-        duration_ticks: int = 59,
+        duration_ticks: int = 0,
         ctx: ScenarioContext | None = None,
     ) -> None:
         self.model_path = str(model_path)
         self.scenario_name = scenario_name
+        if duration_ticks <= 0:
+            from ..data.provider import YamlFileProvider
+
+            duration_ticks = int(
+                YamlFileProvider().load_scenario(scenario_name).mission.duration_ticks
+            )
         self.duration_ticks = int(duration_ticks)
         self.duration_minutes = self.duration_ticks * TICK_SECONDS / 60.0
         self.ctx = ctx or ScenarioContext.baseline()
@@ -117,11 +140,30 @@ class AgentToolkit:
 
     # ---- 基础：方案预测 ----
 
+    def _complete_decisions(self, overrides: dict[str, int | None]) -> np.ndarray:
+        """把部分旋钮覆盖补成完整 7 维基线决策行。"""
+        base = dict(zip(DECISION_VARS, baseline_decisions()[0], strict=True))
+        for arg, val in overrides.items():
+            if val is not None:
+                base[_ARG_TO_KNOB[arg]] = float(val)
+        return np.array([[base[k] for k in DECISION_VARS]], dtype=float)
+
     def predict_four_rates(
-        self, teams: int, stock: int, interval_ticks: int, qty: int
+        self,
+        teams: int | None = None,
+        arv: int | None = None,
+        supply_veh: int | None = None,
+        carry: int | None = None,
+        operating: int | None = None,
+        interval_ticks: int | None = None,
+        wave_qty: int | None = None,
     ) -> dict:
         """代理模型预测自定义保障方案的 9 项指标 + 归一化资源成本。"""
-        decisions = np.array([[teams, stock, interval_ticks, qty]], dtype=float)
+        overrides = {
+            "teams": teams, "arv": arv, "supply_veh": supply_veh, "carry": carry,
+            "operating": operating, "interval_ticks": interval_ticks, "wave_qty": wave_qty,
+        }
+        decisions = self._complete_decisions(overrides)
         X = build_feature_matrix(decisions, self.ctx)
         pred = self.model.predict(X).iloc[0]
         cost = float(resource_cost(decisions, self.duration_ticks)[0])
@@ -131,18 +173,27 @@ class AgentToolkit:
         return out
 
     def compare_with_baseline(
-        self, teams: int, stock: int, interval_ticks: int, qty: int
+        self,
+        teams: int | None = None,
+        arv: int | None = None,
+        supply_veh: int | None = None,
+        carry: int | None = None,
+        operating: int | None = None,
+        interval_ticks: int | None = None,
+        wave_qty: int | None = None,
     ) -> dict:
-        """自定义方案 vs v3 基线（差值）vs Pareto 前沿（是否被支配）。"""
-        cur = self.predict_four_rates(teams, stock, interval_ticks, qty)
+        """自定义方案 vs v4 基线（差值）vs Pareto 前沿（是否被支配）。"""
+        cur = self.predict_four_rates(
+            teams, arv, supply_veh, carry, operating, interval_ticks, wave_qty
+        )
         base = self.baseline()
         deltas = {}
         for m in METRIC_META:
             deltas[m] = cur[m] - float(base[m])
         deltas["cost"] = cur["cost"] - float(base["cost"])
-        knobs = [teams, stock, interval_ticks, qty]
+        knobs = cur["decisions"]
         match = self.pareto[
-            (self.pareto[DECISION_VARS] == pd.Series(knobs, index=DECISION_VARS)).all(axis=1)
+            (self.pareto[DECISION_VARS] == pd.Series(knobs)).all(axis=1)
         ]
         on_front = not match.empty
         rank_tag = str(match.iloc[0]["rank_tag"]) if on_front else ""
@@ -177,15 +228,17 @@ class AgentToolkit:
             df = df[df["rank_tag"] == tag]
         cols = DECISION_VARS + KEY_METRICS[:2] + ["readiness_red", "cost", "rank_tag"]
         rows = [self._row_to_dict(r) for _, r in df[cols].head(top_n).iterrows()]
-        qty_mode = int(self.pareto["resupply_qty"].mode().iloc[0])
-        iv_med = float(self.pareto["resupply_interval_ticks"].median())
+        qty_mode = int(self.pareto["wave_qty"].mode().iloc[0])
+        iv_med = float(self.pareto["wave_interval_ticks"].median())
+        arv_mode = int(self.pareto["red_arv"].mode().iloc[0])
         return {
             "n_plans": int(len(self.pareto)),
             "tag": tag,
             "plans": rows,
             "front_finding": (
-                f"{len(self.pareto)} 个非支配方案中，前送批量众数为 {qty_mode} 件，"
-                f"前送间隔中位数 {iv_med:.0f} tick（{iv_med * TICK_SECONDS / 60:.0f} 分钟）"
+                f"{len(self.pareto)} 个非支配方案中，抢救车众数 {arv_mode} 辆、"
+                f"每波每部件 {qty_mode} 件，波次间隔中位数 {iv_med:.0f} tick"
+                f"（{iv_med * TICK_SECONDS / 60:.0f} 分钟）"
             ),
         }
 
@@ -198,8 +251,8 @@ class AgentToolkit:
 
         knobs = {k: int(row[k]) for k in DECISION_VARS}
         base_knobs = {k: int(base[k]) for k in DECISION_VARS}
-        interval_min = knobs["resupply_interval_ticks"] * TICK_SECONDS / 60.0
-        trips = self.duration_ticks // knobs["resupply_interval_ticks"]
+        interval_min = knobs["wave_interval_ticks"] * TICK_SECONDS / 60.0
+        trips = self.duration_ticks // knobs["wave_interval_ticks"]
 
         metrics, deltas = {}, {}
         for m in METRIC_META:
@@ -231,7 +284,8 @@ class AgentToolkit:
             "schedule": {
                 "interval_minutes": interval_min,
                 "estimated_trips": int(trips),
-                "estimated_resupply_qty": int(trips * knobs["resupply_qty"]),
+                "per_wave_parts": int(knobs["wave_qty"] * N_PARTS),
+                "estimated_resupply_qty": int(trips * knobs["wave_qty"] * N_PARTS),
             },
             "metrics": metrics,
             "baseline_metrics": (

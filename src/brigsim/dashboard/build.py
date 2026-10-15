@@ -13,6 +13,9 @@ from __future__ import annotations
 
 import json
 import math
+import multiprocessing as mp
+import time
+from concurrent.futures import ProcessPoolExecutor
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -20,7 +23,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from ..surrogate.design import FEATURE_NAMES, TARGETS
+from ..surrogate.design import FEATURE_NAMES, N_DECISION, TARGETS
 from .labels import (
     KNOB_LABELS,
     METRIC_LABELS,
@@ -33,11 +36,12 @@ from .labels import (
     TICK_SECONDS,
 )
 
-# v3 标定基线保障方案（与 C4 nsga.evaluate_baseline、C5 工具基线同源）
-BASELINE_X = [6.0, 4.0, 12.0, 8.0, 20.0, 8.0, 1.0, 1.0, 1.0, 1.0]
-# knee 推荐方案 10 维向量（前 4 维决策来自 models/pareto_brigade_v1.csv rank_tag=knee 行，
-# 后 6 维为固定敌情/情景；与 C5 tools 中 knee 方案一致）
-KNEE_X = [3.0, 4.0, 30.0, 8.0, 40.0, 2.0, 1.0, 1.0, 1.0, 1.0]
+# v4 标定基线保障方案（C7-a3 a2 口径 7 决策 + 3 情景；与 optimize.problem.
+# baseline_decisions、C5 工具基线同源）
+BASELINE_X = [6.0, 4.0, 2.0, 2.0, 2.0, 20.0, 2.0, 1.0, 1.0, 1.0]
+# knee 推荐方案占位向量：build_all 时优先从 pareto CSV rank_tag=knee 行动态解析；
+# CSV 缺失（如单测小想定）时退化为与基线同结构的合法 10 维向量
+KNEE_X = list(BASELINE_X)
 # C3 DEVLOG 实测口径：批量推演约 123 ms/复制；代理端到端 0.003 ms/方案（约 4.1 万倍）。
 # 大屏标题口径统一锚定 C3 已记录的端到端数（跨交付物/答辩一致）；活体纯推理微基准
 # 随硬件与批量在亚微秒级漂移（实测 0.0007–0.003 ms），只作副字段参考，不作标题数。
@@ -124,7 +128,7 @@ def build_sensitivity(csv_path: str | Path, out_path: str | Path) -> Path:
     return write_json(
         {
             "schema": schema("sensitivity"),
-            "method": "Sobol 方差分解（N=128×8 复制，v3 标定基线）",
+            "method": "Sobol 方差分解（N=32×4 复制，v4 标定基线，Mesa 多进程）",
             "metrics": metrics,
         },
         out_path,
@@ -216,12 +220,31 @@ def build_surrogate(
 _DROP_PARETO_COLS = {"f_success_neg", "f_attrition_red", "f_cost"}
 
 
+def load_knee_vector(pareto_csv: str | Path) -> list[float] | None:
+    """从 Pareto CSV 读 rank_tag=knee 行，拼成完整 10 维特征向量（情景=基线 1.0）。"""
+    from ..optimize.problem import DECISION_VARS
+
+    csv_path = Path(pareto_csv)
+    if not csv_path.is_file():
+        return None
+    df = pd.read_csv(csv_path)
+    # 旧版/缺列 CSV（a3 重算前的遗留产物）→ 退化为占位向量
+    if "rank_tag" not in df.columns or not all(k in df.columns for k in DECISION_VARS):
+        return None
+    hit = df[df["rank_tag"] == "knee"]
+    if hit.empty:
+        return None
+    row = hit.iloc[0]
+    decisions = [float(row[k]) for k in DECISION_VARS]
+    return decisions + [1.0] * (len(FEATURE_NAMES) - len(DECISION_VARS))
+
+
 def build_pareto(
     pareto_csv: str | Path,
     validation_csv: str | Path,
     model_path: str | Path,
     out_path: str | Path,
-    duration_ticks: int = 59,
+    duration_ticks: int = 96,
 ) -> Path:
     from ..optimize.nsga import evaluate_baseline
     from ..optimize.problem import ScenarioContext
@@ -321,7 +344,7 @@ def build_manifest(
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_PATHS = {
-    "sensitivity": REPO_ROOT / "outputs" / "sensitivity_sobol_n128r8_v3baseline.csv",
+    "sensitivity": REPO_ROOT / "outputs" / "sensitivity_sobol_n32r4_v4baseline.csv",
     "pareto": REPO_ROOT / "models" / "pareto_brigade_v1.csv",
     "validation": REPO_ROOT / "models" / "pareto_brigade_v1_validation.csv",
     "parquet": REPO_ROOT / "outputs" / "datasets" / "surrogate_brigade_v1.parquet",
@@ -334,7 +357,7 @@ def build_all(
     out_dir: str | Path,
     *,
     scenario_name: str = "example_brigade",
-    duration_ticks: int = 59,
+    duration_ticks: int = 96,
     paths: dict[str, str | Path] | None = None,
     vectors: dict[str, list[float]] | None = None,
     replay_path: str | Path | None = DEFAULT_RRD,
@@ -346,6 +369,7 @@ def build_all(
     kernel: str = "mesa",
     device: str = "cuda:0",
     make_rrd: bool = True,
+    n_workers: int = 1,
 ) -> dict[str, Any]:
     """构建全部大屏数据。返回 {产物名: Path 或 ("skipped", 原因)}。
 
@@ -389,6 +413,11 @@ def build_all(
         else:
             _skip("pareto", "缺少 Pareto/validation CSV 或模型 joblib")
 
+    # knee 向量优先取本次 NSGA-II 产物的真实 knee 行，避免模块常量与新前沿脱节
+    if vectors is None:
+        knee_x = load_knee_vector(p["pareto"]) or KNEE_X
+        vectors = {"knee": knee_x, "baseline": list(BASELINE_X)}
+
     if "timeseries" in wanted or "distribution" in wanted or "replay" in wanted:
         _build_sim_outputs(
             wanted=wanted,
@@ -404,10 +433,9 @@ def build_all(
             device=device,
             make_rrd=make_rrd and "replay" in wanted,
             rrd_out=replay_path if replay_path is not None else DEFAULT_RRD,
+            vectors=vectors,
+            n_workers=n_workers,
         )
-
-    if vectors is None:
-        vectors = {"knee": KNEE_X, "baseline": BASELINE_X}
     results["manifest"] = build_manifest(
         out_dir,
         scenario=scenario_name,
@@ -465,8 +493,62 @@ def _make_kernel(kernel: str, device: str):
     return MesaKernel, None
 
 
-def _run_replicate_rows(scenario, reps, seed, kernel, device, batch_size):
-    """蒙特卡洛复制：warp 批量优先，否则 Mesa 顺序。返回指标行列表。"""
+def _dist_worker(task: tuple):
+    """spawn 安全：蒙特卡洛单复制 → 指标行 dict（供分布直方图/五数概括）。"""
+    scenario, seed = task
+    from ..combat.mesa_kernel import MesaKernel
+    from ..experiment.runner import run_once
+
+    metrics, _ = run_once(scenario, seed=seed, kernel_cls=MesaKernel)
+    return metrics
+
+
+def _ts_worker(task: tuple):
+    """spawn 安全：单方案单复制 → (方案 key, {side: 逐 tick 四率 DataFrame})。"""
+    key, scenario, seed, ticks = task
+    from ..combat.mesa_kernel import MesaKernel
+    from ..experiment.four_rates import four_rates_timeseries
+    from ..experiment.runner import run_once
+
+    _, kernel_obj = run_once(scenario, seed=seed, kernel_cls=MesaKernel)
+    snap, _ = kernel_obj.log.to_frames()
+    ts = four_rates_timeseries(
+        kernel_obj.state, snap, kernel_obj.sustain.event_frame()
+    )
+    out = {}
+    for side in (0, 1):
+        sub = (
+            ts[ts["side"] == side]
+            .set_index("tick")
+            .reindex(list(ticks))[list(TS_METRICS)]
+        )
+        # 早停复制尾部 ffill；首部（事件/tick 未起）bfill 后再用物理初值兜底
+        sub = sub.bfill().ffill()
+        for col, v0 in _TS_INIT.items():
+            sub[col] = sub[col].fillna(v0)
+        out[side] = sub
+    return key, out
+
+
+def _map_tasks(tasks, worker, n_workers: int, echo: bool = False, label: str = "推演"):
+    """n_workers>1 走 spawn 进程池（chunksize=4），否则本进程顺序执行。"""
+    if not n_workers or n_workers <= 1:
+        return [worker(t) for t in tasks]
+    ctx = mp.get_context("spawn")
+    t0 = time.perf_counter()
+    out = []
+    with ProcessPoolExecutor(max_workers=n_workers, mp_context=ctx) as pool:
+        for k, row in enumerate(pool.map(worker, tasks, chunksize=4)):
+            out.append(row)
+            if echo and (k + 1) % 40 == 0:
+                print(f"  {label} {k + 1}/{len(tasks)} 复制")
+    if echo:
+        print(f"  {label}墙钟 {time.perf_counter() - t0:.1f}s")
+    return out
+
+
+def _run_replicate_rows(scenario, reps, seed, kernel, device, batch_size, n_workers=1):
+    """蒙特卡洛复制：warp 批量优先；否则 Mesa 多进程/顺序。返回指标行列表。"""
     factory, batch_device = _make_kernel(kernel, device)
     if batch_device is not None:
         from ..combat.warp_batch import run_batch
@@ -477,9 +559,8 @@ def _run_replicate_rows(scenario, reps, seed, kernel, device, batch_size):
             seeds = [seed + start + r for r in range(count)]
             rows.extend(run_batch(scenario, seeds, device=batch_device))
         return rows
-    from ..experiment.runner import run_once
-
-    return [run_once(scenario, seed + r, factory)[0] for r in range(reps)]
+    tasks = [(scenario, seed + r) for r in range(reps)]
+    return _map_tasks(tasks, _dist_worker, n_workers, echo=True, label="蒙特卡洛")
 
 
 def build_timeseries(
@@ -490,45 +571,63 @@ def build_timeseries(
     seed: int = 20261014,
     kernel: str = "mesa",
     device: str = "cuda:0",
+    n_workers: int = 1,
 ) -> Path:
     """两方案（knee/基线）各 reps 次单环境复制，聚合逐 tick 四率 mean/std。"""
-    from ..experiment.four_rates import four_rates_timeseries
-    from ..experiment.runner import run_once
     from ..surrogate.design import apply_features
 
     duration = int(scenario.mission.duration_ticks)
-    factory, _ = _make_kernel(kernel, device)
     ticks = list(range(duration))
     collected: dict[tuple[str, int], list[pd.DataFrame]] = {}
 
-    for key, x in plan_vectors.items():
-        sc = apply_features(scenario, np.asarray(x, dtype=float))
-        for r in range(reps):
-            _, kernel_obj = run_once(sc, seed + r, factory)
-            snap, _ = kernel_obj.log.to_frames()
-            ts = four_rates_timeseries(
-                kernel_obj.state, snap, kernel_obj.sustain.event_frame()
-            )
-            for side in (0, 1):
-                sub = (
-                    ts[ts["side"] == side]
-                    .set_index("tick")
-                    .reindex(ticks)[list(TS_METRICS)]
+    def _collect(key: str, side_frames: dict) -> None:
+        for side in (0, 1):
+            collected.setdefault((key, side), []).append(side_frames[side])
+
+    if kernel == "mesa" and n_workers > 1:
+        # spawn 池：任务打平为 (方案 key, 施参想定, 种子)；worker 内完成
+        # 四率时序重索引/缺失兜底，回传小体积 DataFrame
+        tasks = []
+        for key, x in plan_vectors.items():
+            sc = apply_features(scenario, np.asarray(x, dtype=float))
+            tasks.extend((key, sc, seed + r, ticks) for r in range(reps))
+        for key, side_frames in _map_tasks(
+            tasks, _ts_worker, n_workers, echo=True, label="时序"
+        ):
+            _collect(key, side_frames)
+    else:
+        from ..experiment.four_rates import four_rates_timeseries
+        from ..experiment.runner import run_once
+
+        factory, _ = _make_kernel(kernel, device)
+        for key, x in plan_vectors.items():
+            sc = apply_features(scenario, np.asarray(x, dtype=float))
+            for r in range(reps):
+                _, kernel_obj = run_once(sc, seed + r, factory)
+                snap, _ = kernel_obj.log.to_frames()
+                ts = four_rates_timeseries(
+                    kernel_obj.state, snap, kernel_obj.sustain.event_frame()
                 )
-                # 早停复制尾部 ffill；首部（事件/tick 未起）bfill 后再用物理初值兜底
-                sub = sub.bfill().ffill()
-                for col, v0 in _TS_INIT.items():
-                    sub[col] = sub[col].fillna(v0)
-                collected.setdefault((key, side), []).append(sub)
+                side_frames = {}
+                for side in (0, 1):
+                    sub = (
+                        ts[ts["side"] == side]
+                        .set_index("tick")
+                        .reindex(ticks)[list(TS_METRICS)]
+                    )
+                    # 早停复制尾部 ffill；首部（事件/tick 未起）bfill 后再用物理初值兜底
+                    sub = sub.bfill().ffill()
+                    for col, v0 in _TS_INIT.items():
+                        sub[col] = sub[col].fillna(v0)
+                    side_frames[side] = sub
+                _collect(key, side_frames)
 
     plans = []
     for key, x in plan_vectors.items():
         x_arr = np.asarray(x, dtype=float)
+        # C7-a3：前 7 维为 a2 口径保障决策（与 labels.KNOB_LABELS 同序）
         decisions = {
-            "red_repair_teams": int(x_arr[0]),
-            "red_spare_stock": int(x_arr[2]),
-            "resupply_interval_ticks": int(x_arr[4]),
-            "resupply_qty": int(x_arr[5]),
+            name: int(x_arr[j]) for j, name in enumerate(FEATURE_NAMES[:N_DECISION])
         }
         sides = {}
         for side, sname in _SIDE_NAMES.items():
@@ -571,12 +670,15 @@ def build_distribution(
     kernel: str = "mesa",
     device: str = "cuda:0",
     batch_size: int = 256,
+    n_workers: int = 1,
 ) -> Path:
     """knee 方案蒙特卡洛分布：success 频率/直方 + 9 指标五数概括。"""
     from ..surrogate.design import apply_features
 
     sc = apply_features(scenario, np.asarray(x, dtype=float))
-    rows = _run_replicate_rows(sc, reps, seed, kernel, device, batch_size)
+    rows = _run_replicate_rows(
+        sc, reps, seed, kernel, device, batch_size, n_workers
+    )
     df = pd.DataFrame(rows)
 
     succ = df["success"].astype(float).to_numpy()
@@ -672,6 +774,8 @@ def _build_sim_outputs(
     device: str,
     make_rrd: bool,
     rrd_out: str | Path,
+    vectors: dict[str, list[float]],
+    n_workers: int = 1,
 ) -> None:
     scenario = load_scenario(scenario_name)
     if int(scenario.mission.duration_ticks) != int(duration_ticks):
@@ -680,22 +784,24 @@ def _build_sim_outputs(
             f"{scenario.mission.duration_ticks} 与参数 {duration_ticks} 不一致"
         )
 
+    knee_x = vectors["knee"]
     if "timeseries" in wanted:
         results["timeseries"] = build_timeseries(
             out_dir / "timeseries.json", scenario,
-            {"knee": KNEE_X, "baseline": BASELINE_X},
+            {"knee": knee_x, "baseline": vectors["baseline"]},
             reps=ts_reps, seed=seed, kernel=kernel, device=device,
+            n_workers=n_workers,
         )
     if "distribution" in wanted:
         results["distribution"] = build_distribution(
-            out_dir / "distribution.json", scenario, KNEE_X,
+            out_dir / "distribution.json", scenario, knee_x,
             reps=dist_reps, seed=seed, kernel=kernel, device=device,
-            batch_size=batch_size,
+            batch_size=batch_size, n_workers=n_workers,
         )
     if "replay" in wanted:
         if make_rrd:
             results["replay"] = build_replay(
-                rrd_out, scenario, KNEE_X, seed=seed, kernel=kernel, device=device
+                rrd_out, scenario, knee_x, seed=seed, kernel=kernel, device=device
             )
         else:
             results["replay"] = ("skipped", "--no-rrd 已指定")

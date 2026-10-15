@@ -4,19 +4,34 @@
 把仿真随机噪声转为"点间系统差异"，显著降低代理模型的标签噪声），
 标签取 reps 次的均值（另存标准差用于评估噪声地板）。
 
-生产走 M4 Warp env 维批量（全部 点×复制 平铺上 GPU）；
-device=None 时回退 Mesa（小数据/无 GPU 的测试环境用）。
+三条后端：
+- device="cuda:0" 走 M4 Warp env 维批量（旧两态想定，全部 点×复制 平铺 GPU）；
+- device=None + n_workers=1 走 Mesa 顺序（小数据/测试环境）；
+- device=None + n_workers>1 走 Mesa 多进程（C7-a3 起合成兵种/保障实体想定
+  不受 Warp 内核支持，单局 96tick 约 7-9s，靠进程并行把数据集生成压回十几分钟）。
 """
 
 from __future__ import annotations
 
+import multiprocessing as mp
 import time
+from concurrent.futures import ProcessPoolExecutor
 
 import numpy as np
 import pandas as pd
 
 from ..data.schema import Scenario
 from .design import FEATURE_NAMES, TARGETS, apply_features, sample_lhs, sample_random
+
+
+def _mesa_worker(task: tuple) -> list[float]:
+    """进程池顶层 worker（spawn 安全）：单点单复制 → 9 指标行。"""
+    scenario, x, seed = task
+    from ..combat.mesa_kernel import MesaKernel
+    from ..experiment.runner import run_once
+
+    metrics, _ = run_once(apply_features(scenario, x), seed=seed, kernel_cls=MesaKernel)
+    return [float(metrics[name]) for name in TARGETS]
 
 
 def evaluate_points(
@@ -26,6 +41,7 @@ def evaluate_points(
     base_seed: int = 20261014,
     device: str | None = "cuda:0",
     batch_size: int = 512,
+    n_workers: int = 1,
     echo: bool = False,
 ) -> tuple[np.ndarray, np.ndarray, float]:
     """在 X 的每个设计点上跑 reps 次复制，返回 (均值矩阵, 标准差矩阵, 墙钟秒)。
@@ -51,6 +67,20 @@ def evaluate_points(
                 values[begin + k] = [float(m[name]) for name in TARGETS]
             if echo:
                 print(f"  推演 {end}/{total} 复制")
+        values = values.reshape(n_points, reps, len(TARGETS))
+    elif n_workers and n_workers > 1:
+        tasks = [
+            (scenario, X[p], crn_seeds[r])
+            for p in range(n_points)
+            for r in range(reps)
+        ]
+        values = np.zeros((n_points * reps, len(TARGETS)))
+        ctx = mp.get_context("spawn")
+        with ProcessPoolExecutor(max_workers=n_workers, mp_context=ctx) as pool:
+            for k, row in enumerate(pool.map(_mesa_worker, tasks, chunksize=4)):
+                values[k] = row
+                if echo and (k + 1) % 40 == 0:
+                    print(f"  推演 {k + 1}/{len(tasks)} 复制")
         values = values.reshape(n_points, reps, len(TARGETS))
     else:
         from ..combat.mesa_kernel import MesaKernel
@@ -80,6 +110,7 @@ def build_dataset(
     base_seed: int = 20261014,
     device: str | None = "cuda:0",
     batch_size: int = 512,
+    n_workers: int = 1,
     echo: bool = False,
 ) -> pd.DataFrame:
     """生成"训练(LHS) + 留出(均匀随机)"数据集。
@@ -97,7 +128,7 @@ def build_dataset(
     ):
         means, stds, elapsed = evaluate_points(
             scenario, X, reps=reps, base_seed=base_seed,
-            device=device, batch_size=batch_size, echo=echo,
+            device=device, batch_size=batch_size, n_workers=n_workers, echo=echo,
         )
         df = pd.DataFrame(X, columns=FEATURE_NAMES)
         df["split"] = split

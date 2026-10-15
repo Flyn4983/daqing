@@ -4,9 +4,10 @@
   自然语言 → 意图识别 → 工具选择 → 真实工具执行（代理预测/Pareto/复验数据）
           → 中文参谋语言生成 → 本地推理服务留痕（token/延迟/工具）
 
-原型边界：意图识别为关键词/正则规则，生成是模板；**工具返回的每一个
-数字都真实**（C3 代理推理 + C4 优化与仿真复验）。接入真实国产大模型时
-替换本类的 route/render 两步，AgentToolkit 与 LocalLLMService 不变。
+C7-a3：旋钮口径升级为 a2 实体化 7 决策（抢修组/抢救车/器材车/携行档/
+运行档/波次节拍/每波件数）。原型边界：意图识别为关键词/正则规则，
+生成是模板；**工具返回的每一个数字都真实**。接真实国产大模型时替换本类的
+route/render 两步，AgentToolkit 与 LocalLLMService 不变。
 """
 
 from __future__ import annotations
@@ -33,6 +34,27 @@ _CN_DIGITS = {"一": 1, "两": 2, "二": 2, "三": 3, "四": 4, "五": 5,
 _D = r"(\d+|[一两二三四五六七八九十]+)"
 # 关键词与数字之间的分隔符：连中文数字也排除，避免贪婪量词吞掉"三十"的"三"
 _SEP = r"[^。？?0-9一两二三四五六七八九十]"
+
+# 决策旋钮展示单位
+_UNITS = {
+    "red_repair_teams": "个",
+    "red_arv": "辆",
+    "red_supply_veh": "辆",
+    "carry_level": "档",
+    "operating_level": "档",
+    "wave_interval_ticks": "tick",
+    "wave_qty": "件",
+}
+# 工具参数名 → 决策旋钮名
+_ARG_TO_KNOB = {
+    "teams": "red_repair_teams",
+    "arv": "red_arv",
+    "supply_veh": "red_supply_veh",
+    "carry": "carry_level",
+    "operating": "operating_level",
+    "interval_ticks": "wave_interval_ticks",
+    "wave_qty": "wave_qty",
+}
 
 
 @dataclass
@@ -76,7 +98,7 @@ def _to_int(token: str) -> int | None:
 
 
 def parse_knobs(text: str) -> dict[str, int]:
-    """从中文句子中抽取参谋显式说出的保障旋钮（未提及的键不返回）。"""
+    """从中文句子中抽取参谋显式说出的 a2 口径保障旋钮（未提及的键不返回）。"""
     found: dict[str, int] = {}
 
     def grab(pattern: str, group: int = 1) -> int | None:
@@ -90,28 +112,46 @@ def parse_knobs(text: str) -> dict[str, int]:
     if v is not None:
         found["red_repair_teams"] = v
     v = (
-        grab(rf"{_D}\s*件?\s*备件")
-        or grab(rf"备件(?:基数)?{_SEP}{{0,8}}{_D}\s*件")
+        grab(rf"{_D}\s*辆?\s*(?:装甲)?抢救车")
+        or grab(rf"抢救车{_SEP}{{0,8}}{_D}\s*辆")
     )
     if v is not None:
-        found["red_spare_stock"] = v
+        found["red_arv"] = v
+    # 器材补给车（"弹药补给车"在别处，须排除）
+    v = (
+        grab(rf"{_D}\s*辆?\s*器材(?:补给)?车")
+        or grab(rf"器材(?:补给)?车{_SEP}{{0,8}}{_D}\s*辆")
+    )
+    if v is not None:
+        found["red_supply_veh"] = v
+    v = grab(rf"携行档(?:基数)?{_SEP}{{0,6}}{_D}\s*[档级]")
+    if v is None:
+        v = grab(rf"{_D}\s*[档级]\s*携行")
+    if v is not None:
+        found["carry_level"] = v
+    v = grab(rf"运行档(?:基数)?{_SEP}{{0,6}}{_D}\s*[档级]")
+    if v is None:
+        v = grab(rf"{_D}\s*[档级]\s*运行")
+    if v is not None:
+        found["operating_level"] = v
     m = (
-        re.search(rf"(?:前送|补给|补充)?\s*(?:周期|间隔){_SEP}{{0,8}}{_D}\s*(tick|分钟|分|min)",
+        re.search(rf"(?:前送|补给|波次)?\s*(?:周期|间隔|节拍){_SEP}{{0,8}}{_D}\s*(tick|分钟|分|min)",
                   text, re.IGNORECASE)
-        or re.search(rf"每\s*{_D}\s*(tick|分钟|分|min)\s*(?:前送|补给|补充)", text, re.IGNORECASE)
+        or re.search(rf"每\s*{_D}\s*(tick|分钟|分|min)\s*(?:一个波次|前送|补给|波次)",
+                     text, re.IGNORECASE)
     )
     if m:
         v = _to_int(m.group(1))
         if v is not None:
             unit = m.group(2).lower()
-            found["resupply_interval_ticks"] = v * 2 if unit in ("分钟", "分", "min") else v
+            found["wave_interval_ticks"] = v * 2 if unit in ("分钟", "分", "min") else v
     v = (
-        grab(rf"每次(?:前送|补给|补充)?{_SEP}{{0,6}}{_D}\s*件")
-        or grab(rf"批量{_SEP}{{0,6}}{_D}\s*件")
-        or grab(rf"(?:前送|补给)\s*{_D}\s*件")
+        grab(rf"每波(?:每部件)?{_SEP}{{0,6}}{_D}\s*件")
+        or grab(rf"每部件{_SEP}{{0,4}}{_D}\s*件")
+        or grab(rf"波次?批量{_SEP}{{0,6}}{_D}\s*件")
     )
     if v is not None:
-        found["resupply_qty"] = v
+        found["wave_qty"] = v
     # 截回代理模型可行域并整数化
     return {
         k: int(max(_BOUNDS[k][0], min(_BOUNDS[k][1], float(val))))
@@ -203,7 +243,7 @@ class AgentEngine:
             data = self._call(calls, "get_rate_definitions", {})
             return "rates_def", {"calls": calls, "defs": data}
 
-        if re.search(r"对比|比较|相比", t) and re.search(r"基线|基准|现行|现有|v3", low):
+        if re.search(r"对比|比较|相比", t) and re.search(r"基线|基准|现行|现有|v4|v3", low):
             data = self._call(calls, "generate_support_plan", {"tag": "knee"})
             return "compare", {"calls": calls, "plan": data}
 
@@ -234,6 +274,20 @@ class AgentEngine:
 
     # ---- 各意图模板 ----
 
+    def _config_lines(self, d: dict, b: dict) -> list[str]:
+        return [
+            f"- {KNOB_LABELS['red_repair_teams']}：{d['red_repair_teams']}"
+            f"（基线 {b['red_repair_teams']}）",
+            f"- {KNOB_LABELS['red_arv']}：{d['red_arv']}"
+            f"（基线 {b['red_arv']}）",
+            f"- {KNOB_LABELS['red_supply_veh']}：{d['red_supply_veh']}"
+            f"（基线 {b['red_supply_veh']}）",
+            f"- {KNOB_LABELS['carry_level']}：{d['carry_level']}"
+            f"（基线 {b['carry_level']}，档级越高携行器材越多）",
+            f"- {KNOB_LABELS['operating_level']}：{d['operating_level']}"
+            f"（基线 {b['operating_level']}，营抢修点常备器材）",
+        ]
+
     def _render_plan(self, p: dict, full: bool) -> str:
         d, b, dm = p["decisions"], p["baseline_decisions"], p["delta"]
         s = p["schedule"]
@@ -249,14 +303,15 @@ class AgentEngine:
             f"1 tick={TICK_SECONDS}s）",
             "",
             "**一、保障力量配置（参谋可直接执行）**",
-            f"- 前沿抢修组：{d['red_repair_teams']} 个（基线 {b['red_repair_teams']} 个）",
-            f"- 初始备件基数：{d['red_spare_stock']} 件（基线 {b['red_spare_stock']} 件）",
-            f"- 周期前送：每 {s['interval_minutes']:.1f} 分钟前送 {d['resupply_qty']} 件；"
-            f"任务内预计前送 {s['estimated_trips']} 次、共 {s['estimated_resupply_qty']} 件"
-            f"（基线：每 {b['resupply_interval_ticks'] * TICK_SECONDS / 60:.1f} 分钟"
-            f" {b['resupply_qty']} 件）",
+            *self._config_lines(d, b),
+            f"- 前送波次：每 {s['interval_minutes']:.1f} 分钟一个波次，每波每部件"
+            f" {d['wave_qty']} 件（共 {s['per_wave_parts']} 件）；"
+            f"任务内预计 {s['estimated_trips']} 个波次、共前送 "
+            f"{s['estimated_resupply_qty']} 件"
+            f"（基线：{b['wave_interval_ticks'] * TICK_SECONDS / 60:.1f} 分钟一波、"
+            f"每部件 {b['wave_qty']} 件）",
             "",
-            "**二、预期效能（代理模型秒级预测 vs v3 基线）**",
+            "**二、预期效能（代理模型秒级预测 vs v4 基线）**",
             "| 指标 | 推荐方案 | 基线 | 变化 |",
             "| --- | --- | --- | --- |",
         ]
@@ -280,22 +335,24 @@ class AgentEngine:
     def _plan_logic(self, p: dict) -> str:
         d, b = p["decisions"], p["baseline_decisions"]
         bits = []
-        if d["red_repair_teams"] < b["red_repair_teams"]:
+        if d["red_repair_teams"] != b["red_repair_teams"]:
+            arrow = "增" if d["red_repair_teams"] > b["red_repair_teams"] else "压减"
+            bits.append(f"抢修组 {arrow}至 {d['red_repair_teams']} 个")
+        if d["red_arv"] != b["red_arv"]:
+            arrow = "增配" if d["red_arv"] > b["red_arv"] else "减配"
+            bits.append(f"装甲抢救车{arrow} {d['red_arv']} 辆（拖救 M 级失动装备）")
+        if d["red_supply_veh"] != b["red_supply_veh"]:
+            bits.append(f"器材补给车调整为 {d['red_supply_veh']} 辆")
+        if d["carry_level"] != b["carry_level"]:
+            bits.append(f"携行档基数调到 {d['carry_level']} 档")
+        if d["operating_level"] != b["operating_level"]:
+            bits.append(f"运行档基数调到 {d['operating_level']} 档")
+        if d["wave_interval_ticks"] != b["wave_interval_ticks"] or d["wave_qty"] != b["wave_qty"]:
             bits.append(
-                f"抢修组 {b['red_repair_teams']}→{d['red_repair_teams']} 个，压缩并行人力占用"
+                f"波次节拍 {d['wave_interval_ticks']}tick、每波每部件 {d['wave_qty']} 件"
             )
-        elif d["red_repair_teams"] > b["red_repair_teams"]:
-            bits.append(f"抢修组增至 {d['red_repair_teams']} 个，强化并行抢修能力")
-        if d["red_spare_stock"] > b["red_spare_stock"]:
-            bits.append(f"初始备件 {b['red_spare_stock']}→{d['red_spare_stock']} 件，避免火线等件")
-        elif d["red_spare_stock"] < b["red_spare_stock"]:
-            bits.append(f"初始备件压减到 {d['red_spare_stock']} 件")
         body = "；".join(bits) if bits else "力量配置与基线持平"
-        finding = (
-            f"前沿扫描结论：{p['front_finding']}——{p['duration_minutes']:.0f} 分钟短促战斗中"
-            "初始备件基数是主要保障杠杆，任务中追加前送的边际贡献有限，"
-            "故推荐方案普遍采用小批量、长周期前送，把资源前置到初始基数。"
-        )
+        finding = f"前沿扫描结论：{p['front_finding']}。"
         tail = {
             "knee": "knee 点在任务完成率、红方战损率与资源成本三者间最大折中，为默认推荐。",
             "strongest": "该端点不计成本堆足保障，适用于关键方向、任务必须完成的底线场景。",
@@ -320,7 +377,7 @@ class AgentEngine:
             notes.append(
                 f"- 注意：{METRIC_META.get(worst['metric'], (worst['metric'],))[0]}存在"
                 f"{worst['abs_error']:.2f} 的端点偏差（二值稀有事件、复制数有限），"
-                "方案排序可信、绝对值按区间理解；稀有事件故障率已在后续数据增强中留白。"
+                "方案排序可信、绝对值按区间理解。"
             )
         return "\n".join(notes)
 
@@ -328,27 +385,21 @@ class AgentEngine:
         cur, base, dm = cmp_["plan"], cmp_["baseline"], cmp_["delta"]
         d = cur["decisions"]
         defaults = self.tools.context_info()["baseline_decisions"]
-        given = "、".join(f"{KNOB_LABELS[k]} {v}" for k, v in knobs.items())
+        given = "、".join(f"{KNOB_LABELS[k]} {v}{_UNITS[k]}" for k, v in knobs.items())
         unspecified = [k for k in DECISION_VARS if k not in knobs]
-        units = {
-            "red_repair_teams": "个",
-            "red_spare_stock": "件",
-            "resupply_interval_ticks": "tick",
-            "resupply_qty": "件",
-        }
         if unspecified:
-            fill = "、".join(f"{KNOB_LABELS[k]} {defaults[k]}{units[k]}" for k in unspecified)
+            fill = "、".join(
+                f"{KNOB_LABELS[k]} {defaults[k]}{_UNITS[k]}" for k in unspecified
+            )
             head = f"按你给定的（{given}）做四率代理预测；未说明的 {fill} 按基线取值。"
         else:
-            head = f"按你给定的（{given}）做四率代理预测，4 个旋钮均已指定。"
+            head = f"按你给定的（{given}）做四率代理预测，7 个旋钮均已指定。"
+        config = "；".join(f"{KNOB_LABELS[k]} {d[k]}{_UNITS[k]}" for k in DECISION_VARS)
         lines = [
             head,
             "",
-            f"完整配置：{d['red_repair_teams']} 个抢修组 / "
-            f"{d['red_spare_stock']} 件初始备件 / "
-            f"每 {d['resupply_interval_ticks'] * TICK_SECONDS / 60:.1f} 分钟"
-            f"前送 {d['resupply_qty']} 件",
-            "| 指标 | 本方案 | v3 基线 | 变化 |",
+            f"完整配置：{config}",
+            "| 指标 | 本方案 | v4 基线 | 变化 |",
             "| --- | --- | --- | --- |",
         ]
         lines += self._metric_rows(
@@ -373,19 +424,19 @@ class AgentEngine:
         return "\n".join(lines)
 
     def _render_pareto(self, front: dict) -> str:
-        scope = (
-            f"（筛选标签：{PLAN_TAGS[front['tag']]}）" if front["tag"]
-            else "（按资源成本从低到高）："
-        )
         lines = [
-            f"NSGA-II 共得到 {front['n_plans']} 个 Pareto 非支配保障方案{scope}",
-            "| 抢修组 | 备件 | 周期(tick) | 批量(件) | 完成率 | 红战损 | 红完好 | 成本 | 标签 |",
-            "| --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+            f"NSGA-II 共得到 {front['n_plans']} 个 Pareto 非支配保障方案"
+            f"（{'标签：' + PLAN_TAGS[front['tag']] if front['tag'] else '按资源成本从低到高'}）：",
+            "",
+            "| 抢修组 | 抢救车 | 器材车 | 携行档 | 运行档 | 间隔(tick) | 每波(件) |"
+            " 完成率 | 红战损 | 红完好 | 成本 | 标签 |",
+            "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
         ]
         for r in front["plans"]:
             lines.append(
-                f"| {r['red_repair_teams']} | {r['red_spare_stock']} | "
-                f"{r['resupply_interval_ticks']} | {r['resupply_qty']} | "
+                f"| {r['red_repair_teams']} | {r['red_arv']} | {r['red_supply_veh']} | "
+                f"{r['carry_level']} | {r['operating_level']} | "
+                f"{r['wave_interval_ticks']} | {r['wave_qty']} | "
                 f"{r['success'] * 100:.1f}% | {r['attrition_red'] * 100:.1f}% | "
                 f"{r['readiness_red'] * 100:.1f}% | {r['cost']:.3f} | "
                 f"{PLAN_TAGS.get(r['rank_tag'], '')} |"
@@ -428,8 +479,8 @@ class AgentEngine:
         return "\n".join([
             head,
             "- **四率问答**：如\"完好率和战损率是什么口径？\"",
-            "- **秒级预测**：如\"如果派 5 个抢修组、带 20 件备件，预测四率是多少？\"",
-            "- **方案对比**：如\"每 10 分钟前送 4 件，和基线比怎么样？\"",
+            "- **秒级预测**：如\"如果派 5 个抢修组、4 辆抢救车、携行档 3 档，预测四率？\"",
+            "- **方案对比**：如\"每 10 分钟一个波次、每波每部件 1 件，和基线比怎么样？\"",
             "- **一键生成保障方案**：如\"生成 knee 保障方案\"、"
             "\"资源最省的方案\"、\"保障最强的方案\"",
             "- **Pareto 方案集查询**：如\"NSGA-II 一共给出多少套方案？\"",
@@ -441,7 +492,7 @@ class AgentEngine:
     def _render_fallback(self, text: str) -> str:
         return (
             f"我还不能直接回答这类问题（原型只接了装备保障相关工具）。你问的是：\"{text[:40]}\"。\n"
-            "可以问我：四率口径、自定义保障方案预测（给抢修组/备件/前送参数）、"
+            "可以问我：四率口径、自定义保障方案预测（给抢修组/抢救车/器材车/基数档/波次参数）、"
             "Pareto 方案集，或直接\"一键生成 knee 保障方案\"。"
         )
 
@@ -451,8 +502,7 @@ class AgentEngine:
         t0 = time.perf_counter()
         result = getattr(self.tools, name)(**arguments)
         elapsed = (time.perf_counter() - t0) * 1000
-        calls.append(ToolCall(name=name, arguments=arguments, elapsed_ms=elapsed,
-                              summary=self._tool_summary(name, result)))
+        calls.append(ToolCall(name, arguments, elapsed, self._tool_summary(name, result)))
         return result
 
     @staticmethod
@@ -474,16 +524,11 @@ class AgentEngine:
 
     @staticmethod
     def _knob_args(knobs: dict) -> dict:
-        defaults = {
-            "teams": 6, "stock": 12, "interval_ticks": 20, "qty": 8,
+        """决策旋钮名 → 工具参数名；未提及的参数缺省 None（工具端按基线补齐）。"""
+        return {
+            arg: (knobs[knob] if knob in knobs else None)
+            for arg, knob in _ARG_TO_KNOB.items()
         }
-        mapped = {
-            "teams": knobs.get("red_repair_teams"),
-            "stock": knobs.get("red_spare_stock"),
-            "interval_ticks": knobs.get("resupply_interval_ticks"),
-            "qty": knobs.get("resupply_qty"),
-        }
-        return {k: (v if v is not None else defaults[k]) for k, v in mapped.items()}
 
     def _metric_rows(
         self,

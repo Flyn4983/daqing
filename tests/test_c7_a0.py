@@ -92,6 +92,18 @@ def test_weather_matrix_channels_and_grounding():
     assert weather.ground_move_factor(Environment(weather="snow")) < 1.0
 
 
+def test_visibility_factor_scales_electro_optics_not_radar():
+    """连续能见度乘子（M3 因子）：光电通道等比缩放，雷达不变，默认 1.0 零漂移。"""
+    base = weather.sensor_factors(Environment(weather="clear", illumination="day"))
+    haze = weather.sensor_factors(
+        Environment(weather="clear", illumination="day", visibility_factor=0.5)
+    )
+    assert haze["optical"] == pytest.approx(base["optical"] * 0.5)
+    assert haze["ir"] == pytest.approx(base["ir"] * 0.5)
+    assert haze["radar"] == pytest.approx(base["radar"])  # 雷达波不受能见度影响
+    assert haze["fused"] == max(haze["optical"], haze["ir"], haze["radar"])
+
+
 # ----------------------------------------------------------------------
 # 2. 地形通视
 # ----------------------------------------------------------------------

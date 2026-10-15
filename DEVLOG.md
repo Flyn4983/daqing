@@ -1793,5 +1793,119 @@ a1 在不改变 GJB 四率口径（four_rates.py 零改动，硬回归锚）的�
 - v4 是 CRN 8 种子粗标定非精标，全部结构旋钮待真实演习数据替换（S13）
 
 
+## 2026-10-16 | trae + 用户 | C7-a3：10 维特征空间重建 + 代理重训 + 仿真守卫 NSGA-II + 大屏整体重建
+
+### 背景（收口 a2 留白）
+a2 的分部件备件/三档储备/波次前送/保障实体口径使旧 C3 代理的 4 个聚合
+旋钮（spare_stock/resupply_*）失效：apply_features 后这些旋钮不再被内核
+消费，旧代理预测与新想定脱节。a3 全链重建：特征空间→CRN 数据集→代理→
+NSGA-II→C5 旋钮→Sobol→6JSON+rrd。
+
+### 10 维特征空间（surrogate/design.py）
+- 7 个红方保障决策（保障参谋真实可调旋钮）：抢修组数 red_repair_teams、
+  抢救车数 red_arv、器材补给车数 red_supply_veh、携行器材档 carry_level
+  （5 档，档 2=基线 {6,5,6,8}）、运行器材档 operating_level（4 档，
+  档 2=基线 {4,3,4,5}）、波次间隔 tick、波次件数 wave_qty；
+  决策界 lo=[2,2,1,0,0,10,1]、hi=[10,6,3,4,3,40,4]
+- 3 个情景条件：mtbf_scale/red_pk_scale/blue_pk_scale（敌情与可靠性情景，
+  优化时固定，不作为决策变量）
+- 基线向量 [6,4,2,2,2,20,2,1,1,1]，duration=96 tick（48 分钟）
+- 数据集生成改 Mesa spawn 多进程（warp 对合成兵种想定仍守卫报错）
+
+### CRN 数据集与代理重训（surrogate/dataset.py、model.py）
+- 192 训练点×8 复制 + 48 留出点×16 复制 = **2304 局**，10 worker 墙钟
+  **2626.4s**（元数据 sim_wall_seconds 落盘，约 1.14s/局 Mesa 口径）
+- MLP(64,64) 重训：留出平均 **R²=0.705**（首版小样本 0.567）；
+  success 0.635（二值标签噪声地板 σ≈0.429，MAE 已仅 0.133）、
+  attrition_red 0.697、readiness_red 0.752、repair_red 0.782、
+  failure_red 0.882；repair_blue 0.341 最弱（蓝方修复事件稀有）
+- 端到端预测仍 0.003ms/方案；加速比标题口径随仿真侧改为 Mesa 墙钟：
+  1.14s/0.003ms≈**38.0 万倍**（旧 GPU 批量 123ms 口径 4.1 万倍），
+  surrogate.json benchmark.source 显式写明计算来源，前端动态读取不硬编码
+
+### 仿真守卫 knee（optimize/validation.py，本包方法论增量）
+- 发现真实问题：NSGA-II 会钻代理在低成本角点的系统误差空子——首版纯
+  乌托邦 knee 代理预测 success 0.695，24 复制 Mesa 复验仅 0.375
+  （strongest 1.000 vs 仿真 0.875），直接推荐不可交付
+- 新增 sim_guarded_knee：代理筛出 success≥0.70 的非支配前沿→按成本
+  linspace 铺 ≤8 候选（强制含原 knee/leanest/strongest）→候选+基线
+  统一跑 48 复制蒙特卡洛仿真裁决→取仿真 success≥0.65 过闸的最低成本
+  方案重打 knee；无一过闸取仿真最高者且 info.passed=False
+- 重算结果（80×60，74 非支配方案，48 复制守卫）：
+  - **knee [2,2,1,3,0,21,1]：成本 0.165，代理 0.710/仿真 0.688，
+    红战损 0.276、红完好 0.495**
+  - strongest [2,6,1,4,1,11,4]：成本 0.567，仿真 0.833，红完好 0.533
+  - leanest [2,2,1,0,0,39,1]：成本 0.016，仿真仅 0.333（不过闸）
+  - 基线 [6,4,2,2,2,20,2]：成本 0.458，仿真 0.750
+  - 诚实结论：基线仿真成功率反高于 knee（0.750 vs 0.688），knee 的价值
+    是保障资源成本省 64%（0.165 vs 0.458）——代理给前沿、仿真做裁决、
+    成本换效能的取舍由指挥员定，工具不掩盖
+- CLI optimize --validate 改调守卫流程，--reps 默认 16→48，新增
+  --guard-success；输出四行（leanest/knee/strongest/基线）代理+仿真
+  双口径对比
+- 顺带修复角点缺陷：优化器探到 wave_qty=1（carry_share=0.5 银行家
+  舍入 n_carry=0）时 simpy Container.put(0) 抛错，repair.py 波次投递
+  改跳过 0 量投递（真实旋钮空间边角驱动的修复）
+
+### C5 智能体旋钮对齐（agent/tools.py、engine.py）
+- 五工具的旋钮从旧 4 个改 7 个；parse_knobs 支持中文数字/分钟→tick/
+  可行域截断，未给旋钮按基线 [6,4,2,2,2,20,2] 补齐；一键三方案改读
+  守卫后 pareto CSV；duration 59→96 tick
+
+### 真实模型缺陷修复：能见度通道（combat/weather.py，测试驱动发现）
+- Sobol 首版 visibility 的 ST 全 0：排查确认 Mesa sensor_factors 从不
+  消费 Environment.visibility_factor（仅旧 warp/toy 内核消费）
+- 修复：光学/红外光电通道乘 vis，雷达波不乘（默认 1.0 零漂移）；
+  新增单测锁三通道行为
+- 修复后 Sobol（320 点×4 复制，Mesa spawn 池，约 17 分钟）：
+  attrition_blue visibility ST=**0.758**、readiness_blue 0.805 主导；
+  attrition_red 仍由 blue_pk 0.584 主导（visibility 0.424 次之）；
+  success 多因子强交互（visibility 0.598/red_pk 0.522/red_speed
+  0.435/blue_pk 0.424，S1 低 ST 高）
+- experiment/sensitivity.py 新增 spawn 池（_sens_worker +
+  _evaluate_points_pool），run_sensitivity/run_sobol 加 n_workers；
+  CLI sensitivity 加 --workers
+
+### 大屏构建多进程（dashboard/build.py）
+- 新增 spawn worker：_dist_worker（回传完整指标行 dict，供直方图/五数
+  概括）、_ts_worker（worker 内完成四率时序重索引/缺失兜底，回传小体积
+  DataFrame）；_map_tasks 统一池（chunksize=4，n_workers=1 走串行）
+- build_timeseries/build_distribution/_build_sim_outputs/build_all 透传
+  n_workers；CLI dash-build 加 --workers（默认 10）
+- 实测：时序 2 方案×8=16 局 33.9s；蒙特卡洛 200 局 **215.4s（串行约
+  27 分钟，约 7.5 倍提速）**
+
+### 大屏整体重建 + 真机 Chrome 验收
+- 6JSON 全部按新产物重建（sensitivity/surrogate/pareto/timeseries/
+  distribution/manifest）；rrd 17.0MB（不入库）
+- distribution.json：200 复制 success **130/200=0.65**（守卫 48 复制
+  0.688 的二项噪声一致区间），红战损 0.278±0.097、蓝战损 0.397、
+  红完好 0.491、红修复率 0.495、红故障率 30.7/百装备时
+- 真机 Chrome 验收 7 项 6 PASS：3D 自动循环、MC 双柱 70/130、Pareto
+  7 旋钮明细、Sobol visibility 非 0 且前列、代理 R²=0.635、智能体
+  7 旋钮问答正常
+- console 两条红错均非本交付物缺陷：re_viewer_bg.wasm ERR_ABORTED
+  为首载期瞬时取消（3D 实测正常播放）；Google Fonts 请求来自 rerun
+  官方 web viewer（iframe 内第三方），大屏外壳自身仍零 CDN 断网可用
+
+### 测试
+- 新增 6 项：apply_features 旧想定零漂移 + 旅级档级/保障实体施参
+  （test_c3）、仿真守卫过闸取最省/无过闸回退（test_c4，example_company
+  零漂移 reps=2）、能见度光电缩放雷达不变（test_c7_a0）、
+  spawn 池与串行同种子逐复制一致（test_c6，分布+时序双路径）；
+  C5 三处旧测试按 7 旋钮口径重写（净增减抵消后全量 +5）
+- **全量 154 项通过**（149+5），450s；ruff 全仓净
+- 环境注记：test_replay_host_real_boot 在 9876 端口被大屏服务占用时
+  报 "gRPC server thread shut down"，停服务后 2.95s 通过（端口冲突，
+  非代码缺陷，本会话第二次实证）
+
+### 已知留白
+- success 代理精度受二值稀有事件噪声地板限制（R² 0.635），failure_rate
+  稀有事件偏差仍存（C3 时已记数据增强留白）；代理只用于筛前沿，
+  交付方案一律经仿真守卫裁决
+- b 包：8 地形族×多维气象×敌情任务模板与工况选择器；c 包：SSE 实时
+  推演；d 包：10 分钟录屏彩排
+
+
 
 

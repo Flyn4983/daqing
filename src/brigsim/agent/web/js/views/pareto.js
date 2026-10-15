@@ -49,7 +49,7 @@
     $("pareto-detail").innerHTML =
       `${tagLine}<b>完成率 ${pct(p.success)}</b> · 红战损 ${pct(p.attrition_red)}
        · 红完好 ${pct(p.readiness_red)} · 成本 ${fnum(p.cost, 3)}
-       <div class="kv" style="grid-template-columns:1fr 1fr 1fr auto;margin-top:4px">${knobs}</div>
+       <div class="kv" style="grid-template-columns:1fr auto;margin-top:4px">${knobs}</div>
        ${valHtml}`;
   }
 
@@ -95,15 +95,24 @@
     });
     drawLegend();
     detail(D.tags.knee || 0);
+    const sub = document.getElementById("replay-knee-sub");
+    if (sub) {
+      const k = D.plans[D.tags.knee || 0];
+      sub.textContent = Object.entries(D.knob_labels)
+        .map(([key, label]) => `${label.replace(/\(.*\)/, "")}${k[key]}`).join(" / ");
+    }
   }
 
   function baselineDetail() {
     const b = D.baseline;
+    const knobs = Object.entries(D.knob_labels).map(([k, label]) =>
+      `<span class="k">${esc(label)}</span><span class="v">${b[k]}</span>`).join("");
     $("pareto-detail").innerHTML =
       `<span class="pd-tag">现状保障基线</span>　<b>完成率 ${pct(b.success)}</b> · 红战损 ${pct(b.attrition_red)}
        · 红完好 ${pct(b.readiness_red)} · 成本 ${fnum(b.cost, 3)}
+       <div class="kv" style="grid-template-columns:1fr auto;margin-top:4px">${knobs}</div>
        <div style="margin-top:4px;color:#7e90ad;font-size:10.5px">
-       6 抢修组 / 12 件备件 / 20tick 前送 / 每次 8 件（NSGA-II 优化前的现行配置）</div>`;
+       v4 标定现行配置（NSGA-II 优化前），7 个保障旋钮均可调</div>`;
   }
 
   function drawLegend() {
