@@ -18,6 +18,7 @@ import numpy as np
 
 from ..kernel.base import Kernel
 from ..sustainment.repair import SustainmentModel
+from .damage import GRADE_M, DamageModel
 from .systems import _RECOG_RANGE, BattleSystems
 
 RED, BLUE = 0, 1
@@ -84,6 +85,9 @@ class PlatformAgent(mesa.Agent):
         m, s, sysm = self.model, self.model.state, self.model.sys
         i = self.idx
         if not s.alive[i]:
+            return
+        # C7-a1：M 级（行走/动力总成）战损失动，原地待拖救；F 级走原 under_repair 后送
+        if s.damaged[i] and int(s.damage_grade[i]) == GRADE_M:
             return
         role = str(s.role[i])
         if s.under_repair[i]:
@@ -174,19 +178,10 @@ class PlatformAgent(mesa.Agent):
             pk_eff *= 0.25
         if s.dug_in[t]:
             pk_eff *= 0.6
-        roll = self.model.rng.random()
-        if roll < pk_eff:
-            s.alive[t] = False
-            s.damaged[t] = False
-            killed, damaged = True, False
-        elif roll < pk_eff + 0.25:
-            m.sustain.combat_damage(t)
-            killed, damaged = False, True
-        else:
-            killed, damaged = False, False
         s.cooldown[i] = s.reload_ticks[i]
-        m.log.engagement(s.tick, str(s.unit_ids[i]), str(s.unit_ids[t]),
-                         killed, damaged, weapon="direct")
+        self.model.damage_model.resolve_hit(
+            str(s.unit_ids[i]), int(t), pk_eff, str(s.ammo_class[i]), "direct",
+        )
 
     def _follow_or_dash(
         self, tx: float, ty: float, *, dash_when: float, follow_gap: float = 500.0,
@@ -277,6 +272,8 @@ class MesaKernel(Kernel, mesa.Model):
         # 共享航迹：side -> {敌方 idx: {"exp", "src", "recog"}}
         self.tracks = {RED: {}, BLUE: {}}
         self.sustain = SustainmentModel(scenario, s, self.rng)
+        # C7-a1：战损分级/部位抽样/处置分流模型（roll 结算统一入口）
+        self.damage_model = DamageModel(self)
         # C7-a0：合成兵种战斗支援系统
         self.sys = BattleSystems(self)
         # 修理所位置：在修单位的后送目标；未配置（None）时在修单位原地不动

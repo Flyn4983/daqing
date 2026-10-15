@@ -62,7 +62,15 @@ class SimState:
             0.0, 1.0,
         )
         self.track_ttl = np.asarray([s.track_ttl_ticks for s in specs], dtype=np.int16)
-        self.mtbf = np.asarray([s.mtbf_ticks for s in specs], dtype=np.float64)
+        # C7-a1：初始带病装备 MTBF 折减（worn_mtbf_scale）
+        worn_scale = scenario.sustainment.worn_mtbf_scale
+        self.mtbf = np.asarray(
+            [
+                s.mtbf_ticks * (worn_scale if u.initial_worn else 1.0)
+                for s, u in zip(specs, units)
+            ],
+            dtype=np.float64,
+        )
         self.mttr = np.asarray([s.mttr_ticks for s in specs], dtype=np.float64)
 
         # ---- C7-a0：合成兵种列（默认值保持旧想定行为不变）----
@@ -90,6 +98,16 @@ class SimState:
             [u.dug_in for u in units], dtype=bool
         )
         self.decoy = np.asarray([u.decoy for u in units], dtype=bool)
+
+        # ---- C7-a1：战损分级 / 分部件 / 处置方式（旧想定恒为 0/空）----
+        # damage_grade：0 无 / 1=M 机动受损 / 2=F 火力受损 / 3=K 战毁
+        self.damage_grade = np.zeros(self.n, dtype=np.int8)
+        self.part_id = np.asarray([""] * self.n, dtype=object)  # 受损部件名
+        # disposition：0 无 / 1 现地处置(onsite) / 2 拖救(tow) / 3 自行后送(drive_back) /
+        #              4 后送(rear) / 5 报废(writeoff, K 级)
+        self.disposition = np.zeros(self.n, dtype=np.int8)
+        # 弹药类别（resolve_hit 的部件毁伤分布偏移键）
+        self.ammo_class = np.asarray([s.ammo_class for s in specs], dtype=object)
 
         self.tick = 0
         # 当前任务阶段（全局标量；M3 多阶段任务，内核推进时更新阶段与目标点）

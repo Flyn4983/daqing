@@ -55,6 +55,7 @@ def instantiate(tpl: UnitTemplate) -> list[UnitSpec]:
                 heading_deg=tpl.heading_deg,
                 dug_in=tpl.dug_in,
                 decoy=tpl.decoy,
+                initial_worn=(i <= tpl.worn_count),  # C7-a1：前 k 个单位带病参战
             )
         )
     return units

@@ -58,6 +58,18 @@ sources:
     citation: "第三代主战坦克/步战车/反坦克导弹公开技术规格（Leopard 2 等）：MBT 越野速度 45-55km/h；120/125mm 炮动对动有效射程约 2-3km；二代后 ATGM 射程 3-5km；稳像观瞄昼间对装甲目标发现距离 2-4km"
     url: "https://www.defencedb.com/profile_page.php?item_id=45"
     kind: public_specification
+  S10:
+    citation: "战损 M/F/K 分级复合依据（无单一公开权威源，多源交叉合成）：S3/S4 战场抢修返建率（小损数小时可修、重损后送 2-4 周、约 50% 返建）反推致命与可修比例量级；部位权重结合公开兵棋推演常识（装甲方位暴露部位）构造"
+    url: ""
+    kind: synthesized_prototype
+  S11:
+    citation: "部件级 MTBF 参照：S7 装甲车辆冷却系统部件级 MTBF 约 4134 发动机小时（学术案例）、S1 M1A1 整机级 MMBCF 110/152 英里；分部件目录值按部件级与整机级之间等比内插标定"
+    url: "https://pdfs.semanticscholar.org/76d6/6e8fa85d9fac0324c9259777ef5e544708a6.pdf"
+    kind: academic_paper
+  S12:
+    citation: "轻/重度受损比例原型标定（无公开权威值）：按 S3/S4 定性描述（多数可现地/前沿快速修复返建）设 light_prob=0.30（现地处置、修复减半）、severe_prob=0.15（后送），其余 M 拖救/F 自行后送；等待真实毁伤统计替换"
+    url: ""
+    kind: synthesized_prototype
 
 # 平台类型键（prototype 中以该三者给值）
 platform_keys: [tank, ifv, atgm_team]
@@ -92,7 +104,7 @@ parameters:
     confidence: 0.25
     sources: []
     real_data_slot: true
-    note: "理想条件单次交火击毁概率；无公开权威值（兵棋核心标定参数），M3 v3 标定；待实弹/演习毁伤数据替换。另有固定 0.25 概率为'可修复受损'（代码常量，未来随弹道模型参数化）"
+    note: "理想条件单次交火击毁概率；无公开权威值（兵棋核心标定参数），M3 v3 标定；待实弹/演习毁伤数据替换。'可修复受损'概率段=C7-a1 damage_table.light_damage_prob（旧代码常量 0.25，现参数化，溯源见 S10）"
 
   - key: platform.speed_m_per_tick
     unit: m/tick
@@ -265,6 +277,96 @@ parameters:
     sources: []
     real_data_slot: true
     note: "各方修理所坐标（在修单位后送目的地）；纯原型坐标，待实际保障部署/情报评估"
+
+  # ---- C7-a1 战损分级与分部件保障（M/F/K + 分部件备件 + 处置分流） ----
+  - key: damage_table.part_weights
+    unit: weight
+    dtype: dict
+    prototype: {assault: {mobility: 0.16, powerpack: 0.10, fire_control: 0.04, weapon: 0.10, hull: 0.38, ammo_rack: 0.22}}
+    confidence: 0.10
+    sources: [S10]
+    real_data_slot: true
+    note: "命中后部位分布（按兵种角色分组，弹药类别经 ammo_shift 修正）；hull/ammo_rack 为致命部位→K 战毁。无公开权威值，按 S3/S4 返建率反推量级构造；待真实毁伤部位统计"
+
+  - key: damage_table.light_damage_prob
+    unit: probability
+    dtype: float
+    domain: [0.05, 0.50]
+    prototype: 0.25
+    confidence: 0.20
+    sources: [S10]
+    real_data_slot: true
+    note: "命中后仅'可修复受损'（非战毁）的概率段（旧代码常量 0.25）；与 platform.pk 叠加构成直接战毁阈值"
+
+  - key: damage_table.light_prob
+    unit: probability
+    dtype: float
+    domain: [0.10, 0.60]
+    prototype: 0.30
+    confidence: 0.10
+    sources: [S12]
+    real_data_slot: true
+    note: "受损中'轻损'比例：现地处置（onsite），修复时长减半；原型按 S3/S4 定性描述标定"
+
+  - key: damage_table.severe_prob
+    unit: probability
+    dtype: float
+    domain: [0.05, 0.40]
+    prototype: 0.15
+    confidence: 0.10
+    sources: [S12]
+    real_data_slot: true
+    note: "受损中'重度'比例：后送（rear）脱离战线；其余 M 级拖救（tow）、F 级自行后送（drive_back）"
+
+  - key: part_catalog.mtbf_ticks
+    unit: tick
+    dtype: float
+    domain: [200, 4000]
+    prototype: {mobility: 800, powerpack: 1200, fire_control: 1500, weapon: 1000}
+    confidence: 0.15
+    sources: [S11]
+    real_data_slot: true
+    note: "分部件自然故障 MTBF（1/mtbf 权重抽故障部位）；参照 S7 部件级/S1 整机级等比内插，待装备部件故障统计"
+
+  - key: part_catalog.repair_ticks
+    unit: tick
+    dtype: float
+    domain: [1, 20]
+    prototype: {mobility: 4, powerpack: 5, fire_control: 3, weapon: 3}
+    confidence: 0.15
+    sources: [S3, S4]
+    real_data_slot: true
+    note: "分部件换件修复时长（指数抽样）；量级对应'现地换件'（S3 前沿小损数小时），轻损现地处置再减半"
+
+  - key: sustainment.part_stock
+    unit: piece
+    dtype: int
+    domain: [0, 60]
+    prototype: {red: 25, blue: 17}
+    confidence: 0.15
+    sources: [S8]
+    real_data_slot: true
+    note: "分部件初始备件基数（按部件类别细分，原型为四类合计）；真实基数按 MUBR 消耗因子(S8)与携行量填"
+
+  - key: sustainment.tow_delay_ticks
+    unit: tick
+    dtype: int
+    domain: [0, 20]
+    prototype: 4
+    confidence: 0.10
+    sources: []
+    real_data_slot: true
+    note: "M 级（机动受损）待拖救时延：a2 前以固定时延抽象拖救车响应，a2 起抢救车实体化替代"
+
+  - key: sustainment.worn_mtbf_scale
+    unit: factor
+    dtype: float
+    domain: [0.30, 1.00]
+    prototype: 0.6
+    confidence: 0.15
+    sources: [S1]
+    real_data_slot: true
+    note: "带病参战（初始技术状况不佳）装备的 MTBF 折减乘子；按 S1 '要求 320 vs 实测 110/152 英里' 的欠工况比标定，待装备技术状况分级数据"
 
   # ---- 任务/地形/编成（想定级留白） ----
   - key: mission.duration_ticks

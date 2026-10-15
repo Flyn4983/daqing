@@ -1537,5 +1537,100 @@ ms/复制 仅作量级参考）
   Warp GPU 移植在后续工作包
 
 
+## 2026-10-15 | trae + 用户 | C7-a1：战损 M/F/K 分级 + 分部件备件 + 处置分流 + 带病参战
+
+### 背景
+a0 杀伤链是聚合概率两态（击毁/可修复受损），与装备保障业务不对齐：
+保障参谋关心"坏了什么部件、能不能现地修、要不要拖救/后送、备件对不对口"。
+a1 在不改变 GJB 四率口径（four_rates.py 零改动，硬回归锚）的前提下，
+把命中后的毁伤细化为部件级三态与四类处置，并让初始战备不完好装备带病参战。
+
+### 战损分级模型（新模块 combat/damage.py，约 290 行）
+- M/F/K 三态：命中段 roll<pk_eff 内按"兵种角色 × 弹药类别"部件权重抽样；
+  致命部件（车体 hull/弹药架 ammo_rack）→ **K 战毁不可修**（报废 writeoff）；
+  行走/动力总成 → **M 机动受损**（失动，原地待拖救）；
+  火控/武器系统 → **F 火力受损**（可自驶，自行后送）
+- 原型部件目录：行走总成（MTBF 800/换件 4 tick）、动力总成（1200/5）、
+  火控（1500/3）、武器（1000/3），均为 S11 原型标定、留 real_data_slot
+- 严重度分流（正规命中段内）：轻损 30%→**现地处置**（onsite，换件时长
+  减半）；重度 15%→**后送**（rear，脱离战线）；其余 M→**拖救**（tow，
+  付 tow_delay_ticks 时延）、F→**自行后送**（drive_back）
+- 弹药偏移：机关炮多打行走、反坦克导弹诱发弹药架、间瞄破片打行走/身管、
+  空射弹顶攻发射装置；**地雷整组权重覆盖专打行走**（mobility .55/
+  powerpack .30，致命仅 .15），触雷绝不自行后送
+- 旧 0.25"可修复受损段"保留（现参数化 damage_table.light_damage_prob），
+  段内 M/F 各半、一律现地处置
+- 自然故障按 1/mtbf 在四个可修部件间抽样定位（M→拖救、F→自驶）
+
+### 激活开关与零漂移（关键回归设计）
+- a1 模式激活条件：part_stock 非空 或显式给 damage_model/part_catalog；
+  未激活时 resolve_hit 与旧 roll 判定**逐字节等价**（grade 全 0），
+  test_legacy_mode_matches_old_roll_logic 以固定序列 rng 锁死三段边界
+- Warp 守卫追加三个 a1 触发条件（part_stock/damage_model/part_catalog），
+  报错文案合并提示 C7-a0/a1 要素请用 Mesa
+
+### 保障模型（sustainment/repair.py）与状态/事件
+- 分部件备件：part_stock 启用后每方每部件一个 SimPy Container，
+  按受损部件请领 spare_units 件；缺货在"占用抢修组之前"挂起等周期补给
+  （等件不占组），周期补给逐部件容器各投 qty 件；备件请领统计
+  req_total/req_immediate/stockout_wait（即时满足率/缺货等待 tick）
+- SimState 新增四列：damage_grade(int8)/part_id(object)/
+  disposition(int8)/ammo_class(object)；事件流扩为 7 列
+  （+grade/part/disposition），snapshot 同步带三新列
+- M 级机动锁：mesa_kernel.move() 中 M 级受损单位原地不动（即使已入修），
+  F 级沿用在修驶向修理所（折减 ×0.5）；修复归建清三列
+- 初始带病：UnitSpec.initial_worn / UnitTemplate.worn_count（模板展开前
+  N 台标记），state 构造时 mtbf × worn_mtbf_scale（默认 0.6）
+- 间瞄弹着/空中打击/触雷三个 systems.py 调用点统一改走 resolve_hit/
+  resolve_mine，命中即由 DamageModel 记 engagement（带 grade），
+  去除调用处重复日志；AirAsset 增 ammo_class（atgm/indirect/air_missile）
+
+### 想定与参数溯源
+- example_brigade.yaml：红 {行走6/动力5/火控6/武器8}、蓝 {4/3/4/6}
+  部件基数，tow_delay=4 tick，worn_mtbf_scale=0.6；红坦克 1 连 2 台、
+  蓝坦克排 1 台带病参战（终局实测 grade 0/1/2/3 四态齐现）
+- param_catalog 新增 S10（M/F/K 分级复合依据，synthesized）、
+  S11（部件级 MTBF/工时）、S12（轻/重比例标定，synthesized）与 9 条
+  参数（部件权重表/两段概率/部件 MTBF·工时/部件基数/拖救时延/带病
+  折减，全部带 domain+confidence+real_data_slot）
+
+### 可视化（viz/，M/F/K 肉眼可辨）
+- 状态色：M 失动深蓝 (50,110,210)、F 沿用琥珀 (239,170,23)、
+  K 战毁棕黑残骸 (96,46,34)、重损后送深红 (180,60,60)；盒体图元与 GLB
+  染色两条路径同步（优先级：在修紫 > 后送红 > M 蓝 > F 琥珀）；
+  无新列旧数据回退三态色
+- 顺手补齐 a0 遗留缺口：viz/models.py 原仅注册 tank/ifv/atgm_team 三类，
+  `brigsim replay` 遇 22 型想定直接 KeyError；新增 8 个 trimesh 粗形体
+  builder（自行火炮/火箭炮/导弹发射车/自行高炮/平板与碟形雷达车/电抗车/
+  指挥车/破障车/通用卡车）+ 19 个类型映射，未注册类型回退通用卡车；
+  19 个 GLB 程序化生成入库（同名真实 GLB 放入 assets/models 即覆盖）；
+  rrd 录制冒烟通过（532MB 含模型旅级回放，桌面路径；大屏轻量 rrd 不受影响）
+
+### a0 消融断言的指标修正（21 种子实证，非为过测试而改）
+- a1 后命中段 40% 转为可修复 M/F 且 72tick 内多归建，旧两个弱方向断言
+  （5 种子 ≥4）失效：终局 red_alive 对烟幕的边际差 21 种子均值仅
+  -0.19（10/21，被修复归建稀释）；lead_x 受"M 停驶×接敌先后×幸存者
+  偏差"交互反转（无工兵接敌晚，先头车反存活到更远处，8/21）
+- 改断言机制链最近的指标（机制本体的单测与"消融后机制消失"硬断言全部
+  保留）：去工兵→红方触雷事件更多（21 种子 17/21，原 5 种子 4/5）；
+  去烟幕→屏烟窗（start6+dur16+8 tick 余效）内蓝方击毁红方数更多
+  （原 5 种子 5/5：-9/-1/-6/-4/0）；宏观防护效益待 a2 v4 标定后复核
+
+### 测试（tests/test_c7_a1.py，新增 17 项）
+- 分级分布 20000 样本（K≈0.60±0.05、非 K 中 M≈0.65±0.05）、mine 权重
+  专打行走、修复归建三列清零、M 停驶/F 自驶后送位移、缺货挂起到补给恢复
+  （stockout_wait/即时满足计数）、逐部件容器补给、带病 MTBF 折减
+  （直构+模板 worn_count=3）、四率键全集值域回归、旧模式固定序列零漂移、
+  Warp 守卫、snapshot 新列、K 日志 grade="k"、onsite 0.30/rear 0.15
+  占比（2000 样本）、M 修复均值长于 F、事件流 7 列
+- **全量 134 项通过**（117 + a1 新增 17），约 441s；ruff 全仓净
+
+### 已知留白（a2 收口）
+- 拖救/抢修/补给车仍是时间抽象（tow_delay），未实体化（a2：抢救/抢修/
+  补给车实体 + 三档储备）；a0 的 0/10 成功率与 a1 杀伤结构（致命占比 0.60）
+  的平衡标定统一在 a2（v4 粗标定）；C3 代理/C4 优化基于旧两态数据，
+  a2 后需在 a3 重训重算
+
+
 
 

@@ -253,7 +253,13 @@ platform_types:
 sustainment:
   repair_teams: {red: 6, blue: 4}
   repair_delay_ticks: 0
-  spare_stock: {red: 12, blue: 8}
+  # C7-a1：分部件备件目录基数（部件目录见 param_catalog S11；非空即启用战损分级/处置分流）
+  part_stock:
+    red: {mobility: 6, powerpack: 5, fire_control: 6, weapon: 8}
+    blue: {mobility: 4, powerpack: 3, fire_control: 4, weapon: 6}
+  tow_delay_ticks: 4          # M 级失动待拖救时延（a2 起拖救车实体化）
+  worn_mtbf_scale: 0.6        # 带病参战装备 MTBF 折减
+  spare_stock: {red: 12, blue: 8}   # 旧池模式口径（part_stock 启用后被部件容器取代，保留供对照）
   resupply_interval_ticks: 20
   resupply_qty: 8
   repair_station: {red: [1500, 5000], blue: [9500, 5100]}
@@ -309,7 +315,8 @@ force_templates:
   red:
     # ---- 合成1营（坦克2连+装步2连+反坦克排，28 台）----
     - {type: tank, count: 8, layout: wedge, anchor: [1700, 2400], heading_deg: 90,
-       spacing_along: 300, spacing_lateral: 350, org: "合成1营·坦克1连（一梯队）", id_prefix: r1t}
+       spacing_along: 300, spacing_lateral: 350, org: "合成1营·坦克1连（一梯队）", id_prefix: r1t,
+       worn_count: 2}   # C7-a1：首车/末车带病参战（MTBF×worn_mtbf_scale）
     - {type: tank, count: 8, layout: wedge, anchor: [1700, 5000], heading_deg: 90,
        spacing_along: 300, spacing_lateral: 350, org: "合成1营·坦克2连（一梯队）", id_prefix: r2t}
     - {type: ifv, count: 8, layout: line, anchor: [100, 3700], heading_deg: 90,
@@ -381,7 +388,8 @@ force_templates:
     - {type: atgm_team, count: 3, layout: line, anchor: [6000, 6500], heading_deg: 270,
        spacing_lateral: 700, org: "蓝1营·前沿反坦克3组", id_prefix: bc, dug_in: true}
     - {type: tank, count: 4, layout: line, anchor: [7800, 4000], heading_deg: 270,
-       spacing_lateral: 500, org: "蓝1营·坦克1排", id_prefix: bt, dug_in: true}
+       spacing_lateral: 500, org: "蓝1营·坦克1排", id_prefix: bt, dug_in: true,
+       worn_count: 1}   # C7-a1：既设防御也有带病装备
     - {type: tank, count: 4, layout: line, anchor: [7800, 6200], heading_deg: 270,
        spacing_lateral: 500, org: "蓝1营·坦克2排", id_prefix: bu, dug_in: true}
     - {type: ifv, count: 2, layout: line, anchor: [8400, 2500], heading_deg: 270,

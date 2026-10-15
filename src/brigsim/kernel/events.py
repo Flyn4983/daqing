@@ -34,6 +34,10 @@ class EventLog:
                     "alive": bool(state.alive[i]),
                     "damaged": bool(state.damaged[i]),
                     "under_repair": bool(state.under_repair[i]),
+                    # C7-a1：战损分级（0 无/1 M/2 F/3 K）与受损部件/处置方式
+                    "damage_grade": int(state.damage_grade[i]),
+                    "part": str(state.part_id[i]),
+                    "disposition": int(state.disposition[i]),
                 }
             )
         if sustain is not None and getattr(sustain, "parts", None) is not None:
@@ -44,7 +48,7 @@ class EventLog:
                     {
                         "tick": tick,
                         "side": side,
-                        "spares": int(sustain.parts[side].level),
+                        "spares": int(sustain.total_spares(side)),
                         "in_repair": int((under & (side_arr == side)).sum()),
                     }
                 )
@@ -57,6 +61,7 @@ class EventLog:
         killed: bool,
         damage: bool,
         weapon: str = "direct",
+        grade: str = "",
     ) -> None:
         self.engagements.append(
             {
@@ -66,6 +71,7 @@ class EventLog:
                 "killed": killed,
                 "damaged": damage,
                 "weapon": weapon,
+                "grade": grade,
             }
         )
 

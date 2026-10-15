@@ -40,6 +40,12 @@ C_SNOW = (228, 230, 228)
 REPAIR_C = (168, 85, 247)  # 在修单位图元色（紫）
 WRECK_C = (72, 72, 80)  # 战损残骸图元色（深灰）
 
+# C7-a1 战损分级状态色：M 失动深蓝 / F 火力受损沿用琥珀 / K 战毁棕黑残骸 /
+# 重损后送深红，肉眼一屏可分
+M_KILL_C = (50, 110, 210)
+WRECK_K_C = (96, 46, 34)
+REAR_C = (180, 60, 60)
+
 # C7-a0 合成兵种图层配色
 RADAR_C = (90, 210, 230)    # 雷达探测包络（青）
 EW_C = (214, 90, 230)       # 电磁干扰区（品红）
@@ -187,7 +193,21 @@ def visualize(
                         ),
                     ),
                 )
-                state = "dead" if not alive else ("damaged" if damaged else "ok")
+                has_g = "damage_grade" in cur.columns and "disposition" in cur.columns
+                if not alive:
+                    # C7-a1：K 战毁（grade=3）棕黑，与普通伤亡深灰区分
+                    state = "wreck_k" if (
+                        has_g and int(cur.at[uid, "damage_grade"]) == 3
+                    ) else "dead"
+                elif damaged and has_g:
+                    if int(cur.at[uid, "disposition"]) == 4:
+                        state = "rear"       # 重损后送（深红）
+                    elif int(cur.at[uid, "damage_grade"]) == 1:
+                        state = "m_kill"     # M 失动（深蓝）
+                    else:
+                        state = "damaged"    # F 火力受损（琥珀）
+                else:
+                    state = "damaged" if damaged else "ok"
                 if model_state.get(uid) != state:
                     _tint_model(ent, info[uid][0], state)
                     model_state[uid] = state
@@ -385,12 +405,19 @@ def _log_static_units(info, terrain: HeightField, use_models: bool = True) -> No
 
 
 def _log_units_primitives(cur: pd.DataFrame, zs: np.ndarray, info) -> None:
-    """C6 轻量图元单位：盒体 + 状态色（正常方别色/受损琥珀/在修紫/残骸深灰）。"""
+    """C6 轻量图元单位：盒体 + 状态色。
+
+    C7-a1 优先级（肉眼可辨 M/F/K/后送）：在修紫 > 重损后送深红 >
+    M 失动深蓝 > F 火力受损琥珀 > 正常方别色；死亡残骸深灰，
+    K 战毁（grade=3）棕黑。旧数据无 grade 列时回退旧三态。
+    """
+    has_grade = "damage_grade" in cur.columns and "disposition" in cur.columns
     alive_centers: list = []
     alive_rot: list = []
     alive_colors: list = []
     wreck_centers: list = []
     wreck_rot: list = []
+    wreck_colors: list = []
     for k, uid in enumerate(cur.index):
         x, y, z = float(cur.at[uid, "x"]), float(cur.at[uid, "y"]), float(zs[k])
         hz = float(cur.at[uid, "heading"]) * 0.5
@@ -398,12 +425,21 @@ def _log_units_primitives(cur: pd.DataFrame, zs: np.ndarray, info) -> None:
         if not bool(cur.at[uid, "alive"]):
             wreck_centers.append([x, y, z + 1.0])
             wreck_rot.append(quat)
+            wreck_colors.append(
+                WRECK_K_C if has_grade and int(cur.at[uid, "damage_grade"]) == 3
+                else WRECK_C
+            )
             continue
         side = info[uid][1]
         if bool(cur.at[uid, "under_repair"]):
             color = REPAIR_C
         elif bool(cur.at[uid, "damaged"]):
-            color = DAMAGED_C
+            if has_grade and int(cur.at[uid, "disposition"]) == 4:
+                color = REAR_C
+            elif has_grade and int(cur.at[uid, "damage_grade"]) == 1:
+                color = M_KILL_C
+            else:
+                color = DAMAGED_C
         else:
             color = SIDE_COLOR[side]
         alive_centers.append([x, y, z + 2.5])
@@ -429,7 +465,7 @@ def _log_units_primitives(cur: pd.DataFrame, zs: np.ndarray, info) -> None:
                 centers=wreck_centers,
                 sizes=[10.0, 5.0, 2.0],
                 rotations=np.asarray(wreck_rot),
-                colors=[WRECK_C] * len(wreck_centers),
+                colors=wreck_colors,
             ),
         )
     else:
@@ -441,22 +477,24 @@ def _tint_model(ent: str, typ: str, state: str) -> None:
     if state == "ok":
         # 正常态沿用 static 原色资源，无需重发
         return
-    elif state == "damaged":
-        rr.log(
-            f"{ent}/model",
-            rr.Asset3D(
-                path=str(glb),
-                albedo_factor=rr.encodings.Rgba32((170 << 24) | (148 << 16) | (108 << 8) | 255),
+    tints = {
+        # C7-a1：M 失动深蓝 / 重损后送深红 / K 战毁棕黑（F 沿用 amber 受损色）
+        "m_kill": (50, 110, 210),
+        "rear": (180, 60, 60),
+        "wreck_k": (96, 46, 34),
+        "damaged": (170, 148, 108),
+        "dead": (42, 42, 44),
+    }
+    rr.log(
+        f"{ent}/model",
+        rr.Asset3D(
+            path=str(glb),
+            albedo_factor=rr.encodings.Rgba32(
+                (tints[state][0] << 24) | (tints[state][1] << 16)
+                | (tints[state][2] << 8) | 255
             ),
-        )
-    else:  # dead
-        rr.log(
-            f"{ent}/model",
-            rr.Asset3D(
-                path=str(glb),
-                albedo_factor=rr.encodings.Rgba32((42 << 24) | (42 << 16) | (44 << 8) | 255),
-            ),
-        )
+        ),
+    )
 
 
 def _log_objective(scenario: Scenario, terrain: HeightField) -> None:

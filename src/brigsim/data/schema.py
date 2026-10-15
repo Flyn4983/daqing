@@ -33,6 +33,43 @@ WeatherName = Literal[
 ]
 IlluminationName = Literal["day", "dusk", "night"]
 
+# C7-a1：战损分级、处置方式、弹药类别（影响毁伤部位分布的弹种粗分类）
+DamageGradeName = Literal["none", "m", "f", "k"]
+DispositionName = Literal["none", "onsite", "tow", "drive_back", "rear", "writeoff"]
+AmmoClassName = Literal["ap", "autocannon", "atgm", "indirect", "air_missile", "mine"]
+
+
+class PartSpec(BaseModel):
+    """分部件备件目录条目（C7-a1）。grade 仅 m（行动部分）或 f（火力部分）两类
+    可修部件；致命部位（车体/弹药架）不在目录中，命中即 K 级战损不可修。
+    """
+
+    part_id: str
+    name: str = ""  # 军语名称，如 行走总成/动力总成/火控系统/武器系统
+    grade: Literal["m", "f"]
+    mtbf_ticks: float = Field(..., gt=0.0)
+    repair_ticks: float = Field(..., gt=0.0)
+    spare_units: int = Field(1, ge=1)
+
+
+class DamageTableSpec(BaseModel):
+    """战损部位分布表（C7-a1）：命中后按"兵种角色 × 弹药类别"的部件权重抽样。
+
+    - part_weights[role]：各部件基线命中权重（含致命部件 hull/ammo_rack）；
+    - ammo_shift[弹药类]：对基线权重的加性偏移（clip 至 >=0.02 后归一化）；
+      "mine" 键直接给出整组权重（雷场专打行走部分）；
+    - light_damage_prob：旧逻辑"可修复受损段"宽度（历史值 0.25，保留兼容）；
+    - light_prob/severe_prob：正规命中（roll<pk）内的轻损现地处置占比 /
+      重度后送占比，其余按等级分拖救（M）/自行后送（F）。
+    """
+
+    light_damage_prob: float = Field(0.25, ge=0.0, le=1.0)
+    fatal_keys: list[str] = Field(default_factory=lambda: ["hull", "ammo_rack"])
+    part_weights: dict[str, dict[str, float]] = Field(default_factory=dict)
+    ammo_shift: dict[str, dict[str, float]] = Field(default_factory=dict)
+    light_prob: float = Field(0.30, ge=0.0, le=1.0)
+    severe_prob: float = Field(0.15, ge=0.0, le=1.0)
+
 
 class ParamMeta(BaseModel):
     """参数来源溯源信息（M3 标定闭环用）。"""
@@ -124,6 +161,18 @@ class SustainmentSpec(BaseModel):
     # M3 修理所位置（各方 [x_m, y_m]）；None=在修单位原地不动
     repair_station: dict[str, list[float]] | None = None
 
+    # ---- C7-a1：战损分级 / 分部件备件 ----
+    # 激活条件：part_stock 非空 或 damage_model/part_catalog 显式给出；
+    # 未激活时完全走旧 roll 逻辑（旧想定零改动行为不变）。
+    # 激活后按部件容器请领备件，旧 spare_stock 聚合池模式（共存时）被忽略。
+    damage_model: DamageTableSpec | None = None
+    part_catalog: dict[str, PartSpec] | None = None
+    part_stock: dict[str, dict[str, int]] = Field(default_factory=dict)
+    # M 级（机动受损）拖救时延（tick；a2 起拖救车实体化，现以时延抽象）
+    tow_delay_ticks: int = Field(4, ge=0)
+    # 初始带病装备的 MTBF 折减乘子（initial_worn=True 的单位）
+    worn_mtbf_scale: float = Field(0.6, gt=0.0, le=1.0)
+
 
 class PlatformTypeSpec(BaseModel):
     """一类装备平台的性能参数（数值均为示例占位，等待真实数据资产替换）。
@@ -157,6 +206,8 @@ class PlatformTypeSpec(BaseModel):
     jam_strength: float = Field(0.0, ge=0.0, le=1.0, description="电抗强度（0-1）")
     jam_mode: JamModeName = "both"
     aura_bonus: float = Field(0.0, ge=0.0, description="C2 光环对感知/毁伤概率的加成")
+    # C7-a1：弹药类别（决定命中后部件毁伤分布的弹种偏移；mine 为雷区专用）
+    ammo_class: AmmoClassName = "ap"
     meta: ParamMeta = ParamMeta()
 
 
@@ -170,6 +221,8 @@ class UnitSpec(BaseModel):
     # C7-a0：既设掩体（被发现与被毁概率降低）；假目标（吸引敌方精确弹药）
     dug_in: bool = False
     decoy: bool = False
+    # C7-a1：初始技术状况（带病参战，MTBF 按 worn_mtbf_scale 折减）
+    initial_worn: bool = False
 
 
 class UnitTemplate(BaseModel):
@@ -187,6 +240,7 @@ class UnitTemplate(BaseModel):
     spacing_lateral: float = 200.0  # 垂直 heading 方向间距（米）
     dug_in: bool = False  # 整建制占领既设阵地（蓝方防御用）
     decoy: bool = False
+    worn_count: int = Field(0, ge=0)  # C7-a1：展开后前 k 个单位 initial_worn=True
 
 
 class SideModifiers(BaseModel):

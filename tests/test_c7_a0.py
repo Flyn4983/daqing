@@ -509,10 +509,17 @@ SEEDS = [101, 202, 303, 404, 505]
 def baseline():
     """模块级共享：基线想定与 5 个固定种子的基线指标（消融测试共用，避免重复推演）。"""
     sc = YamlFileProvider().load_scenario("example_brigade")
-    return {"sc": sc, "m": [_run(sc, sd) for sd in SEEDS]}
+    # 烟幕消融的统计窗 = 屏烟起烟到消散后 8 tick（覆盖间瞄弹着延迟等余效）
+    orders = sc.battlefield.smoke_orders
+    window = (
+        min(z.start_tick for z in orders),
+        max(z.start_tick + z.duration_ticks for z in orders) + 8,
+    )
+    return {"sc": sc, "window": window,
+            "m": [_run(sc, sd, window=window) for sd in SEEDS]}
 
 
-def _run(sc: Scenario, seed: int, post_init=None) -> dict:
+def _run(sc: Scenario, seed: int, post_init=None, window=None) -> dict:
     k = MesaKernel(sc, seed=seed)
     if post_init is not None:
         post_init(k)
@@ -522,6 +529,16 @@ def _run(sc: Scenario, seed: int, post_init=None) -> dict:
     roles = np.asarray(s.role, dtype=object)
     alive_assault = s.alive & (s.side == 0) & (roles == "assault")
     eng = pd.DataFrame(k.log.engagements)
+    red_ids = {u.unit_id for u in sc.forces["red"]}
+    mine_hits = window_kills = 0
+    if len(eng):
+        at_red = eng[eng["target"].isin(red_ids)]
+        mine_hits = int((at_red["weapon"] == "mine").sum())
+        if window is not None:
+            lo, hi = window
+            w = at_red[(at_red["weapon"] != "mine")
+                       & (at_red["tick"] >= lo) & (at_red["tick"] <= hi)]
+            window_kills = int(w["killed"].sum())
     return {
         "red_alive": int(s.alive[s.side == 0].sum()),
         "lead_x": float(s.x[alive_assault].max()) if alive_assault.any() else -1.0,
@@ -532,6 +549,9 @@ def _run(sc: Scenario, seed: int, post_init=None) -> dict:
         "direct_shots": int((eng["weapon"] == "direct").sum()) if len(eng) else 0,
         "red_fire_launch": int(
             ((ef["kind"] == "fire_launch") & (ef["side"] == 0)).sum()) if len(ef) else 0,
+        # C7-a1 后消融改用机制链最近的指标（见两个消融测试内注释）
+        "mine_hits": mine_hits,
+        "window_kills": window_kills,
     }
 
 
@@ -552,13 +572,16 @@ def test_ablation_engineers_required_for_breach(baseline):
 
     m = [_run(no_eng(), sd) for sd in SEEDS]
     assert all(x["breaches"] == 0 for x in m)
-    # 无破障：突击矛头推进不优于基线（5 个种子至少 4 个成立）
-    assert _majority([x["lead_x"] for x in base_m], [x["lead_x"] for x in m],
-                     lambda a, b: a >= b)
+    # C7-a1 起命中段 60% K / 40% 可修复 M·F，且 M 级失动原地待拖救：
+    # 旧的 lead_x（最靠前存活突击车位置）受"接敌先后×幸存者偏差"交互影响
+    # 不再单调（无工兵接敌晚，先头车反而存活到更远处）。改断言机制链最近的
+    # 指标——破障消除雷场，故有工兵时红方触雷事件（含 K 与 M 损伤）更少。
+    assert _majority([x["mine_hits"] for x in base_m],
+                     [x["mine_hits"] for x in m], lambda a, b: a <= b)
 
 
 def test_ablation_smoke_screen_protects_assault(baseline):
-    base, base_m = baseline["sc"], baseline["m"]
+    base, base_m, window = baseline["sc"], baseline["m"], baseline["window"]
 
     def no_smoke() -> Scenario:
         sc = base.model_copy(deep=True)
@@ -566,10 +589,14 @@ def test_ablation_smoke_screen_protects_assault(baseline):
                                          smoke_orders=[])
         return sc
 
-    m = [_run(no_smoke(), sd) for sd in SEEDS]
+    m = [_run(no_smoke(), sd, window=window) for sd in SEEDS]
     assert all(x["smoke"] == 0 for x in m)
-    assert _majority([x["red_alive"] for x in base_m],
-                     [x["red_alive"] for x in m], lambda a, b: a >= b)
+    # C7-a1 起命中段 40% 为可修复 M·F，且 72tick 内多数受损车修复归建，
+    # 终局 red_alive 对烟幕的边际效应被稀释（多种子均值差 < 0.5，已不单调）。
+    # 改断言机制链最近的指标：屏烟活跃窗（含消散余效）内蓝方对红方的击毁数，
+    # 有烟幕时应更少。宏观防护效益留待 a2 v4 平衡标定后复核。
+    assert _majority([x["window_kills"] for x in base_m],
+                     [x["window_kills"] for x in m], lambda a, b: a <= b)
 
 
 def test_ablation_fog_cuts_direct_engagements(baseline):

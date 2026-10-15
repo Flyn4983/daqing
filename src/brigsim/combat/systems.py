@@ -64,6 +64,7 @@ class AirAsset:
     sensor_range: float
     sensor_kind: str
     label: str
+    ammo_class: str = "air_missile"  # C7-a1：部位权重表弹药类别
     state: str = "pending"      # inbound/station/loitering/exiting/killed/expended
     x: float = 0.0
     y: float = 0.0
@@ -457,18 +458,11 @@ class BattleSystems:
 
     def _resolve(self, target: int, pk_eff: float, a: AirAsset, weapon: str) -> None:
         s = self.s
-        roll = self.rng.random()
-        if roll < pk_eff:
-            s.alive[target] = False
-            s.damaged[target] = False
-            killed = True
-        elif roll < pk_eff + 0.25:
-            self.k.sustain.combat_damage(target)
-            killed = False
-        else:
-            return
-        self.k.log.engagement(s.tick, a.aid, str(s.unit_ids[target]), killed, not killed,
-                              weapon=weapon)
+        killed, hit = self.k.damage_model.resolve_hit(
+            a.aid, int(target), pk_eff, a.ammo_class, weapon, always_log=False,
+        )
+        if not hit:
+            return  # resolve_hit 命中时已记 engagement，此处只补空中击杀统计
         self.air_kills.append({"tick": s.tick, "asset": a.aid, "target": str(s.unit_ids[target]),
                               "killed": killed})
 
@@ -603,18 +597,11 @@ class BattleSystems:
                           f"r={m.splash:.0f},n={victims.size}")
         for t in victims:
             pk = m.pk * (0.5 if s.dug_in[t] else 1.0)
-            roll = self.rng.random()
-            if roll < pk:
-                s.alive[t] = False
-                s.damaged[t] = False
-                killed = True
-            elif roll < pk + 0.25:
-                self.k.sustain.combat_damage(int(t))
-                killed = False
-            else:
-                continue
-            self.k.log.engagement(s.tick, str(s.unit_ids[m.shooter]), str(s.unit_ids[t]),
-                                  killed, not killed, weapon=m.weapon)
+            ammo_class = "atgm" if m.weapon == "blos" else "indirect"
+            self.k.damage_model.resolve_hit(
+                str(s.unit_ids[m.shooter]), int(t), pk, ammo_class, m.weapon,
+                always_log=False,
+            )
 
     def _air_snapshot(self) -> None:
         for a in self.air:
@@ -637,21 +624,11 @@ class BattleSystems:
         return {"minefield": 0.2, "dragons_teeth": 0.15, "anti_tank_ditch": 0.02}[o.kind]
 
     def mine_damage(self, i: int, x: float, y: float) -> None:
-        """移动后结算：未开辟雷场内的触雷概率损伤。"""
+        """移动后结算：未开辟雷场内的触雷概率损伤（分级抽样统一走 DamageModel）。"""
         o = self.obstacle_at(x, y)
         if o is None or o.kind != "minefield":
             return
-        r = self.rng.random()
-        s = self.s
-        if r < 0.03:
-            s.alive[i] = False
-            s.damaged[i] = False
-            self.k.log.engagement(s.tick, "minefield", str(s.unit_ids[i]), True, False,
-                                  weapon="mine")
-        elif r < 0.12:
-            self.k.sustain.combat_damage(i)
-            self.k.log.engagement(s.tick, "minefield", str(s.unit_ids[i]), False, True,
-                                  weapon="mine")
+        self.k.damage_model.resolve_mine(i)
 
     def breach_target(self, i: int) -> tuple[float, float] | None:
         """工兵当前要开辟的障碍：取未破障且在行进前方最近者的近侧边沿。"""

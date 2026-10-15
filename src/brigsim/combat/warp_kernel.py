@@ -349,14 +349,19 @@ class WarpKernel(Kernel):
             "artillery", "missile", "air_defense", "radar_air", "radar_cb",
             "ew", "c2", "engineer", "support",
         }
+        sus = scenario.sustainment
         uses_new = (
             bool(scenario.air_packages)
             or bool(scenario.battlefield.obstacles)
             or any(t.role in new_roles for t in scenario.platform_types.values())
+            or bool(sus.part_stock)
+            or sus.damage_model is not None
+            or sus.part_catalog is not None
         )
         if uses_new:
             raise NotImplementedError(
-                "该想定使用了 C7-a0 合成兵种要素（空中架次/间瞄炮兵/雷达电磁/障碍等），"
+                "该想定使用了 C7-a0 合成兵种/C7-a1 战损分级要素"
+                "（空中架次/间瞄炮兵/雷达电磁/障碍/分部件备件等），"
                 "Warp GPU 内核尚未移植，请使用 Mesa 内核（kernel='mesa'，多进程批量）。"
             )
         Kernel.__init__(self, scenario, seed)

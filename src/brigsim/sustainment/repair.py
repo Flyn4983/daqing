@@ -7,8 +7,12 @@
 - M3 备件供应链：可选库存（spare_stock），每次维修消耗 1 件，
   缺货时维修挂起等待周期性补给（resupply_interval/qty）；备件在抢修组
   之前请领，等件不占用抢修组；
+- C7-a1 分部件备件（part_stock 非空即激活）：每方每部件一个库存容器，
+  按受损部件请领 spare_units 件，修复时长取自部件目录（repair_ticks），
+  轻损现地处置减半、M 级先付拖救时延（tow_delay_ticks）；
 - 自然故障按指数 MTBF 抽样（战斗损毁 killed 不可修，进程直接终止）；
-- 唯一状态真相是 SimState 列存（damaged/under_repair），本模块只在 DES 回调里改列，
+- 唯一状态真相是 SimState 列存（damaged/under_repair/damage_grade/
+  part_id/disposition），本模块只在 DES 回调里改列，
   不持有装备状态对象，保持 M4 向量化/GPU 后端的可迁移性。
 """
 
@@ -18,6 +22,16 @@ import numpy as np
 import pandas as pd
 import simpy
 
+from ..combat.damage import (
+    DEFAULT_DAMAGE_TABLE,
+    DEFAULT_PART_CATALOG,
+    DISP_DRIVE_BACK,
+    DISP_ONSITE,
+    DISP_TOW,
+    GRADE_F,
+    GRADE_M,
+    _sample_repairable,
+)
 from ..data.schema import Scenario
 from ..kernel.state import SimState
 
@@ -35,18 +49,44 @@ class SustainmentModel:
         self.env = simpy.Environment()
         spec = scenario.sustainment
         self.repair_delay = spec.repair_delay_ticks
+        self.tow_delay = spec.tow_delay_ticks  # C7-a1：M 级拖救时延
         # SimPy Resource 容量必须 >0；None 表示该方无抢修能力（送修后无限挂起）
         self.teams = {
             side: (simpy.Resource(self.env, capacity=n) if n > 0 else None)
             for side, n in ((RED, spec.repair_teams["red"]), (BLUE, spec.repair_teams["blue"]))
         }
-        # 备件库存：None = 无限备件（不启用供应链约束）
-        self.parts: dict[int, simpy.Container] | None = None
+        # C7-a1 模式开关：part_stock 非空 或 damage_model/part_catalog 显式给出
+        self.part_mode = bool(spec.part_stock) or spec.damage_model is not None \
+            or spec.part_catalog is not None
+        self.part_catalog = (
+            spec.part_catalog if spec.part_catalog is not None else DEFAULT_PART_CATALOG
+        )
+        self.damage_table = (
+            spec.damage_model if spec.damage_model is not None else DEFAULT_DAMAGE_TABLE
+        )
+        # 备件库存：池模式 {side: Container}；部件模式 {side: {part: Container}}；
+        # None = 无限备件（不启用供应链约束）
+        self.parts: dict[int, simpy.Container] | dict[int, dict[str, simpy.Container]] | None
+        self.parts = None
         # 备件保障统计（仅启用库存时计数）：请领总数、即时满足数、缺货累计等待
         self.req_total = {RED: 0, BLUE: 0}
         self.req_immediate = {RED: 0, BLUE: 0}
         self.stockout_wait = {RED: 0.0, BLUE: 0.0}
-        if spec.spare_stock is not None:
+        if self.part_mode:
+            self.parts = {
+                side: {
+                    pid: simpy.Container(
+                        self.env,
+                        init=int(spec.part_stock.get(name, {}).get(pid, 0)),
+                        capacity=float("inf"),
+                    )
+                    for pid in self.part_catalog
+                }
+                for side, name in ((RED, "red"), (BLUE, "blue"))
+            }
+            for side in (RED, BLUE):
+                self.env.process(self._resupply_loop(side))
+        elif spec.spare_stock is not None:
             self.parts = {
                 side: simpy.Container(
                     self.env, init=int(spec.spare_stock[name]), capacity=float("inf")
@@ -80,9 +120,16 @@ class SustainmentModel:
         """把 DES 时钟推进到指定 tick（含该时刻前的全部故障/修复事件）。"""
         self.env.run(until=tick)
 
-    def combat_damage(self, i: int) -> None:
-        """交战内核判定单位受损（未毁）时调用：仅登记，tick 末 commit 入通道。"""
+    def combat_damage(self, i: int, grade: int = 0, part: str = "",
+                      disposition: int = 0) -> None:
+        """交战内核判定单位受损（未毁）时调用：仅登记，tick 末 commit 入通道。
+
+        C7-a1 调用方附带等级/部件/处置（旧调用只传 i，保持零改动兼容）。
+        """
         self.state.damaged[i] = True
+        self.state.damage_grade[i] = int(grade)
+        self.state.part_id[i] = str(part)
+        self.state.disposition[i] = int(disposition)
         self._pending_combat.add(int(i))
         side = int(self.state.side[i])
         self.failures_combat[side] += 1
@@ -105,9 +152,23 @@ class SustainmentModel:
             out[f"stockout_wait_{name}"] = float(self.stockout_wait[side])
         return out
 
+    def total_spares(self, side: int) -> int:
+        """当前备件存量统一读取点（events.snapshot 使用）。
+
+        池模式=聚合容器存量；部件模式=各部件容器存量求和。
+        """
+        if self.parts is None:
+            return -1
+        if self.part_mode:
+            return int(sum(c.level for c in self.parts[side].values()))
+        return int(self.parts[side].level)
+
     def event_frame(self) -> pd.DataFrame:
-        """C1 四率事件流表：tick（DES 时刻）/unit/side/type。"""
-        return pd.DataFrame(self.events, columns=["tick", "unit", "side", "type"])
+        """C1 四率事件流表：tick/unit/side/type + C7-a1 等级/部件/处置。"""
+        return pd.DataFrame(
+            self.events,
+            columns=["tick", "unit", "side", "type", "grade", "part", "disposition"],
+        )
 
     def count_exposure(self) -> None:
         """tick 末累计"可用单位·tick"暴露量（存活 且 未受损 且 不在修）。
@@ -125,7 +186,15 @@ class SustainmentModel:
 
     def _record(self, i: int, side: int, type_: str) -> None:
         self.events.append(
-            {"tick": float(self.env.now), "unit": int(i), "side": side, "type": type_}
+            {
+                "tick": float(self.env.now),
+                "unit": int(i),
+                "side": side,
+                "type": type_,
+                "grade": int(self.state.damage_grade[i]),
+                "part": str(self.state.part_id[i]),
+                "disposition": int(self.state.disposition[i]),
+            }
         )
 
     # ---- SimPy 进程 ----
@@ -142,8 +211,32 @@ class SustainmentModel:
             s.damaged[i] = True
             side = int(s.side[i])
             self.failures_natural[side] += 1
+            self._set_failure_part(i)
             self._record(i, side, "failure_natural")
             self._start_repair(i)
+
+    def _set_failure_part(self, i: int) -> None:
+        """自然故障的部件级定位：C7-a1 模式按 1/mtbf 权重抽部件（M→拖救、
+        F→自行后送，无轻/重分流）；池模式保持等级 0（旧口径）。
+        """
+        s = self.state
+        if self.part_mode:
+            part = _sample_repairable(self.rng, self.part_catalog)
+            spec = self.part_catalog.get(part)
+            if spec is None:
+                part = "mobility"
+                spec = self.part_catalog.get(part)
+            s.part_id[i] = part
+            if spec.grade == "m":
+                s.damage_grade[i] = GRADE_M
+                s.disposition[i] = DISP_TOW
+            else:
+                s.damage_grade[i] = GRADE_F
+                s.disposition[i] = DISP_DRIVE_BACK
+        else:
+            s.damage_grade[i] = 0
+            s.part_id[i] = ""
+            s.disposition[i] = 0
 
     def _start_repair(self, i: int) -> None:
         s = self.state
@@ -156,38 +249,65 @@ class SustainmentModel:
         self.env.process(self._repair_process(i))
 
     def _resupply_loop(self, side: int):
-        """周期补给：每隔 interval tick 向该方库存投送 qty 件备件。"""
+        """周期补给：每隔 interval tick 投送 qty 件备件。
+
+        池模式向聚合容器投送；部件模式向每部件容器各投送 qty 件。
+        """
         env = self.env
         spec = self.scenario.sustainment
         while True:
             yield env.timeout(float(spec.resupply_interval_ticks))
-            yield self.parts[side].put(spec.resupply_qty)
+            if self.part_mode:
+                for c in self.parts[side].values():
+                    yield c.put(spec.resupply_qty)
+            else:
+                yield self.parts[side].put(spec.resupply_qty)
 
     def _repair_process(self, i: int):
         env, s = self.env, self.state
         side = int(s.side[i])
+        part = str(s.part_id[i]) if self.part_mode else ""
 
-        def _abort(return_part: bool) -> None:
-            if return_part:
-                self.parts[side].put(1)
+        def _abort(return_part: bool, part_name: str) -> None:
+            if return_part and self.parts is not None:
+                if self.part_mode:
+                    c = self.parts[side].get(part_name)
+                    if c is not None:
+                        c.put(self.part_catalog[part_name].spare_units)
+                else:
+                    self.parts[side].put(1)
             s.under_repair[i] = False
 
         if self.repair_delay > 0:
             yield env.timeout(float(self.repair_delay))
         if not s.alive[i]:
-            _abort(False)
+            _abort(False, part)
             return
         # 备件请领（在占用抢修组之前）：缺货则挂起等补给
-        parts = self.parts[side] if self.parts is not None else None
-        if parts is not None:
-            self.req_total[side] += 1
-            if parts.level >= 1:
-                self.req_immediate[side] += 1
-            t_req = env.now
-            yield parts.get(1)
-            self.stockout_wait[side] += env.now - t_req
+        req_container = None
+        req_amount = 1
+        if self.parts is not None:
+            if self.part_mode:
+                req_container = self.parts[side].get(part)
+                if req_container is not None:
+                    req_amount = self.part_catalog[part].spare_units
+            else:
+                req_container = self.parts[side]
+            if req_container is not None:
+                self.req_total[side] += 1
+                if req_container.level >= req_amount:
+                    self.req_immediate[side] += 1
+                t_req = env.now
+                yield req_container.get(req_amount)
+                self.stockout_wait[side] += env.now - t_req
+                if not s.alive[i]:
+                    _abort(True, part)
+                    return
+        # C7-a1：M 级（机动受损）拖救时延（a2 起拖救车实体化，现以时延抽象）
+        if self.part_mode and int(s.damage_grade[i]) == GRADE_M and self.tow_delay > 0:
+            yield env.timeout(float(self.tow_delay))
             if not s.alive[i]:
-                _abort(True)
+                _abort(True, part)
                 return
         team = self.teams[side]
         if team is None:
@@ -196,12 +316,22 @@ class SustainmentModel:
         with team.request() as req:
             yield req
             if not s.alive[i]:  # 排队期间被战毁：返还备件
-                _abort(parts is not None)
+                _abort(self.parts is not None, part)
                 return
-            yield env.timeout(float(self.rng.exponential(s.mttr[i])))
+            # 修复时长：部件模式按部件目录（轻损现地处置减半），池模式指数 MTTR
+            if self.part_mode and part in self.part_catalog:
+                duration = float(self.rng.exponential(self.part_catalog[part].repair_ticks))
+                if int(s.disposition[i]) == DISP_ONSITE:
+                    duration *= 0.5
+            else:
+                duration = float(self.rng.exponential(s.mttr[i]))
+            yield env.timeout(duration)
         # 维修期间被战毁则不归建；备件已消耗不返还，标志位无论如何都要清
         if s.alive[i]:
-            s.damaged[i] = False
             self.repairs_done[side] += 1
             self._record(i, side, "repair_done")
+            s.damaged[i] = False
+            s.damage_grade[i] = 0
+            s.part_id[i] = ""
+            s.disposition[i] = 0
         s.under_repair[i] = False
