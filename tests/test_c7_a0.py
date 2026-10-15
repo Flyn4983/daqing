@@ -5,7 +5,9 @@
    防空敌我识别与雷达引导、雷达/通信干扰、C2 光环、烟幕光电遮蔽、假目标、
    工兵破障/触雷、反炮兵定位、巡飞弹反辐射猎杀、恶劣天候禁飞、气象矩阵、通视。
 2. 消融实验：在完整 example_brigade 想定上成对（同种子）抽掉关键力量，
-   断言体系贡献方向：去工兵→无破障、去烟幕/去防空/浓雾/通信压制→相应指标恶化。
+   完整想定只做确定性结构断言（去工兵→无破障、去烟幕→无烟幕、去防空→无拦截），
+   浓雾/通信压制做配对方向比较；工兵破障与烟幕防护的方向性在受控微想定上做
+   机制隔离断言（v4 复核：全想定随机弱断言对平衡调整脆弱，a1/v4 两轮失效）。
 """
 
 from __future__ import annotations
@@ -24,6 +26,7 @@ from brigsim.data.schema import (
     ObstacleSpec,
     PlatformTypeSpec,
     Scenario,
+    SmokeOrder,
     Terrain,
     UnitSpec,
 )
@@ -559,8 +562,54 @@ def _majority(baseline: list, ablated: list, cmp) -> bool:
     return sum(cmp(a, b) for a, b in zip(baseline, ablated, strict=True)) >= 4
 
 
+FLAT10K = Terrain(source="synthetic", size_m=(10000.0, 10000.0), grid_n=20,
+                  base_height=0.0, amplitude=0.0, water_level=0.0, noise_seed=1)
+
+# v4（C7-a2）复核结论：完整想定上的随机弱方向断言对平衡调整天然脆弱
+# （a1/v4 两轮平衡后各失效一次）。工兵/烟幕的方向性贡献改为在受控微想定上
+# 做机制隔离断言（无蓝军或单车固守，几何精确控制）；完整想定只保留确定性
+# 结构断言（去工兵→0 破障、去烟幕→0 发烟事件）。
+
+
+def _mine_lane_scenario(with_engineer: bool) -> Scenario:
+    """微想定：8 辆冲击车多车道东进，必经一道未破障雷场（平地、无蓝军）。
+
+    只隔离"工兵开辟通路→后续车辆不触雷/不减速"这一条机制链。
+    """
+    types = {
+        "tk": _pt(role="assault", pk=0.0, sensor_range_m=10.0,
+                  weapon_range_m=0.0, speed_m_per_tick=100.0),
+        "eng": _pt(role="engineer", pk=0.0, sensor_range_m=10.0,
+                   weapon_range_m=0.0, speed_m_per_tick=250.0),
+    }
+    red = [_u(f"t{i}", "tk", 0.0, 700.0 + 100.0 * i) for i in range(8)]
+    if with_engineer:
+        red.append(_u("e0", "eng", 0.0, 1000.0))
+    bf = BattlefieldSpec(obstacles=[
+        ObstacleSpec(kind="minefield", center=(1500.0, 1000.0),
+                     size=(200.0, 4000.0), breach_ticks=2),
+    ])
+    return Scenario(
+        name="c7a0_mine_lane",
+        mission={"duration_ticks": 30, "dt_seconds": 30,
+                 "objective": (9000.0, 1000.0), "success_radius_m": 10},
+        terrain=FLAT10K, environment=CLEAR, platform_types=types,
+        forces={"red": red, "blue": []}, battlefield=bf,
+    )
+
+
+def _mine_event_count(sc: Scenario, seed: int) -> int:
+    k = MesaKernel(sc, seed=seed)
+    while not k.finished:
+        k.step()
+    eng = pd.DataFrame(k.log.engagements)
+    if not len(eng):
+        return 0
+    return int((eng["weapon"] == "mine").sum())
+
+
 def test_ablation_engineers_required_for_breach(baseline):
-    base, base_m = baseline["sc"], baseline["m"]
+    base = baseline["sc"]
 
     def no_eng() -> Scenario:
         sc = base.model_copy(deep=True)
@@ -571,17 +620,62 @@ def test_ablation_engineers_required_for_breach(baseline):
         return sc
 
     m = [_run(no_eng(), sd) for sd in SEEDS]
+    # 完整想定上的确定性断言：无工兵则任何障碍都不会被开辟
     assert all(x["breaches"] == 0 for x in m)
-    # C7-a1 起命中段 60% K / 40% 可修复 M·F，且 M 级失动原地待拖救：
-    # 旧的 lead_x（最靠前存活突击车位置）受"接敌先后×幸存者偏差"交互影响
-    # 不再单调（无工兵接敌晚，先头车反而存活到更远处）。改断言机制链最近的
-    # 指标——破障消除雷场，故有工兵时红方触雷事件（含 K 与 M 损伤）更少。
-    assert _majority([x["mine_hits"] for x in base_m],
-                     [x["mine_hits"] for x in m], lambda a, b: a <= b)
+    # 方向性断言（受控微想定）：工兵在冲击车抵达前完成破障（t8 vs t14），
+    # 已开辟通路无减速也无触雷；无工兵时 8 车以 0.2 速度蜗行 200m 雷场，
+    # 每车多 tick 暴露，必现触雷。
+    for sd in SEEDS:
+        assert _mine_event_count(_mine_lane_scenario(True), sd) == 0
+        assert _mine_event_count(_mine_lane_scenario(False), sd) >= 3
+
+
+def _smoke_crossfire_scenario(with_smoke: bool) -> Scenario:
+    """微想定：1 个掘壕直瞄火器守东端，5 辆无反击能力冲击车从其射界内通过。
+
+    有烟幕档：烟幕带同时覆盖守军与通道，光电侦察完全断链；
+    只隔离"屏烟遮光电→直瞄看不到"这一条机制链。
+    """
+    types = {
+        "bg": _pt(role="assault", sensor_range_m=800.0, weapon_range_m=800.0,
+                  pk=1.0, reload_ticks=1, detect_prob=1.0, speed_m_per_tick=0.0),
+        "tk": _pt(role="assault", pk=0.0, sensor_range_m=10.0,
+                  weapon_range_m=0.0, speed_m_per_tick=150.0),
+        "sv": _pt(role="support", sensor_range_m=50.0, weapon_range_m=0.0,
+                  speed_m_per_tick=0.0),
+    }
+    blue = [_u("bg0", "bg", 2000.0, 1000.0, dug_in=True)]
+    red = [_u(f"t{i}", "tk", 1300.0 + 60.0 * i, 1000.0) for i in range(5)]
+    orders = []
+    if with_smoke:
+        red.append(_u("sv0", "sv", 250.0, 1000.0))
+        orders.append(SmokeOrder(unit_id="sv0", at=(1700.0, 1000.0),
+                                 radius_m=450.0, start_tick=0,
+                                 duration_ticks=20))
+    return Scenario(
+        name="c7a0_smoke_crossfire",
+        mission={"duration_ticks": 8, "dt_seconds": 30,
+                 "objective": (9000.0, 1000.0), "success_radius_m": 10},
+        terrain=FLAT10K, environment=CLEAR, platform_types=types,
+        forces={"red": red, "blue": blue},
+        battlefield=BattlefieldSpec(smoke_orders=orders),
+    )
+
+
+def _red_direct_kills(sc: Scenario, seed: int) -> int:
+    k = MesaKernel(sc, seed=seed)
+    while not k.finished:
+        k.step()
+    eng = pd.DataFrame(k.log.engagements)
+    if not len(eng):
+        return 0
+    red_ids = {u.unit_id for u in sc.forces["red"]}
+    w = eng[eng["target"].isin(red_ids) & (eng["weapon"] == "direct")]
+    return int(w["killed"].sum())
 
 
 def test_ablation_smoke_screen_protects_assault(baseline):
-    base, base_m, window = baseline["sc"], baseline["m"], baseline["window"]
+    base = baseline["sc"]
 
     def no_smoke() -> Scenario:
         sc = base.model_copy(deep=True)
@@ -589,14 +683,14 @@ def test_ablation_smoke_screen_protects_assault(baseline):
                                          smoke_orders=[])
         return sc
 
-    m = [_run(no_smoke(), sd, window=window) for sd in SEEDS]
+    m = [_run(no_smoke(), sd) for sd in SEEDS]
+    # 完整想定上的确定性断言：无发烟命令则无烟幕事件
     assert all(x["smoke"] == 0 for x in m)
-    # C7-a1 起命中段 40% 为可修复 M·F，且 72tick 内多数受损车修复归建，
-    # 终局 red_alive 对烟幕的边际效应被稀释（多种子均值差 < 0.5，已不单调）。
-    # 改断言机制链最近的指标：屏烟活跃窗（含消散余效）内蓝方对红方的击毁数，
-    # 有烟幕时应更少。宏观防护效益留待 a2 v4 平衡标定后复核。
-    assert _majority([x["window_kills"] for x in base_m],
-                     [x["window_kills"] for x in m], lambda a, b: a <= b)
+    # 方向性断言（受控微想定）：烟幕带覆盖守军光电传感器，其全程无共享航迹
+    # → 0 击毁；无烟幕时守军 pk=1 逐点击毁，5 车全部战毁。
+    for sd in SEEDS:
+        assert _red_direct_kills(_smoke_crossfire_scenario(True), sd) == 0
+        assert _red_direct_kills(_smoke_crossfire_scenario(False), sd) >= 4
 
 
 def test_ablation_fog_cuts_direct_engagements(baseline):

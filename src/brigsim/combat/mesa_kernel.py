@@ -18,7 +18,8 @@ import numpy as np
 
 from ..kernel.base import Kernel
 from ..sustainment.repair import SustainmentModel
-from .damage import GRADE_M, DamageModel
+from .damage import DISP_ONSITE, GRADE_M, DamageModel
+from .support_ops import SupportOps
 from .systems import _RECOG_RANGE, BattleSystems
 
 RED, BLUE = 0, 1
@@ -91,6 +92,9 @@ class PlatformAgent(mesa.Agent):
             return
         role = str(s.role[i])
         if s.under_repair[i]:
+            # C7-a2：实体化方的现地换件单位不后送（驻留受损位置抢修）
+            if int(s.side[i]) in m.support.sides and int(s.disposition[i]) == DISP_ONSITE:
+                return
             stn = m.stations.get(int(s.side[i]))
             if stn is None:
                 return
@@ -145,6 +149,9 @@ class PlatformAgent(mesa.Agent):
                 return
             j, d = contact
             s.heading[i] = np.arctan2(s.y[j] - s.y[i], s.x[j] - s.x[i])
+            # 既设阵地掘壕单位固守阵位，不出阵前出接敌（保持梯次防御纵深）
+            if s.dug_in[i]:
+                return
             wf = sysm.factors[str(s.sensor_kind[i])]
             if d > s.weapon_range[i] * wf:
                 self._step_toward(s.x[j], s.y[j], in_obstacle_ok=False)
@@ -276,6 +283,8 @@ class MesaKernel(Kernel, mesa.Model):
         self.damage_model = DamageModel(self)
         # C7-a0：合成兵种战斗支援系统
         self.sys = BattleSystems(self)
+        # C7-a2：抢救/器材补给/弹药补给车实体机动（无实体化方别时 step 为空操作）
+        self.support = SupportOps(self)
         # 修理所位置：在修单位的后送目标；未配置（None）时在修单位原地不动
         spec_station = scenario.sustainment.repair_station
         self.stations = (
@@ -305,6 +314,8 @@ class MesaKernel(Kernel, mesa.Model):
         self.agents.do("sense")
         self._purge_tracks()
         self.agents.do("move")
+        # C7-a2：保障实体机动（拖救/前送波次/补弹），紧接地面机动段
+        self.support.step()
         self.sys.progress_breach()
         self.agents.do("engage")
         # 5) 合成兵种火力：空中层/防空/间瞄炮兵/BLOS 弹着

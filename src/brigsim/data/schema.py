@@ -168,10 +168,43 @@ class SustainmentSpec(BaseModel):
     damage_model: DamageTableSpec | None = None
     part_catalog: dict[str, PartSpec] | None = None
     part_stock: dict[str, dict[str, int]] = Field(default_factory=dict)
-    # M 级（机动受损）拖救时延（tick；a2 起拖救车实体化，现以时延抽象）
+    # M 级（机动受损）拖救时延（tick；support_echelon=None 时的抽象兜底）
     tow_delay_ticks: int = Field(4, ge=0)
     # 初始带病装备的 MTBF 折减乘子（initial_worn=True 的单位）
     worn_mtbf_scale: float = Field(0.6, gt=0.0, le=1.0)
+    # C7-a2：器材三档储备 + 抢救/补给车实体化；None=沿用 a1 时间抽象（零漂移）
+    support_echelon: "SupportEchelonSpec | None" = None
+
+
+class SupportEchelonSpec(BaseModel):
+    """C7-a2 器材三档储备与保障实体机动配置。
+
+    - 携行档（SustainmentSpec.part_stock 初始容器）：随队器材，仅够现地换件
+      （ONSITE），前送波次运量按 carry_share 回填；
+    - 运行档（operating_stock，营中继抢修点=repair_station）：拖救/后送进站
+      的 M/F/重度损伤从运行档请领；器材补给车实体沿 depot→station 往返运输，
+      途中可被敌火毁伤，车毁则本波器材损失；
+    - 后留档：战役后方，显式不进入 30 分钟时域物理运输；旅器材库 depot
+      每 wave_interval_ticks 按波次产出器材（节奏受限、数量充足）。
+    缺车（某方无 supply_veh/arv/ammo_veh 实体）时对应业务退化为排队等待，
+    不回退到瞬时抽象。
+    """
+
+    # 各方旅器材库（后留档接入点）[x_m, y_m]
+    depot: dict[str, list[float]]
+    # 前送波次节拍（tick）；每波每部件各 wave_qty 件
+    wave_interval_ticks: int = Field(20, gt=0)
+    wave_qty: int = Field(2, ge=1)
+    # 波次运量入携行档比例（其余入运行档）
+    carry_share: float = Field(0.5, ge=0.0, le=1.0)
+    # 运行档初始储备：{方别: {部件: 件数}}（营抢修点常备基数）
+    operating_stock: dict[str, dict[str, int]] = Field(default_factory=dict)
+    # 拖救行驶速度折减（挂钩后 arv 拖受损单位的车速比例）
+    tow_speed_scale: float = Field(0.5, gt=0.0, le=1.0)
+    # 弹药补给车每波次补弹量（抵达营抢修点后向域内部队分发）
+    ammo_wave_qty: int = Field(6, ge=1)
+    # 营弹药所分发半径（m）：距抢修点此半径内的间瞄/导弹/防空单位可获补弹
+    ammo_dist_radius_m: float = Field(3000.0, gt=0.0)
 
 
 class PlatformTypeSpec(BaseModel):

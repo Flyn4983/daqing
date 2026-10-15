@@ -18,6 +18,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import numpy as np
 import pandas as pd
 import simpy
@@ -27,6 +29,7 @@ from ..combat.damage import (
     DEFAULT_PART_CATALOG,
     DISP_DRIVE_BACK,
     DISP_ONSITE,
+    DISP_REAR,
     DISP_TOW,
     GRADE_F,
     GRADE_M,
@@ -64,28 +67,71 @@ class SustainmentModel:
         self.damage_table = (
             spec.damage_model if spec.damage_model is not None else DEFAULT_DAMAGE_TABLE
         )
-        # 备件库存：池模式 {side: Container}；部件模式 {side: {part: Container}}；
+        # 备件库存：
+        # - 池模式 {side: Container}；
+        # - 部件模式（a1 抽象方）{side: {part: Container}}；
+        # - C7-a2 实体化方 {side: {"carry": {part: Container},
+        #                          "operating": {part: Container}}}；
         # None = 无限备件（不启用供应链约束）
-        self.parts: dict[int, simpy.Container] | dict[int, dict[str, simpy.Container]] | None
-        self.parts = None
+        self.parts: dict[int, Any] | None = None
+        # C7-a2：器材三档 + 保障实体（仅对 support_echelon.depot 声明的方别生效，
+        # 未声明方别沿用 a1 时间抽象，保证防御方/旧想定零漂移）
+        self.echelon = spec.support_echelon
+        self.ech_sides = {
+            (RED if side_name == "red" else BLUE)
+            for side_name in (self.echelon.depot if self.echelon else {})
+        }
         # 备件保障统计（仅启用库存时计数）：请领总数、即时满足数、缺货累计等待
         self.req_total = {RED: 0, BLUE: 0}
         self.req_immediate = {RED: 0, BLUE: 0}
         self.stockout_wait = {RED: 0.0, BLUE: 0.0}
+        # C7-a2 保障业务统计：前送波次（完成/损失）、拖救（挂钩/拖回）、补弹
+        self.waves_completed = {RED: 0, BLUE: 0}
+        self.waves_lost = {RED: 0, BLUE: 0}
+        self.tow_hooked = {RED: 0, BLUE: 0}
+        self.tow_done = {RED: 0, BLUE: 0}
+        self.ammo_delivered = {RED: 0, BLUE: 0}
+        # 物理后送同步事件（内核 SupportOps 在实体抵达时注入）
+        self._tow_events: dict[int, simpy.Event] = {}
+        self._station_events: dict[int, simpy.Event] = {}
+        self.pending_tow = {RED: set(), BLUE: set()}
+        self.awaiting_station = {RED: set(), BLUE: set()}
+        # 前送波次抵达广播：挂起请领进程等待本事件，送达后换新事件
+        self._wave_event = {RED: self.env.event(), BLUE: self.env.event()}
         if self.part_mode:
-            self.parts = {
-                side: {
-                    pid: simpy.Container(
-                        self.env,
-                        init=int(spec.part_stock.get(name, {}).get(pid, 0)),
-                        capacity=float("inf"),
-                    )
-                    for pid in self.part_catalog
-                }
-                for side, name in ((RED, "red"), (BLUE, "blue"))
-            }
-            for side in (RED, BLUE):
-                self.env.process(self._resupply_loop(side))
+            self.parts = {}
+            for side, name in ((RED, "red"), (BLUE, "blue")):
+                if side in self.ech_sides:
+                    op_init = self.echelon.operating_stock.get(name, {})
+                    self.parts[side] = {
+                        "carry": {
+                            pid: simpy.Container(
+                                self.env,
+                                init=int(spec.part_stock.get(name, {}).get(pid, 0)),
+                                capacity=float("inf"),
+                            )
+                            for pid in self.part_catalog
+                        },
+                        "operating": {
+                            pid: simpy.Container(
+                                self.env,
+                                init=int(op_init.get(pid, 0)),
+                                capacity=float("inf"),
+                            )
+                            for pid in self.part_catalog
+                        },
+                    }
+                else:
+                    self.parts[side] = {
+                        pid: simpy.Container(
+                            self.env,
+                            init=int(spec.part_stock.get(name, {}).get(pid, 0)),
+                            capacity=float("inf"),
+                        )
+                        for pid in self.part_catalog
+                    }
+                    # 抽象方：周期补给直投携行容器（a1 行为）
+                    self.env.process(self._resupply_loop(side))
         elif spec.spare_stock is not None:
             self.parts = {
                 side: simpy.Container(
@@ -150,18 +196,36 @@ class SustainmentModel:
                 self.req_immediate[side] / total if total > 0 else 1.0
             )
             out[f"stockout_wait_{name}"] = float(self.stockout_wait[side])
+            # C7-a2：实体化三档方别的保障业务量
+            out[f"waves_completed_{name}"] = float(self.waves_completed[side])
+            out[f"waves_lost_{name}"] = float(self.waves_lost[side])
+            out[f"tow_hooked_{name}"] = float(self.tow_hooked[side])
+            out[f"tow_done_{name}"] = float(self.tow_done[side])
+            out[f"ammo_delivered_{name}"] = float(self.ammo_delivered[side])
         return out
 
     def total_spares(self, side: int) -> int:
         """当前备件存量统一读取点（events.snapshot 使用）。
 
-        池模式=聚合容器存量；部件模式=各部件容器存量求和。
+        池模式=聚合容器存量；部件抽象方=各部件容器求和；
+        a2 实体方=携行档 + 运行档全部容器求和。
         """
         if self.parts is None:
             return -1
         if self.part_mode:
-            return int(sum(c.level for c in self.parts[side].values()))
+            ps = self.parts[side]
+            if side in self.ech_sides:
+                return int(
+                    sum(c.level for tier in ps.values() for c in tier.values())
+                )
+            return int(sum(c.level for c in ps.values()))
         return int(self.parts[side].level)
+
+    def operating_spares(self, side: int) -> int:
+        """运行档（营抢修点）当前存量；非实体化方记 -1（snapshot 用）。"""
+        if not self.part_mode or side not in self.ech_sides:
+            return -1
+        return int(sum(c.level for c in self.parts[side]["operating"].values()))
 
     def event_frame(self) -> pd.DataFrame:
         """C1 四率事件流表：tick/unit/side/type + C7-a1 等级/部件/处置。"""
@@ -263,17 +327,188 @@ class SustainmentModel:
             else:
                 yield self.parts[side].put(spec.resupply_qty)
 
+    # ---- C7-a2：实体化三档与内核 SupportOps 的同步接口 ----
+
+    def _schedule_at_next_tick(self, callback) -> None:
+        """内核在 env.now=tick 的战斗阶段调用：把效果安排到下一时刻。
+
+        SimPy run(until) 的停止事件为 URGENT 优先级，timeout(1) 的 NORMAL
+        回调在 advance(tick+1) 边界不触发、advance(tick+2) 时才执行（本仓库
+        tick 粒度的既有约定，见 SustainmentModel.advance 文档），保证 DES
+        单调时钟不倒拨，内核侧效果最迟两个 tick 边界生效。
+        """
+
+        def _proc():
+            yield self.env.timeout(1)
+            callback()
+
+        self.env.process(_proc())
+
+    def _wait_recovery(self, i: int):
+        """M 级拖救：登记待拖队列，等抢救车实体拖抵营抢修点（SupportOps 注入）。
+
+        事件结果为 "done"（拖抵/战毁终止）或 "requeue"（拖救车途中被毁、
+        受损车幸存），后者重新排队等待下一辆抢救车。
+        """
+        side = int(self.state.side[i])
+        while True:
+            ev = self.env.event()
+            self._tow_events[i] = ev
+            self.pending_tow[side].add(int(i))
+            outcome = yield ev
+            self.pending_tow[side].discard(int(i))
+            if not self.state.alive[i] or outcome == "done":
+                return
+            # "requeue"：拖救车损毁而受损车幸存，循环重新入队
+
+    def _wait_station(self, i: int):
+        """F/重度自行后送：等实体驶入营抢修点半径（SupportOps 注入）。"""
+        side = int(self.state.side[i])
+        ev = self.env.event()
+        self._station_events[i] = ev
+        self.awaiting_station[side].add(int(i))
+        yield ev
+
+    def hook_tow(self, i: int) -> None:
+        """抢救车抵达故障点挂钩（统计 + 事件流，不释放 DES 进程）。"""
+        side = int(self.state.side[i])
+        self.tow_hooked[side] += 1
+        self.log_support_event(i, "tow_hook")
+
+    def complete_tow(self, i: int) -> None:
+        """抢救车把 M 级受损单位拖抵抢修点卸车，唤醒修复进程。"""
+        i = int(i)
+        side = int(self.state.side[i])
+        self.pending_tow[side].discard(i)
+        self.tow_done[side] += 1
+        self.log_support_event(i, "tow_done")
+        ev = self._tow_events.pop(i, None)
+        if ev is not None:
+            self._schedule_at_next_tick(lambda: ev.succeed("done"))
+
+    def requeue_tow(self, i: int) -> None:
+        """拖救途中抢救车被毁而受损车幸存：唤醒等待循环重新排队等下一辆。"""
+        i = int(i)
+        ev = self._tow_events.pop(i, None)
+        if ev is not None:
+            self._schedule_at_next_tick(lambda: ev.succeed("requeue"))
+
+    def fail_recovery(self, i: int) -> None:
+        """待拖/拖救途中单位战毁：唤醒进程走死亡中止（备件尚未请领，不还件）。"""
+        i = int(i)
+        side = int(self.state.side[i])
+        self.pending_tow[side].discard(i)
+        ev = self._tow_events.pop(i, None)
+        if ev is not None:
+            self._schedule_at_next_tick(lambda: ev.succeed("done"))
+
+    def complete_station(self, i: int) -> None:
+        """F/重度受损单位自行驶抵营抢修点。"""
+        i = int(i)
+        side = int(self.state.side[i])
+        self.awaiting_station[side].discard(i)
+        ev = self._station_events.pop(i, None)
+        if ev is not None:
+            self._schedule_at_next_tick(ev.succeed)
+
+    def fail_station(self, i: int) -> None:
+        """后送途中单位战毁：唤醒进程走死亡中止。"""
+        i = int(i)
+        side = int(self.state.side[i])
+        self.awaiting_station[side].discard(i)
+        ev = self._station_events.pop(i, None)
+        if ev is not None:
+            self._schedule_at_next_tick(ev.succeed)
+
+    def deliver_parts(self, side: int, cargo: dict[str, int]) -> None:
+        """器材补给波次抵达营抢修点：按 carry_share 分入携行/运行档，唤醒请领。"""
+        side = int(side)
+        ech = self.echelon
+
+        def _do() -> None:
+            tiers = self.parts[side]
+            for pid, n in cargo.items():
+                n_carry = int(round(int(n) * ech.carry_share))
+                tiers["carry"][pid].put(n_carry)
+                tiers["operating"][pid].put(int(n) - n_carry)
+            self.waves_completed[side] += 1
+            ev = self._wave_event[side]
+            self._wave_event[side] = self.env.event()
+            ev.succeed()
+
+        self._schedule_at_next_tick(_do)
+
+    def mark_wave_lost(self, side: int) -> None:
+        """前送途中补给车被击毁：本波器材损失（已从后留档出库，不再抵站）。"""
+        self.waves_lost[int(side)] += 1
+
+    def log_support_event(self, i: int, type_: str) -> None:
+        """保障业务事件入四率事件流（tow_hook/tow_done/wave_*/ammo_deliver）。"""
+        i = int(i)
+        side = int(self.state.side[i])
+        self.events.append(
+            {
+                "tick": float(self.env.now),
+                "unit": i,
+                "side": side,
+                "type": type_,
+                "grade": int(self.state.damage_grade[i]),
+                "part": str(self.state.part_id[i]),
+                "disposition": int(self.state.disposition[i]),
+            }
+        )
+
+    def _request_echelon_part(self, i: int, part: str, at_station: bool):
+        """三档请领进程：现地处置只取携行档；进站单位运行档优先、携行档兜底；
+        两档均不足时挂起，等器材补给波次抵达广播后重试。
+        """
+        env, s = self.env, self.state
+        side = int(s.side[i])
+        amount = int(self.part_catalog[part].spare_units)
+        tiers = self.parts[side]
+
+        def _source():
+            carry = tiers["carry"][part]
+            operating = tiers["operating"][part]
+            if at_station:
+                if operating.level >= amount:
+                    return operating
+                if carry.level >= amount:
+                    return carry
+            elif carry.level >= amount:
+                return carry
+            return None
+
+        self.req_total[side] += 1
+        if _source() is not None:
+            self.req_immediate[side] += 1
+        t_req = env.now
+        while True:
+            container = _source()
+            if container is not None:
+                yield container.get(amount)
+                self.stockout_wait[side] += env.now - t_req
+                return
+            yield self._wave_event[side]
+            if not s.alive[i]:
+                return
+
     def _repair_process(self, i: int):
         env, s = self.env, self.state
         side = int(s.side[i])
         part = str(s.part_id[i]) if self.part_mode else ""
+        ech = self.part_mode and side in self.ech_sides
 
         def _abort(return_part: bool, part_name: str) -> None:
             if return_part and self.parts is not None:
                 if self.part_mode:
-                    c = self.parts[side].get(part_name)
-                    if c is not None:
-                        c.put(self.part_catalog[part_name].spare_units)
+                    amount = self.part_catalog[part_name].spare_units
+                    if ech:
+                        # 还件回原取件档：进站维修取自运行档，现地处置取携行档
+                        tier = "operating" if int(s.disposition[i]) != DISP_ONSITE else "carry"
+                        self.parts[side][tier][part_name].put(amount)
+                    else:
+                        self.parts[side][part_name].put(amount)
                 else:
                     self.parts[side].put(1)
             s.under_repair[i] = False
@@ -283,32 +518,57 @@ class SustainmentModel:
         if not s.alive[i]:
             _abort(False, part)
             return
-        # 备件请领（在占用抢修组之前）：缺货则挂起等补给
-        req_container = None
-        req_amount = 1
-        if self.parts is not None:
-            if self.part_mode:
-                req_container = self.parts[side].get(part)
+
+        if ech:
+            # ---- C7-a2 实体化方：物理后送先于请领 ----
+            grade, disp = int(s.damage_grade[i]), int(s.disposition[i])
+            if grade == GRADE_M and disp == DISP_TOW:
+                yield env.process(self._wait_recovery(i))
+                if not s.alive[i]:
+                    _abort(False, part)
+                    return
+            elif disp in (DISP_DRIVE_BACK, DISP_REAR):
+                yield env.process(self._wait_station(i))
+                if not s.alive[i]:
+                    _abort(False, part)
+                    return
+            yield env.process(
+                self._request_echelon_part(i, part, at_station=disp != DISP_ONSITE)
+            )
+            if not s.alive[i]:
+                _abort(False, part)
+                return
+        else:
+            # ---- a1/旧路径：备件先请领（缺货挂起），M 级再付固定拖救时延 ----
+            req_container = None
+            req_amount = 1
+            if self.parts is not None:
+                if self.part_mode:
+                    req_container = self.parts[side].get(part)
+                    if req_container is not None:
+                        req_amount = self.part_catalog[part].spare_units
+                else:
+                    req_container = self.parts[side]
                 if req_container is not None:
-                    req_amount = self.part_catalog[part].spare_units
-            else:
-                req_container = self.parts[side]
-            if req_container is not None:
-                self.req_total[side] += 1
-                if req_container.level >= req_amount:
-                    self.req_immediate[side] += 1
-                t_req = env.now
-                yield req_container.get(req_amount)
-                self.stockout_wait[side] += env.now - t_req
+                    self.req_total[side] += 1
+                    if req_container.level >= req_amount:
+                        self.req_immediate[side] += 1
+                    t_req = env.now
+                    yield req_container.get(req_amount)
+                    self.stockout_wait[side] += env.now - t_req
+                    if not s.alive[i]:
+                        _abort(True, part)
+                        return
+            if (
+                self.part_mode
+                and int(s.damage_grade[i]) == GRADE_M
+                and self.tow_delay > 0
+            ):
+                yield env.timeout(float(self.tow_delay))
                 if not s.alive[i]:
                     _abort(True, part)
                     return
-        # C7-a1：M 级（机动受损）拖救时延（a2 起拖救车实体化，现以时延抽象）
-        if self.part_mode and int(s.damage_grade[i]) == GRADE_M and self.tow_delay > 0:
-            yield env.timeout(float(self.tow_delay))
-            if not s.alive[i]:
-                _abort(True, part)
-                return
+
         team = self.teams[side]
         if team is None:
             yield env.event()  # 无抢修组：永久排队，进程挂起

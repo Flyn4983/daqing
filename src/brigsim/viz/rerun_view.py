@@ -71,6 +71,13 @@ INTERCEPT_C = (110, 226, 240)
 AIRSTRIKE_C = (238, 78, 62)
 BREACH_C = (120, 232, 160)
 
+# C7-a2 保障实体图层配色
+DEPOT_C = (232, 188, 86)      # 旅器材库（金）
+TOW_LINE_C = (96, 168, 250)   # 拖救牵引线（亮蓝）
+SUPPLY_C = (140, 220, 160)    # 器材波次/拖抵（薄荷绿）
+AMMO_C = (255, 205, 90)       # 补弹（琥珀金）
+SUPPORT_LOST_C = (235, 80, 72)  # 前送损失（红）
+
 
 def visualize(
     snapshots: pd.DataFrame,
@@ -118,6 +125,7 @@ def visualize(
     _log_static_units(info, terrain, use_models)
     _log_objective(scenario, terrain)
     _log_repair_stations(scenario, terrain)
+    _log_depots(scenario, terrain)
     _log_obstacles(scenario, terrain)
     _log_decoys(scenario, terrain)
     _log_weather_header(scenario)
@@ -224,6 +232,7 @@ def visualize(
         _log_smoke(tick, cur, zs)
         _log_weather(tick, scenario, terrain)
         _log_engagements(tick, engagements, pos_table, terrain, info)
+        _log_tow_lines(cur, info, terrain)
         _log_effects(tick, effects, terrain, smoke_specs, smoke_start)
         if air is not None:
             _log_air(tick, air, air_trails, air_done)
@@ -535,7 +544,13 @@ def _log_repair_stations(scenario: Scenario, terrain: HeightField) -> None:
     if not stations:
         return
     th = np.linspace(0, 2 * np.pi, 48)
-    labels = {0: "红方旅修理所", 1: "蓝方旅修理所"}
+    # C7-a2：声明器材三档的方别，修理所即营中继抢修点（运行档存放地）
+    ech = scenario.sustainment.support_echelon
+    depot_sides = set(ech.depot) if ech is not None else set()
+    labels = {
+        0: "红方营中继抢修点" if "red" in depot_sides else "红方旅修理所",
+        1: "蓝方营中继抢修点" if "blue" in depot_sides else "蓝方旅修理所",
+    }
     for side in (0, 1):
         key = "red" if side == 0 else "blue"
         if key not in stations:
@@ -555,6 +570,38 @@ def _log_repair_stations(scenario: Scenario, terrain: HeightField) -> None:
             [ox + 300 * np.cos(th), oy + 300 * np.sin(th), np.full_like(th, z + 2)]
         )
         rr.log(f"{base}/ring", rr.LineStrips3D([ring], colors=[color], radii=4), static=True)
+
+
+def _log_depots(scenario: Scenario, terrain: HeightField) -> None:
+    """C7-a2：旅器材库（后留档接入点）：金色立柱 + 方形库地域环 + 标签。"""
+    ech = scenario.sustainment.support_echelon
+    if ech is None:
+        return
+    side_name = {0: "red", 1: "blue"}
+    for side in (0, 1):
+        key = side_name[side]
+        if key not in ech.depot:
+            continue
+        ox, oy = (float(v) for v in ech.depot[key])
+        z = float(terrain.height_at(ox, oy))
+        base = f"world/depot/{key}"
+        pole = np.asarray([[ox, oy, z], [ox, oy, z + 230]])
+        rr.log(f"{base}/pole",
+               rr.LineStrips3D([pole], colors=[DEPOT_C], radii=7), static=True)
+        rr.log(
+            f"{base}/beacon",
+            rr.Points3D([[ox, oy, z + 240]], radii=100, colors=[DEPOT_C],
+                       labels=[f"{'红' if side == 0 else '蓝'}方旅器材库（后留档·波次前送）"]),
+            static=True,
+        )
+        h = 320.0  # 方形库地域环，与修理所圆环区分
+        ring = np.asarray([
+            [ox - h, oy - h, z + 2], [ox + h, oy - h, z + 2],
+            [ox + h, oy + h, z + 2], [ox - h, oy + h, z + 2],
+            [ox - h, oy - h, z + 2],
+        ])
+        rr.log(f"{base}/ring",
+               rr.LineStrips3D([ring], colors=[DEPOT_C], radii=4), static=True)
 
 
 def _log_obstacles(scenario: Scenario, terrain: HeightField) -> None:
@@ -989,6 +1036,41 @@ def _smoke_band_arrays(tick: int, cx: float, cy: float, radius: float, terrain: 
     return np.concatenate(verts), np.concatenate(faces), np.concatenate(cols)
 
 
+def _log_tow_lines(cur: pd.DataFrame, info, terrain: HeightField) -> None:
+    """C7-a2：抢救车挂钩拖救时的牵引线（由快照就近配对推导：
+    存活 arv 与 100m 内 M 级在修受损单位相连；挂钩间距 50m，阈值 100m）。"""
+    alive = cur["alive"]
+    is_arv = np.asarray([info[uid][0] == "arv" for uid in cur.index])
+    towed = alive & cur["damaged"] & cur["under_repair"] & (cur["damage_grade"] == 1)
+    arv_rows = cur[alive & is_arv]
+    tgt_rows = cur[towed]
+    segs, used = [], set()
+    for _aid, ar in arv_rows.iterrows():
+        if tgt_rows.empty:
+            break
+        d = np.hypot(
+            tgt_rows["x"].to_numpy() - float(ar["x"]),
+            tgt_rows["y"].to_numpy() - float(ar["y"]),
+        )
+        k = int(np.argmin(d))
+        tuid = tgt_rows.index[k]
+        if float(d[k]) > 100.0 or tuid in used:
+            continue
+        tr = tgt_rows.iloc[k]
+        za = float(terrain.height_at(float(ar["x"]), float(ar["y"])))
+        zt = float(terrain.height_at(float(tr["x"]), float(tr["y"])))
+        segs.append([[float(ar["x"]), float(ar["y"]), za + 18],
+                     [float(tr["x"]), float(tr["y"]), zt + 18]])
+        used.add(tuid)
+    if segs:
+        rr.log(
+            "world/support/tow_lines",
+            rr.LineStrips3D(segs, colors=[TOW_LINE_C] * len(segs), radii=5),
+        )
+    else:
+        rr.log("world/support/tow_lines", rr.Clear(recursive=False))
+
+
 def _log_effects(
     tick: int,
     effects: pd.DataFrame | None,
@@ -1034,33 +1116,55 @@ def _log_effects(
         return
     ev = effects[effects["tick"] == tick]
     launch, impact, intercept, strike, breach = [], [], [], [], []
+    tow_pts, supply_pts, lost_pts, ammo_pts = [], [], [], []
     feed = []
     for _, r in ev.iterrows():
         x, y = float(r["x"]), float(r["y"])
         z = float(terrain.height_at(x, y))
         kind = str(r["kind"])
+        detail = str(r["detail"])
         if kind == "fire_launch":
             launch.append([x, y, z + 6])
         elif kind == "fire_impact":
             impact.append([x, y, z + 10])
         elif kind == "intercept":
             intercept.append([x, y, z + 8])
-            feed.append(("防空拦截！", INTERCEPT_C))
+            feed.append(("防空拦截！", INTERCEPT_C, "WARN"))
         elif kind == "air_kill":
             intercept.append([x, y, z + 8])
-            feed.append((f"空中目标被击落（{r['detail']}）", AIRSTRIKE_C))
+            feed.append((f"空中目标被击落（{detail}）", AIRSTRIKE_C, "WARN"))
         elif kind == "loiter_strike":
             strike.append([x, y, z + 10])
-            feed.append(("巡飞弹命中雷达/节点", AIRSTRIKE_C))
+            feed.append(("巡飞弹命中雷达/节点", AIRSTRIKE_C, "WARN"))
         elif kind == "breach":
             breach.append([x, y, z + 8])
-            feed.append(("工兵开辟通路", BREACH_C))
+            feed.append(("工兵开辟通路", BREACH_C, "WARN"))
+        # ---- C7-a2：保障业务事件 ----
+        elif kind == "tow_hook":
+            tow_pts.append([x, y, z + 12])
+            feed.append((detail or "抢救车挂钩拖救", TOW_LINE_C, "WARN"))
+        elif kind == "tow_done":
+            tow_pts.append([x, y, z + 12])
+            feed.append((detail or "受损装备拖抵营抢修点", SUPPLY_C, "WARN"))
+        elif kind == "supply_wave":
+            supply_pts.append([x, y, z + 12])
+            feed.append((detail or "器材前送波次抵站", SUPPLY_C, "WARN"))
+        elif kind == "supply_lost":
+            lost_pts.append([x, y, z + 14])
+            feed.append((detail or "补给车前送途中损失", SUPPORT_LOST_C, "CRITICAL"))
+        elif kind == "ammo_deliver":
+            ammo_pts.append([x, y, z + 12])
+            feed.append((detail or "弹药补给车抵站补弹", AMMO_C, "WARN"))
     buckets = (
         ("launch", launch, LAUNCH_C, 90),
         ("impact", impact, IMPACT_C, 150),
         ("intercept", intercept, INTERCEPT_C, 130),
         ("strike", strike, AIRSTRIKE_C, 170),
         ("breach", breach, BREACH_C, 100),
+        ("tow", tow_pts, TOW_LINE_C, 110),
+        ("supply", supply_pts, SUPPLY_C, 120),
+        ("supply_lost", lost_pts, SUPPORT_LOST_C, 150),
+        ("ammo", ammo_pts, AMMO_C, 120),
     )
     for name, pts, color, radius in buckets:
         if pts:
@@ -1068,8 +1172,9 @@ def _log_effects(
                    rr.Points3D(pts, radii=radius, colors=[color]))
         else:
             rr.log(f"world/effects/{name}", rr.Clear(recursive=False))
-    for txt, color in feed:
-        rr.log("feed/effects", rr.TextLog(f"T+{tick:03d} {txt}", level="WARN", color=color))
+    for txt, color, level in feed:
+        rr.log("feed/effects",
+               rr.TextLog(f"T+{tick:03d} {txt}", level=level, color=color))
 
 
 def _log_metrics(tick: int, cur: pd.DataFrame) -> None:

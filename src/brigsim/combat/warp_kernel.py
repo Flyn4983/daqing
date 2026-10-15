@@ -357,6 +357,7 @@ class WarpKernel(Kernel):
             or bool(sus.part_stock)
             or sus.damage_model is not None
             or sus.part_catalog is not None
+            or sus.support_echelon is not None
         )
         if uses_new:
             raise NotImplementedError(

@@ -1,4 +1,4 @@
-"""M3 旅级想定冒烟：C7-a0 合成兵种版 119v57 规模展开、三阶段任务、整局可跑完。"""
+"""M3 旅级想定冒烟：C7-a0/a2 版 119v45 规模展开、三阶段任务、整局可跑完。"""
 
 import math
 
@@ -12,7 +12,7 @@ def test_brigade_expands_and_runs():
     m = MesaKernel(sc, seed=20261013)
     n_red = int((m.state.side == 0).sum())
     n_blue = int((m.state.side == 1).sum())
-    assert (n_red, n_blue) == (119, 57)
+    assert (n_red, n_blue) == (119, 45)
     assert len(sc.mission.phase_list) == 3
     assert m.terrain.passability.shape == (65, 65)
 

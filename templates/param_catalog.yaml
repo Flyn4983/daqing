@@ -13,7 +13,7 @@
 
 meta:
   version: "0.1"
-  updated_at: "2026-10-14"
+  updated_at: "2026-10-15"
   dt_seconds_ref: 30
   confidence_legend:
     authoritative: [0.80, 1.00]
@@ -68,6 +68,10 @@ sources:
     kind: academic_paper
   S12:
     citation: "轻/重度受损比例原型标定（无公开权威值）：按 S3/S4 定性描述（多数可现地/前沿快速修复返建）设 light_prob=0.30（现地处置、修复减半）、severe_prob=0.15（后送），其余 M 拖救/F 自行后送；等待真实毁伤统计替换"
+    url: ""
+    kind: synthesized_prototype
+  S13:
+    citation: "C7-a2 v4 粗标定（CRN 8 种子，scripts/calibrate_v4.py）：a0 想定 0/10 成功的根因诊断为结构问题而非毁伤参数——掘壕单位弃阵前出接敌压缩梯次防御、蓝方直瞄密度 41（约两个装甲营）、反炮兵雷达够不到敌炮阵地、36 分钟无收尾段。结构包（掘壕固守/蓝直瞄 41→31/反炮兵雷达 9→12km/营迫射程 3.5→6km/火箭弹基数 2→4/时限 72→96 tick）后默认毁伤参数下 success=5/8=0.625（红存活 83/119、蓝 26/45）；致命权重减半档反降至 0.375（防御者更难啃、突击失节奏）。粗标定非精标，待真实演习数据替换"
     url: ""
     kind: synthesized_prototype
 
@@ -196,7 +200,7 @@ parameters:
     confidence: 0.25
     sources: []
     real_data_slot: true
-    note: "方别毁伤概率乘子（既设阵地预瞄/工事/训练差）；v3 标定 blue=1.000"
+    note: "方别毁伤概率乘子（既设阵地预瞄/工事/训练差）；v3 标定 blue=1.000，v4 CRN 粗标定复核保持 1.000（平衡改由编成/地形/时限等结构旋钮承担，见 S13）"
 
   - key: side.detect_scale
     unit: factor
@@ -373,11 +377,11 @@ parameters:
     unit: tick
     dtype: int
     domain: [30, 120]
-    prototype: 59
-    confidence: 0.40
-    sources: []
+    prototype: 96
+    confidence: 0.20
+    sources: [S13]
     real_data_slot: true
-    note: "任务时限（59tick≈29.5 分钟）；按战法阶段时限规定填"
+    note: "任务时限（96tick≈48 分钟，开进—破障—突破—夺占纵深要点含收尾段）；v4 粗标定由 72 延长（72 下矛头 t67 抵 x=7800 后时间耗尽），待按战法阶段时限规定填"
 
   - key: mission.phases
     unit: null
@@ -409,11 +413,31 @@ parameters:
   - key: forces.orbat
     unit: null
     dtype: orbat
-    prototype: "example_brigade：红 104 台/蓝 63 台（示例编成）"
-    confidence: 0.30
-    sources: []
+    prototype: "example_brigade：红 119 台/蓝 45 台（v4 粗标定后编成）"
+    confidence: 0.20
+    sources: [S13]
     real_data_slot: true
-    note: "实际编制序列、平台型号、集结坐标、初始朝向、编制链标签（旅-营-连-排）"
+    note: "实际编制序列、平台型号、集结坐标、初始朝向、编制链标签（旅-营-连-排）。v4：蓝方直瞄单位 41→31（加强营防御合理量级；原密度约两个装甲营，进攻方无法建制突破）"
+
+  - key: forces.defender_density
+    unit: platform
+    dtype: int
+    domain: [12, 48]
+    prototype: 31
+    confidence: 0.15
+    sources: [S13]
+    real_data_slot: true
+    note: "防御方直瞄单位（坦克/步战/反坦克组）总数；v4 粗标定为 31（一线 9 反坦克组+二线 6 坦克/2 步战+纵深 6 反坦克组/4 坦克/2 步战），待情报查明的防御编成替换"
+
+  - key: sensor.radar_cb_coverage_m
+    unit: m
+    dtype: float
+    domain: [6000, 30000]
+    prototype: 12000
+    confidence: 0.20
+    sources: [S13]
+    real_data_slot: true
+    note: "反炮兵定位雷达作用距离；v4 由 9000 调到 12000 以闭合'敌炮开火→定位→BLOS/火箭压制'杀伤链（a0 时敌炮阵地 11300m 外全程无损，造成红方 38/50 阵亡来自间瞄）；待装备实际探测威力填"
 
 # =============================================================================
 # 未来扩展（预留槽，当前内核未实现）——M5 候选：弹道/落点/落角/分部件毁伤

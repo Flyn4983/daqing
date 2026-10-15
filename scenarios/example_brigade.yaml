@@ -7,7 +7,7 @@
 name: example_brigade
 
 mission:
-  duration_ticks: 72       # 72 * 30s ≈ 36 分钟（开进—破障—突破纵深完整时序）
+  duration_ticks: 96       # 96 * 30s ≈ 48 分钟（开进—破障—突破纵深完整时序，v4 延长收尾段）
   dt_seconds: 30
   objective: [9000, 5000]
   success_radius_m: 500
@@ -64,7 +64,7 @@ platform_types:
     role: artillery
     fire_mode: indirect
     sensor_range_m: 900
-    weapon_range_m: 3500
+    weapon_range_m: 6000
     pk: 0.15
     speed_m_per_tick: 70
     reload_ticks: 3
@@ -97,7 +97,7 @@ platform_types:
     splash_radius_m: 550
     call_fire_delay_ticks: 3
     emplace_ticks: 2
-    ammo_basic_load: 2
+    ammo_basic_load: 4   # v4：反炮兵/纵深压制弹药加强（基数由 a2 弹药车波次补弹）
     sensor_kind: optical
   hj10:                      # 红箭-10 超视距导弹车（需目标指示链）
     role: missile
@@ -153,7 +153,7 @@ platform_types:
     role: radar_cb
     sensor_range_m: 300
     weapon_range_m: 0
-    coverage_radius_m: 9000
+    coverage_radius_m: 12000   # v4：闭合"敌方开炮→定位→BLOS/火箭压制"杀伤链
     emission_duty: 0.8
     emplace_ticks: 1
     pk: 0.0
@@ -263,6 +263,19 @@ sustainment:
   resupply_interval_ticks: 20
   resupply_qty: 8
   repair_station: {red: [1500, 5000], blue: [9500, 5100]}
+  # C7-a2：器材三档 + 保障实体化（仅红方声明旅库即启用；蓝方沿用 a1 时间抽象）
+  # 携行档=上方 part_stock（随队现地换件）；运行档=下方 operating_stock（营抢修点常备）；
+  # 后留档=旅器材库 depot，每 20 tick 产出一个波次，器材补给车实体前送、途中可被击毁。
+  support_echelon:
+    depot: {red: [200, 5000]}            # 旅器材库（后留档接入点，不做物理长途运输）
+    wave_interval_ticks: 20              # 前送波次节拍（t20/40/60 共 3 波）
+    wave_qty: 2                          # 每波每部件件数（4 部件共 8 件）
+    carry_share: 0.5                     # 运量均分携行/运行两档
+    operating_stock:                     # 营中继抢修点常备基数
+      red: {mobility: 4, powerpack: 3, fire_control: 4, weapon: 5}
+    tow_speed_scale: 0.5                 # 挂钩拖救车速折减
+    ammo_wave_qty: 6                     # 弹药车每波为每车补 6 发（至初始基数封顶）
+    ammo_dist_radius_m: 3000             # 营弹药所分发半径
 
 # ---- 蓝方障碍带：掩护河障接近地的雷场/三角锥/反坦克壕，须工兵破障 ----
 battlefield:
@@ -376,38 +389,40 @@ force_templates:
        spacing_lateral: 800, org: "旅修理连·靠前抢修车组", id_prefix: rrep}
     - {type: supply_veh, count: 2, layout: line, anchor: [200, 4200], heading_deg: 90,
        spacing_lateral: 1600, org: "旅器材库·前送补给车组", id_prefix: rsup}
-    - {type: ammo_veh, count: 1, layout: line, anchor: [250, 1000], heading_deg: 90,
-       org: "旅弹药队·紧急补弹车", id_prefix: ramo}
+    - {type: ammo_veh, count: 1, layout: line, anchor: [200, 4800], heading_deg: 90,
+       org: "旅弹药队·紧急补弹车（驻旅器材库，波次前出补弹）", id_prefix: ramo}
 
   blue:
-    # ---- 一线防御（21 台，全部既设掩体）----
+    # ---- 一线防御（9 台反坦克组 + 6 坦克 + 2 翼步战，全部既设掩体）----
+    # v4 粗标定：防御密度由 a0 的 41 个直瞄单位裁到 31（加强营合理量级，
+    # 原密度达两个装甲营，进攻方 36 分钟内无建制突破可能）；掘壕单位固守不出阵。
     - {type: atgm_team, count: 3, layout: line, anchor: [6000, 3500], heading_deg: 270,
        spacing_lateral: 700, org: "蓝1营·前沿反坦克1组", id_prefix: ba, dug_in: true}
     - {type: atgm_team, count: 3, layout: line, anchor: [6000, 5000], heading_deg: 270,
        spacing_lateral: 700, org: "蓝1营·前沿反坦克2组", id_prefix: bb, dug_in: true}
     - {type: atgm_team, count: 3, layout: line, anchor: [6000, 6500], heading_deg: 270,
        spacing_lateral: 700, org: "蓝1营·前沿反坦克3组", id_prefix: bc, dug_in: true}
-    - {type: tank, count: 4, layout: line, anchor: [7800, 4000], heading_deg: 270,
-       spacing_lateral: 500, org: "蓝1营·坦克1排", id_prefix: bt, dug_in: true,
+    - {type: tank, count: 3, layout: line, anchor: [7800, 4000], heading_deg: 270,
+       spacing_lateral: 500, org: "蓝1营·坦克1排（欠1车）", id_prefix: bt, dug_in: true,
        worn_count: 1}   # C7-a1：既设防御也有带病装备
-    - {type: tank, count: 4, layout: line, anchor: [7800, 6200], heading_deg: 270,
-       spacing_lateral: 500, org: "蓝1营·坦克2排", id_prefix: bu, dug_in: true}
-    - {type: ifv, count: 2, layout: line, anchor: [8400, 2500], heading_deg: 270,
+    - {type: tank, count: 3, layout: line, anchor: [7800, 6200], heading_deg: 270,
+       spacing_lateral: 500, org: "蓝1营·坦克2排（欠1车）", id_prefix: bu, dug_in: true}
+    - {type: ifv, count: 1, layout: line, anchor: [8400, 2500], heading_deg: 270,
        spacing_lateral: 400, org: "蓝1营·北翼翼步战", id_prefix: bi, dug_in: true}
-    - {type: ifv, count: 2, layout: line, anchor: [8400, 7700], heading_deg: 270,
+    - {type: ifv, count: 1, layout: line, anchor: [8400, 7700], heading_deg: 270,
        spacing_lateral: 400, org: "蓝1营·南翼翼步战", id_prefix: bj, dug_in: true}
-    # ---- 纵深防御（20 台）----
-    - {type: atgm_team, count: 3, layout: line, anchor: [8600, 3500], heading_deg: 270,
+    # ---- 纵深防御（6 反坦克组 + 6 坦克 + 2 步战）----
+    - {type: atgm_team, count: 2, layout: line, anchor: [8600, 3500], heading_deg: 270,
        spacing_lateral: 700, org: "蓝2连·纵深反坦克1组", id_prefix: bl1, dug_in: true}
-    - {type: atgm_team, count: 3, layout: line, anchor: [8600, 6500], heading_deg: 270,
+    - {type: atgm_team, count: 2, layout: line, anchor: [8600, 6500], heading_deg: 270,
        spacing_lateral: 700, org: "蓝2连·纵深反坦克2组", id_prefix: bl2, dug_in: true}
-    - {type: atgm_team, count: 3, layout: line, anchor: [8900, 7500], heading_deg: 270,
+    - {type: atgm_team, count: 2, layout: line, anchor: [8900, 7500], heading_deg: 270,
        spacing_lateral: 500, org: "蓝2连·纵深反坦克3组", id_prefix: bl3, dug_in: true}
-    - {type: tank, count: 4, layout: line, anchor: [9300, 4200], heading_deg: 270,
-       spacing_lateral: 500, org: "蓝2连·坦克3排", id_prefix: bx, dug_in: true}
-    - {type: tank, count: 4, layout: line, anchor: [9300, 6000], heading_deg: 270,
-       spacing_lateral: 500, org: "蓝2连·坦克4排", id_prefix: by, dug_in: true}
-    - {type: ifv, count: 3, layout: line, anchor: [9000, 2200], heading_deg: 270,
+    - {type: tank, count: 2, layout: line, anchor: [9300, 4200], heading_deg: 270,
+       spacing_lateral: 500, org: "蓝2连·坦克3排（欠2车）", id_prefix: bx, dug_in: true}
+    - {type: tank, count: 2, layout: line, anchor: [9300, 6000], heading_deg: 270,
+       spacing_lateral: 500, org: "蓝2连·坦克4排（欠2车）", id_prefix: by, dug_in: true}
+    - {type: ifv, count: 2, layout: line, anchor: [9000, 2200], heading_deg: 270,
        spacing_lateral: 400, org: "蓝2连·北翼纵深步战", id_prefix: bm, dug_in: true}
     # ---- 炮兵群 ----
     - {type: howitzer, count: 4, layout: line, anchor: [9500, 3000], heading_deg: 270,
