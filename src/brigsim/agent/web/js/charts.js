@@ -295,7 +295,9 @@
     const bw = Math.min(110, g.iw / cats.length * 0.55);
     cats.forEach((c, i) => {
       const cx = g.m.l + g.iw * (i + 0.5) / cats.length;
-      const h = g.y(c.value, yd) - g.y(yd[0], yd);
+      // g.y 值域越大像素 y 越小：柱高 = 基线像素 - 柱顶像素（写反会恒为 0，
+      // Math.max(0,·) 再把负高吞掉，导致任何数据都画不出柱）
+      const h = g.y(yd[0], yd) - g.y(c.value, yd);
       g.svg.appendChild(el("rect", {
         x: cx - bw / 2, y: g.y(c.value, yd), width: bw, height: Math.max(0, h),
         fill: c.color, rx: 5, opacity: 0.9,
