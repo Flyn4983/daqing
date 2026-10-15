@@ -343,6 +343,22 @@ class WarpKernel(Kernel):
     name = "warp"
 
     def __init__(self, scenario: Scenario, seed: int = 0, device: str | None = None) -> None:
+        # C7-a0 守卫：合成兵种新要素（间瞄/空中/雷达电磁/障碍）目前仅 Mesa 内核支持，
+        # Warp 向量化移植（k_indirect/k_air/k_aura）完成前显式报错，避免静默错算。
+        new_roles = {
+            "artillery", "missile", "air_defense", "radar_air", "radar_cb",
+            "ew", "c2", "engineer", "support",
+        }
+        uses_new = (
+            bool(scenario.air_packages)
+            or bool(scenario.battlefield.obstacles)
+            or any(t.role in new_roles for t in scenario.platform_types.values())
+        )
+        if uses_new:
+            raise NotImplementedError(
+                "该想定使用了 C7-a0 合成兵种要素（空中架次/间瞄炮兵/雷达电磁/障碍等），"
+                "Warp GPU 内核尚未移植，请使用 Mesa 内核（kernel='mesa'，多进程批量）。"
+            )
         Kernel.__init__(self, scenario, seed)
         s = self.state
         self.dev = resolve_device(device)

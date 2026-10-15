@@ -28,8 +28,8 @@ def test_apply_knobs_scales_speed_duration_blue_pk():
     base_pk = np.asarray([sc.platform_types[t].pk for t in st.type_names])
     assert np.allclose(st.pk[is_blue], np.minimum(base_pk[is_blue] * 1.5, 1.0))
     assert np.allclose(st.pk[~is_blue], base_pk[~is_blue])
-    # 原想定不被修改（烘焙标定值 duration 59、blue pk_scale 1.000 保持不变）
-    assert sc.mission.duration_ticks == 59
+    # 原想定不被修改（烘焙标定值 duration 72、blue pk_scale 1.000 保持不变）
+    assert sc.mission.duration_ticks == 72
     assert sc.side_modifiers["blue"].pk_scale == 1.000
 
 

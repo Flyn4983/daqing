@@ -343,7 +343,7 @@ def build_all(
     dist_reps: int = 200,
     batch_size: int = 256,
     seed: int = 20261014,
-    kernel: str = "warp",
+    kernel: str = "mesa",
     device: str = "cuda:0",
     make_rrd: bool = True,
 ) -> dict[str, Any]:
@@ -488,7 +488,7 @@ def build_timeseries(
     plan_vectors: dict[str, list[float]],
     reps: int = 8,
     seed: int = 20261014,
-    kernel: str = "warp",
+    kernel: str = "mesa",
     device: str = "cuda:0",
 ) -> Path:
     """两方案（knee/基线）各 reps 次单环境复制，聚合逐 tick 四率 mean/std。"""
@@ -568,7 +568,7 @@ def build_distribution(
     x: list[float],
     reps: int = 200,
     seed: int = 20261014,
-    kernel: str = "warp",
+    kernel: str = "mesa",
     device: str = "cuda:0",
     batch_size: int = 256,
 ) -> Path:
@@ -624,7 +624,7 @@ def build_replay(
     scenario,
     x: list[float],
     seed: int = 20261014,
-    kernel: str = "warp",
+    kernel: str = "mesa",
     device: str = "cuda:0",
     tick_stride: int = 2,
 ) -> Path:
@@ -647,6 +647,8 @@ def build_replay(
         rrd_path=rrd_out,
         spawn=False,
         supply=kernel_obj.log.supply_frame(),
+        air=kernel_obj.log.air_frame(),
+        effects=kernel_obj.log.effect_frame(),
         app_id="brigsim-dashboard",
         use_models=False,
         tick_stride=tick_stride,

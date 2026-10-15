@@ -107,6 +107,33 @@ class HeightField:
         """双线性插值高程（米）。"""
         return self._bilinear(self.heights, x, y)
 
+    def has_los(
+        self,
+        x1: float,
+        y1: float,
+        x2: float,
+        y2: float,
+        clearance_m: float = 3.0,
+    ) -> bool:
+        """两点间高程通视判定（直瞄射击与地面雷达使用）。
+
+        沿连线按一个栅格步长采样，任一中间点地表高程超过视线（两端地表高度线性插值）
+        加 clearance_m 即判定遮挡。空中平台不做地形遮挡（俯瞰）。
+        """
+        dist = float(np.hypot(x2 - x1, y2 - y1))
+        cell = self.size[0] / self.n
+        n_steps = max(2, int(np.ceil(dist / cell)))
+        if n_steps <= 1:
+            return True
+        ts = np.linspace(0.0, 1.0, n_steps + 1)[1:-1]
+        xs = x1 + (x2 - x1) * ts
+        ys = y1 + (y2 - y1) * ts
+        ground = self._bilinear(self.heights, xs, ys)
+        h1 = float(self.height_at(x1, y1))
+        h2 = float(self.height_at(x2, y2))
+        sightline = h1 + (h2 - h1) * ts + clearance_m
+        return bool(np.all(ground <= sightline))
+
     def move_factor(self, x: np.ndarray, y: np.ndarray) -> np.ndarray:
         """机动修正系数：坡度 + 水面 + 通行性栅格（道路/河流/植被）。粗略经验式，后标定。"""
         cell = self.size[0] / self.n

@@ -40,6 +40,31 @@ C_SNOW = (228, 230, 228)
 REPAIR_C = (168, 85, 247)  # 在修单位图元色（紫）
 WRECK_C = (72, 72, 80)  # 战损残骸图元色（深灰）
 
+# C7-a0 合成兵种图层配色
+RADAR_C = (90, 210, 230)    # 雷达探测包络（青）
+EW_C = (214, 90, 230)       # 电磁干扰区（品红）
+AURA_C = (90, 230, 150)     # C2 指挥光环（绿）
+DECOY_C = (235, 195, 70)    # 假目标（琥珀黄）
+SMOKE_BAND_C = (208, 212, 218, 46)  # 屏烟带（浅灰半透）
+
+WEATHER_NAME = {
+    "clear": "晴朗", "overcast": "多云", "rain": "降雨", "heavy_rain": "暴雨",
+    "snow": "降雪", "fog": "雾", "heavy_fog": "浓雾", "sand": "沙尘", "haze": "霾",
+}
+ILLUM_NAME = {"day": "昼间", "dusk": "黄昏", "night": "夜间"}
+AIR_KIND_LABEL = {"uav": "无人机", "loitering": "巡飞弹", "helo": "武直"}
+AIR_DONE_STATES = {"killed", "expended", "exiting"}
+OBSTACLE_STYLE = {
+    "minefield": ((200, 84, 60), "雷场"),
+    "dragons_teeth": ((239, 170, 23), "三角锥"),
+    "anti_tank_ditch": ((120, 120, 132), "反坦克壕"),
+}
+IMPACT_C = (240, 130, 40)
+LAUNCH_C = (248, 222, 110)
+INTERCEPT_C = (110, 226, 240)
+AIRSTRIKE_C = (238, 78, 62)
+BREACH_C = (120, 232, 160)
+
 
 def visualize(
     snapshots: pd.DataFrame,
@@ -52,6 +77,8 @@ def visualize(
     eye: tuple[float, float, float] | None = None,
     look: tuple[float, float, float] | None = None,
     supply: pd.DataFrame | None = None,
+    air: pd.DataFrame | None = None,
+    effects: pd.DataFrame | None = None,
     app_id: str = "brigsim",
     use_models: bool = True,
     tick_stride: int = 1,
@@ -74,12 +101,32 @@ def visualize(
     )
 
     info = _unit_info(scenario)
+    decoy_ids = {
+        u.unit_id
+        for side_name in ("red", "blue")
+        for u in scenario.forces.get(side_name, [])
+        if u.decoy
+    }
     _log_terrain(terrain)
     _log_passability(terrain)
     _log_static_units(info, terrain, use_models)
     _log_objective(scenario, terrain)
     _log_repair_stations(scenario, terrain)
+    _log_obstacles(scenario, terrain)
+    _log_decoys(scenario, terrain)
     _log_weather_header(scenario)
+
+    # C7-a0：空中航迹与战场效果点（None 或空表时对应图层静默）
+    air_trails: dict[str, list] = {}
+    air_done: set[str] = set()
+    # 屏烟：想定中的半径/持续时间 + 效果帧给出的实际起烟 tick
+    smoke_specs = {
+        (round(z.at[0]), round(z.at[1])): (float(z.radius_m), int(z.duration_ticks))
+        for z in scenario.battlefield.smoke_orders
+    }
+    smoke_start: dict[tuple, int] = {}
+    effects = effects if effects is not None and not effects.empty else None
+    air = air if air is not None and not air.empty else None
 
     pos_table = {
         (int(t), uid): (float(x), float(y))
@@ -151,11 +198,15 @@ def visualize(
                 (dead_idx if not alive else alive_idx).append(k)
             _log_units_primitives(cur, zs, info)
 
-        _log_markers(cur=cur, zs=zs, info=info)
+        _log_markers(cur=cur, zs=zs, info=info, decoy_ids=decoy_ids)
         _log_fans(cur, zs, info, outline=embed)
+        _log_coverages(tick, cur, zs, info, thin=embed)
         _log_smoke(tick, cur, zs)
         _log_weather(tick, scenario, terrain)
         _log_engagements(tick, engagements, pos_table, terrain, info)
+        _log_effects(tick, effects, terrain, smoke_specs, smoke_start)
+        if air is not None:
+            _log_air(tick, air, air_trails, air_done)
         _log_metrics(tick, cur)
         if supply is not None and not supply.empty:
             _log_supply(tick, supply)
@@ -168,12 +219,16 @@ def visualize(
 # ---------- 静态要素 ----------
 
 
-def _unit_info(scenario: Scenario) -> dict[str, tuple[str, int, str, float]]:
+def _unit_info(scenario: Scenario) -> dict[str, tuple[str, int, str, float, str, float]]:
     types = scenario.platform_types
-    out: dict[str, tuple[str, int, str, float]] = {}
+    out: dict[str, tuple[str, int, str, float, str, float]] = {}
     for side_id, side_name in ((0, "red"), (1, "blue")):
         for u in scenario.forces.get(side_name, []):
-            out[u.unit_id] = (u.type, side_id, u.org or u.unit_id, types[u.type].weapon_range_m)
+            t = types[u.type]
+            out[u.unit_id] = (
+                u.type, side_id, u.org or u.unit_id,
+                t.weapon_range_m, t.role, t.coverage_radius_m,
+            )
     return out
 
 
@@ -464,12 +519,69 @@ def _log_repair_stations(scenario: Scenario, terrain: HeightField) -> None:
         rr.log(f"{base}/ring", rr.LineStrips3D([ring], colors=[color], radii=4), static=True)
 
 
+def _log_obstacles(scenario: Scenario, terrain: HeightField) -> None:
+    """障碍地域（蓝方防御体系）：矩形边界 + 稀疏内部标识点 + 中心标签。"""
+    th = np.linspace(0, 2 * np.pi, 24)
+    for k, ob in enumerate(scenario.battlefield.obstacles):
+        color, label = OBSTACLE_STYLE[ob.kind]
+        cx, cy = (float(v) for v in ob.center)
+        sx, sy = (float(v) for v in ob.size)
+        z = float(terrain.height_at(cx, cy)) + 2.0
+        x0, x1, y0, y1 = cx - sx / 2, cx + sx / 2, cy - sy / 2, cy + sy / 2
+        rect = [[x0, y0, z], [x1, y0, z], [x1, y1, z], [x0, y1, z], [x0, y0, z]]
+        base = f"world/obstacles/ob{k}"
+        rr.log(f"{base}/edge", rr.LineStrips3D([rect], colors=[color], radii=5), static=True)
+        # 内部稀疏标识点：雷场红点、三角锥琥珀点、反坦克壕暗点
+        gx, gy = np.meshgrid(np.linspace(x0, x1, 5), np.linspace(y0, y1, 5))
+        pts = np.column_stack([gx.ravel(), gy.ravel(), np.full(25, z + 3)])
+        rr.log(
+            f"{base}/dots",
+            rr.Points3D(pts, radii=14, colors=[color], labels=[label] + [""] * 24),
+            static=True,
+        )
+        # 雷场补一圈警示环
+        if ob.kind == "minefield":
+            ring = np.column_stack(
+                [cx + min(sx, sy) / 2 * np.cos(th),
+                 cy + min(sx, sy) / 2 * np.sin(th), np.full_like(th, z)]
+            )
+            rr.log(f"{base}/warn", rr.LineStrips3D([ring], colors=[color], radii=3), static=True)
+
+
+def _log_decoys(scenario: Scenario, terrain: HeightField) -> None:
+    """假目标：初始阵位地面菱形虚影框 + 立柱标签，提示可被识别过滤的诱饵。"""
+    k = 0
+    for side_name in ("red", "blue"):
+        for u in scenario.forces.get(side_name, []):
+            if not u.decoy:
+                continue
+            x, y = (float(v) for v in u.pos)
+            z = float(terrain.height_at(x, y)) + 2.0
+            d = 26.0
+            diamond = [[x, y + d, z], [x + d, y, z], [x, y - d, z],
+                       [x - d, y, z], [x, y + d, z]]
+            base = f"world/decoys/d{k}"
+            rr.log(
+                f"{base}/ring",
+                rr.LineStrips3D([diamond], colors=[DECOY_C], radii=4),
+                static=True,
+            )
+            rr.log(
+                f"{base}/tag",
+                rr.Points3D([[x, y, z + 60]], radii=40, colors=[DECOY_C],
+                            labels=["假目标（可识别）"]),
+                static=True,
+            )
+            k += 1
+
+
 # ---------- 每 tick 要素 ----------
 
 
-def _log_markers(*, cur, zs, info) -> None:
+def _log_markers(*, cur, zs, info, decoy_ids: set[str] | None = None) -> None:
     """单位标签：小型菱形标图 + 竖引线悬于车顶（借鉴 VBS/VR-Vantage 标签引脚）。"""
     tag_h = 72.0
+    decoy_ids = decoy_ids or set()
     for side in (0, 1):
         ids = [uid for uid in cur.index if info[uid][1] == side and bool(cur.at[uid, "alive"])]
         if not ids:
@@ -479,7 +591,7 @@ def _log_markers(*, cur, zs, info) -> None:
             k = cur.index.get_loc(uid)
             x, y, z = float(cur.at[uid, "x"]), float(cur.at[uid, "y"]), float(zs[k])
             pts.append([x, y, z + tag_h])
-            labels.append(info[uid][2])
+            labels.append(info[uid][2] + ("〔假〕" if uid in decoy_ids else ""))
             leaders.append([[x, y, z + 3.0], [x, y, z + tag_h - 6.0]])
         color = SIDE_COLOR[side]
         rr.log(
@@ -558,6 +670,58 @@ def _log_fans(cur, zs, info, *, outline: bool = False) -> None:
     )
 
 
+def _ring_pts(cx, cy, z, radius, n=48):
+    th = np.linspace(0, 2 * np.pi, n)
+    return [[cx + radius * np.cos(a), cy + radius * np.sin(a), z] for a in th]
+
+
+def _log_coverages(tick: int, cur, zs, info, *, thin: bool = False) -> None:
+    """体系作用包络（每 tick 跟随单位）：雷达探测圈+扫描线、防空杀伤圈、
+    电抗压制区、C2 指挥光环。全部细线图元，控制 rrd 体积。"""
+    rings: list[list] = []
+    ring_colors: list = []
+    sweeps: list[list] = []
+    sweep_colors: list = []
+    line_r = 2.5 if thin else 3.5
+    for k, uid in enumerate(cur.index):
+        if not bool(cur.at[uid, "alive"]):
+            continue
+        role = info[uid][4]
+        cov = info[uid][5]
+        if cov <= 0:
+            continue
+        ox, oy, oz = float(cur.at[uid, "x"]), float(cur.at[uid, "y"]), float(zs[k]) + 3
+        if role in ("radar_air", "radar_cb"):
+            color = RADAR_C
+            rings.append(_ring_pts(ox, oy, oz, cov, 56))
+            ring_colors.append(color)
+            # 旋转扫描线（相位按 uid 散列，多部雷达不同步）
+            phase = (hash(uid) % 360) * math.pi / 180.0
+            a = tick * 0.32 + phase
+            sweeps.append([[ox, oy, oz],
+                           [ox + cov * math.cos(a), oy + cov * math.sin(a), oz]])
+            sweep_colors.append(color)
+        elif role == "air_defense":
+            rings.append(_ring_pts(ox, oy, oz, cov, 48))
+            ring_colors.append(SIDE_COLOR[info[uid][1]])
+        elif role == "ew":
+            rings.append(_ring_pts(ox, oy, oz, cov, 64))
+            ring_colors.append(EW_C)
+        elif role == "c2":
+            rings.append(_ring_pts(ox, oy, oz, cov, 48))
+            ring_colors.append(AURA_C)
+    if rings:
+        rr.log("world/coverages/rings",
+               rr.LineStrips3D(rings, colors=ring_colors, radii=line_r))
+    else:
+        rr.log("world/coverages/rings", rr.Clear(recursive=False))
+    if sweeps:
+        rr.log("world/coverages/sweeps",
+               rr.LineStrips3D(sweeps, colors=sweep_colors, radii=line_r * 1.4))
+    else:
+        rr.log("world/coverages/sweeps", rr.Clear(recursive=False))
+
+
 def _instanced_spheres(centers, radii, colors, *, z_scale=1.0, subdiv=2):
     """批量实例化低精度球 Mesh3D（Points3D/Ellipsoids3D 在 rerun 0.39 上半透明发黑，
     Mesh3D 的 vertex_colors alpha 混合正常，烟雾/雾用它）。"""
@@ -617,29 +781,47 @@ def _log_smoke(tick: int, cur, zs) -> None:
 
 
 def _log_weather_header(scenario: Scenario) -> None:
-    name = {"clear": "晴朗", "rain": "降雨", "fog": "雾", "snow": "降雪"}[
-        scenario.environment.weather
-    ]
+    env = scenario.environment
+    name = WEATHER_NAME[env.weather]
+    illum = ILLUM_NAME[env.illumination]
+    if env.wind_speed_mps >= 0.5:
+        wind = f"  风速 {env.wind_speed_mps:.0f}m/s 风向 {env.wind_dir_deg:.0f}°"
+    else:
+        wind = "  无风"
     rr.log(
         "feed/weather",
-        rr.TextLog(
-            f"气象：{name}  能见度系数 {scenario.environment.visibility_factor}", level="INFO"
-        ),
+        rr.TextLog(f"气象：{name}（{illum}）{wind}", level="INFO"),
         static=True,
     )
 
 
+def _ground_haze(tick, terrain, n_fog, color, *, r_lo=160, r_hi=300, h=28):
+    """贴地漂移雾/霾/沙尘扁球层（Mesh3D 半透明实例）。"""
+    rng = np.random.default_rng(7)
+    fx = rng.uniform(0, terrain.size[0], n_fog)
+    fy = rng.uniform(0, terrain.size[1], n_fog)
+    fr = rng.uniform(r_lo, r_hi, n_fog)
+    drift = (tick * 6) % 300
+    centers = np.column_stack([(fx + drift) % terrain.size[0], fy, np.zeros(n_fog)])
+    gz = terrain.height_at(centers[:, 0], centers[:, 1])
+    centers[:, 2] = gz + h
+    return _instanced_spheres(centers, fr, [color] * n_fog, z_scale=0.14, subdiv=1)
+
+
 def _log_weather(tick: int, scenario: Scenario, terrain: HeightField) -> None:
-    w, n_pts = scenario.environment.weather, 380
+    w = scenario.environment.weather
+    n_pts = 620 if w == "heavy_rain" else 380
     rng = np.random.default_rng(7)
     px = rng.uniform(0, terrain.size[0], n_pts)
     py = rng.uniform(0, terrain.size[1], n_pts)
-    if w == "rain":
-        # Points3D 不支持半透明，用不透明淡蓝小点表现雨幕
-        z = 250 + ((rng.uniform(0, 900, n_pts) - tick * 110) % 900)
+    if w in ("rain", "heavy_rain"):
+        # Points3D 不支持半透明，用不透明淡蓝小点表现雨幕；暴雨更密更急
+        speed = 160 if w == "heavy_rain" else 110
+        z = 250 + ((rng.uniform(0, 900, n_pts) - tick * speed) % 900)
+        color = (120, 150, 200) if w == "heavy_rain" else (150, 180, 220)
         rr.log(
             "world/weather/precip",
-            rr.Points3D(np.column_stack([px, py, z]), radii=8, colors=[(150, 180, 220)]),
+            rr.Points3D(np.column_stack([px, py, z]), radii=8, colors=[color]),
         )
     elif w == "snow":
         z = 150 + ((rng.uniform(0, 700, n_pts) - tick * 30) % 700)
@@ -647,19 +829,23 @@ def _log_weather(tick: int, scenario: Scenario, terrain: HeightField) -> None:
             "world/weather/precip",
             rr.Points3D(np.column_stack([px, py, z]), radii=12, colors=[(235, 240, 245)]),
         )
-    elif w == "fog":
-        # 贴地扁球雾团（Mesh3D 半透明），稀疏分布、缓慢漂移；多球重叠 alpha 会叠加，取低值
-        n_fog = 130
-        fx = rng.uniform(0, terrain.size[0], n_fog)
-        fy = rng.uniform(0, terrain.size[1], n_fog)
-        fr = rng.uniform(160, 300, n_fog)
-        drift = (tick * 6) % 300
-        centers = np.column_stack([(fx + drift) % terrain.size[0], fy, np.zeros(n_fog)])
-        heights = terrain.height_at(centers[:, 0], centers[:, 1])
-        centers[:, 2] = heights + 28
-        colors = [(202, 207, 214, 16)] * n_fog
+    elif w in ("fog", "heavy_fog"):
+        # 贴地扁球雾团，缓慢漂移；多球重叠 alpha 会叠加，取低值
+        n_fog = 220 if w == "heavy_fog" else 130
+        alpha = 22 if w == "heavy_fog" else 16
         rr.log(
-            "world/weather/precip", _instanced_spheres(centers, fr, colors, z_scale=0.14, subdiv=1)
+            "world/weather/precip",
+            _ground_haze(tick, terrain, n_fog, (202, 207, 214, alpha)),
+        )
+    elif w == "sand":
+        rr.log(
+            "world/weather/precip",
+            _ground_haze(tick, terrain, 150, (196, 162, 104, 26), r_lo=200, r_hi=380, h=46),
+        )
+    elif w == "haze":
+        rr.log(
+            "world/weather/precip",
+            _ground_haze(tick, terrain, 100, (200, 200, 196, 18), r_lo=260, r_hi=460, h=60),
         )
     else:
         rr.log("world/weather/precip", rr.Clear(recursive=False))
@@ -696,6 +882,156 @@ def _log_engagements(tick, engagements, pos_table, terrain, info) -> None:
             "world/engagements",
             rr.Arrows3D(origins=origins, vectors=vectors, colors=colors, radii=18),
         )
+
+
+def _log_air(
+    tick: int,
+    air: pd.DataFrame,
+    trails: dict[str, list],
+    done: set[str],
+) -> None:
+    """空中架次：按真实高度分层的航点 + 尾迹；被拦截/耗尽/返航后清除。"""
+    new = air[air["tick"] == tick]
+    for _, r in new.iterrows():
+        aid = str(r["asset_id"])
+        trails.setdefault(aid, []).append([float(r["x"]), float(r["y"]), float(r["alt"])])
+        if str(r["state"]) in AIR_DONE_STATES:
+            done.add(aid)
+    for aid, pts in trails.items():
+        base = f"world/air/{aid}"
+        if aid in done:
+            rr.log(f"{base}/trail", rr.Clear(recursive=False))
+            rr.log(f"{base}/mark", rr.Clear(recursive=False))
+            continue
+        side = 0
+        kind = "uav"
+        # 尾迹/航点属性取该架次最近一行
+        rows = air[(air["asset_id"] == aid) & (air["tick"] <= tick)]
+        if not rows.empty:
+            last = rows.iloc[-1]
+            side, kind = int(last["side"]), str(last["kind"])
+        color = SIDE_COLOR[side]
+        rr.log(f"{base}/trail", rr.LineStrips3D([pts], colors=[color], radii=2.5))
+        x, y, z = pts[-1]
+        rr.log(
+            f"{base}/mark",
+            rr.Points3D(
+                [[x, y, z]], radii=120, colors=[color],
+                labels=[AIR_KIND_LABEL.get(kind, kind)],
+            ),
+        )
+
+
+def _smoke_band_arrays(tick: int, cx: float, cy: float, radius: float, terrain: HeightField):
+    """一道屏烟的几何数组（确定性分布的贴地扁球带，缓慢翻涌不逐帧跳变）。"""
+    import trimesh
+
+    seed = (int(cx) * 73856093) ^ (int(cy) * 19349663)
+    rng = np.random.default_rng(abs(seed) % (2**32))
+    n = max(7, int((radius / 230.0) ** 2 * 2.2))
+    rr_ = rng.uniform(0, radius * 0.92, n)
+    aa = rng.uniform(0, 2 * np.pi, n)
+    jitter_x = 46.0 * math.sin(tick * 0.55 + seed % 10)
+    jitter_y = 46.0 * math.cos(tick * 0.47 + seed % 10)
+    centers = np.column_stack([
+        cx + rr_ * np.cos(aa) + jitter_x,
+        cy + rr_ * np.sin(aa) + jitter_y,
+        np.zeros(n),
+    ])
+    centers[:, 2] = terrain.height_at(centers[:, 0], centers[:, 1]) + 24
+    radii = rng.uniform(radius * 0.26, radius * 0.42, n)
+    base = trimesh.creation.icosphere(subdivisions=1)
+    v0, f0 = np.asarray(base.vertices), np.asarray(base.faces)
+    verts, faces, cols = [], [], []
+    for c, r in zip(centers, radii):
+        off = sum(len(x) for x in verts)
+        verts.append(v0 * np.asarray([r, r, r * 0.06]) + c)
+        faces.append(f0 + off)
+        cols.append(np.tile(np.asarray(SMOKE_BAND_C, dtype=np.uint8), (len(v0), 1)))
+    return np.concatenate(verts), np.concatenate(faces), np.concatenate(cols)
+
+
+def _log_effects(
+    tick: int,
+    effects: pd.DataFrame | None,
+    terrain: HeightField,
+    smoke_specs: dict[tuple, tuple[float, int]],
+    smoke_start: dict[tuple, int],
+) -> None:
+    """战场效果点（每 tick 瞬时，次 tick 清除）：
+    炮弹出膛闪光、弹着爆炸、防空拦截闪光、空中击杀、巡飞弹命中、破障标记；
+    另有持续型屏烟带（按起烟 tick + 想定持续时间窗绘制）。"""
+    # ---- 持续：屏烟带（起烟事件可能落在隔帧上，按 <=tick 累积登记）----
+    if effects is not None:
+        for _, r in effects[(effects["kind"] == "smoke") & (effects["tick"] <= tick)].iterrows():
+            key = (round(float(r["x"])), round(float(r["y"])))
+            smoke_start.setdefault(key, int(r["tick"]))
+    band_buf = []
+    for key, t0 in smoke_start.items():
+        radius, duration = smoke_specs.get(key, (500.0, 6))
+        if t0 <= tick < t0 + duration:
+            band_buf.append(
+                _smoke_band_arrays(tick, float(key[0]), float(key[1]), radius, terrain)
+            )
+    if band_buf:
+        vv, ff, cc = [], [], []
+        off = 0
+        for v, f, c in band_buf:
+            vv.append(v)
+            ff.append(f + off)
+            cc.append(c)
+            off += len(v)
+        rr.log(
+            "world/effects/smoke_bands",
+            rr.Mesh3D(
+                vertex_positions=np.concatenate(vv),
+                triangle_indices=np.concatenate(ff),
+                vertex_colors=np.concatenate(cc),
+            ),
+        )
+    else:
+        rr.log("world/effects/smoke_bands", rr.Clear(recursive=False))
+
+    if effects is None:
+        return
+    ev = effects[effects["tick"] == tick]
+    launch, impact, intercept, strike, breach = [], [], [], [], []
+    feed = []
+    for _, r in ev.iterrows():
+        x, y = float(r["x"]), float(r["y"])
+        z = float(terrain.height_at(x, y))
+        kind = str(r["kind"])
+        if kind == "fire_launch":
+            launch.append([x, y, z + 6])
+        elif kind == "fire_impact":
+            impact.append([x, y, z + 10])
+        elif kind == "intercept":
+            intercept.append([x, y, z + 8])
+            feed.append(("防空拦截！", INTERCEPT_C))
+        elif kind == "air_kill":
+            intercept.append([x, y, z + 8])
+            feed.append((f"空中目标被击落（{r['detail']}）", AIRSTRIKE_C))
+        elif kind == "loiter_strike":
+            strike.append([x, y, z + 10])
+            feed.append(("巡飞弹命中雷达/节点", AIRSTRIKE_C))
+        elif kind == "breach":
+            breach.append([x, y, z + 8])
+            feed.append(("工兵开辟通路", BREACH_C))
+    buckets = (
+        ("launch", launch, LAUNCH_C, 90),
+        ("impact", impact, IMPACT_C, 150),
+        ("intercept", intercept, INTERCEPT_C, 130),
+        ("strike", strike, AIRSTRIKE_C, 170),
+        ("breach", breach, BREACH_C, 100),
+    )
+    for name, pts, color, radius in buckets:
+        if pts:
+            rr.log(f"world/effects/{name}",
+                   rr.Points3D(pts, radii=radius, colors=[color]))
+        else:
+            rr.log(f"world/effects/{name}", rr.Clear(recursive=False))
+    for txt, color in feed:
+        rr.log("feed/effects", rr.TextLog(f"T+{tick:03d} {txt}", level="WARN", color=color))
 
 
 def _log_metrics(tick: int, cur: pd.DataFrame) -> None:

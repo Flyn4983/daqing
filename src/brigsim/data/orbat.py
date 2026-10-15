@@ -53,6 +53,8 @@ def instantiate(tpl: UnitTemplate) -> list[UnitSpec]:
                 ),
                 org=f"{tpl.org} {i:02d}",
                 heading_deg=tpl.heading_deg,
+                dug_in=tpl.dug_in,
+                decoy=tpl.decoy,
             )
         )
     return units

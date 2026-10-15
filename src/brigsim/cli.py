@@ -99,6 +99,8 @@ def replay(
         rrd_path=rrd_path,
         spawn=False,
         supply=kernel.log.supply_frame(),
+        air=kernel.log.air_frame(),
+        effects=kernel.log.effect_frame(),
     )
     if show:
         viewer = Path(sys.executable).parent / "rerun.exe"
@@ -434,7 +436,9 @@ def dash_build_cmd(
     out: Path = typer.Option(
         Path("src/brigsim/agent/web/data"), "--out", help="6 个 JSON 产物目录（入库）"
     ),
-    kernel: str = typer.Option("warp", "--kernel", help="warp（GPU/CPU 自动回退）或 mesa"),
+    kernel: str = typer.Option(
+        "mesa", "--kernel", help="mesa（C7 合成兵种）或 warp（GPU/CPU 自动回退）"
+    ),
     device: str = typer.Option("cuda:0", "--device", help="warp 设备（不可用自动回退）"),
     ts_reps: int = typer.Option(8, "--ts-reps", help="四率时序每方案复制次数"),
     dist_reps: int = typer.Option(200, "--dist-reps", help="蒙特卡洛分布复制次数"),

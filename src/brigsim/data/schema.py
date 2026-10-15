@@ -11,6 +11,28 @@ from pydantic import BaseModel, Field, model_validator
 
 SideName = Literal["red", "blue"]
 
+# C7-a0：兵种角色、火力模式、传感器类型
+RoleName = Literal[
+    "assault",       # 突击：坦克/步战/反坦克组
+    "artillery",     # 间瞄炮兵（榴弹炮/迫击炮/火箭炮）
+    "missile",       # 超视距导弹（红箭-10，需侦察指引）
+    "air_defense",   # 防空导弹/高炮
+    "radar_air",     # 对空警戒雷达
+    "radar_cb",      # 反炮兵定位雷达
+    "recon",         # 装甲侦察（雷达+光电）
+    "ew",            # 电子对抗（雷达/通信干扰）
+    "c2",            # 指挥通信节点
+    "engineer",      # 工兵（破障/架桥）
+    "support",       # 保障车辆（抢救/抢修/补给/发烟）
+]
+FireModeName = Literal["direct", "indirect", "blos", "air_defense", "support"]
+SensorKindName = Literal["optical", "ir", "radar", "fused"]
+JamModeName = Literal["radar", "comms", "both"]
+WeatherName = Literal[
+    "clear", "overcast", "rain", "heavy_rain", "snow", "fog", "heavy_fog", "sand", "haze"
+]
+IlluminationName = Literal["day", "dusk", "night"]
+
 
 class ParamMeta(BaseModel):
     """参数来源溯源信息（M3 标定闭环用）。"""
@@ -42,9 +64,13 @@ class Terrain(BaseModel):
 
 
 class Environment(BaseModel):
-    weather: Literal["clear", "rain", "fog", "snow"] = "clear"
-    # 对探测距离的修正系数（雨/雾/雪 <1），同时驱动可视化粒子
+    # C7-a0：多维气象（经 combat/weather.py 的传感器衰减矩阵差异化作用于光学/红外/雷达）
+    weather: WeatherName = "clear"
+    illumination: IlluminationName = "day"  # 昼夜光照
+    # 兼容旧字段：不直接使用，传感器乘子改由 weather+illumination 计算
     visibility_factor: float = 1.0
+    wind_speed_mps: float = 0.0     # 风速：影响无人机起飞、烟幕扩散
+    wind_dir_deg: float = 0.0       # 风向（气象方位角，度）
 
 
 class MissionPhase(BaseModel):
@@ -100,7 +126,12 @@ class SustainmentSpec(BaseModel):
 
 
 class PlatformTypeSpec(BaseModel):
-    """一类装备平台的性能参数（数值均为示例占位，等待真实数据资产替换）。"""
+    """一类装备平台的性能参数（数值均为示例占位，等待真实数据资产替换）。
+
+    C7-a0 新增合成兵种字段（均有默认值，旧想定零改动可加载）：
+    role/fire_mode/sensor_kind 决定平台在战场体系中的行为类别；
+    间瞄/导弹/防空走战斗支援系统（combat/systems.py）而非普通直瞄交火。
+    """
 
     sensor_range_m: float
     weapon_range_m: float
@@ -108,11 +139,24 @@ class PlatformTypeSpec(BaseModel):
     speed_m_per_tick: float
     # M1：交战节奏与可观测性
     reload_ticks: int = Field(2, ge=1, description="射击冷却（tick）")
-    detect_prob: float = Field(0.85, ge=0.0, le=1.0, description="满近界发现目标概率")
+    detect_prob: float = Field(0.85, ge=0.0, le=1.0, description="满近界发现概率")
     track_ttl_ticks: int = Field(3, ge=1, description="共享航迹过期时间（tick）")
     # M1：保障（平均故障间隔 / 平均修复时长，单位 tick；指数抽样）
     mtbf_ticks: float = Field(400.0, gt=0.0)
     mttr_ticks: float = Field(6.0, gt=0.0)
+    # ---- C7-a0：合成兵种体系 ----
+    role: RoleName = "assault"
+    fire_mode: FireModeName = "direct"
+    sensor_kind: SensorKindName = "optical"
+    splash_radius_m: float = Field(0.0, ge=0.0, description="间瞄面杀伤半径（米）")
+    call_fire_delay_ticks: int = Field(0, ge=0, description="呼叫火力到弹着延迟（tick）")
+    emplace_ticks: int = Field(0, ge=0, description="占领阵地展开时间（tick）")
+    ammo_basic_load: int | None = Field(None, description="弹药基数（发）；None=不限制")
+    coverage_radius_m: float = Field(0.0, ge=0.0, description="雷达/防空/电抗/C2 作用半径（米）")
+    emission_duty: float = Field(1.0, ge=0.0, le=1.0, description="雷达间歇开机占空比")
+    jam_strength: float = Field(0.0, ge=0.0, le=1.0, description="电抗强度（0-1）")
+    jam_mode: JamModeName = "both"
+    aura_bonus: float = Field(0.0, ge=0.0, description="C2 光环对感知/毁伤概率的加成")
     meta: ParamMeta = ParamMeta()
 
 
@@ -123,6 +167,9 @@ class UnitSpec(BaseModel):
     # 编制层级标签（旅-营-连-排 自由文本链，用于态势图标注）
     org: str = ""
     heading_deg: float = 90.0  # 初始朝向，0=北(+y)，顺时针
+    # C7-a0：既设掩体（被发现与被毁概率降低）；假目标（吸引敌方精确弹药）
+    dug_in: bool = False
+    decoy: bool = False
 
 
 class UnitTemplate(BaseModel):
@@ -138,6 +185,8 @@ class UnitTemplate(BaseModel):
     layout: Literal["line", "column", "wedge"] = "line"
     spacing_along: float = 200.0  # 沿 heading 方向间距（米）
     spacing_lateral: float = 200.0  # 垂直 heading 方向间距（米）
+    dug_in: bool = False  # 整建制占领既设阵地（蓝方防御用）
+    decoy: bool = False
 
 
 class SideModifiers(BaseModel):
@@ -151,6 +200,58 @@ class SideModifiers(BaseModel):
     speed_scale: float = Field(1.0, gt=0.0, description="该方机动速度乘子")
 
 
+class ObstacleSpec(BaseModel):
+    """障碍区（蓝方防御体系，矩形轴对齐）：雷场/反坦克壕/三角锥。
+
+    未开辟通路时：雷场减速并有概率触雷损伤；反坦克壕近乎阻断，
+    必须由 role=engineer 的破障车在作业距离内累计 breach_ticks 开辟。
+    """
+
+    kind: Literal["minefield", "anti_tank_ditch", "dragons_teeth"]
+    center: tuple[float, float]
+    size: tuple[float, float]  # [x 方向全宽, y 方向全宽]（米）
+    breach_ticks: int = Field(8, ge=1)
+
+
+class SmokeOrder(BaseModel):
+    """发烟命令：发烟车（unit_id）抵达 at 附近后，在 start_tick 起施放持续烟幕。"""
+
+    unit_id: str
+    at: tuple[float, float]
+    radius_m: float = 500.0
+    start_tick: int = 0
+    duration_ticks: int = 6
+
+
+class BattlefieldSpec(BaseModel):
+    """战场人工环境层：障碍区 + 预有发烟命令（烟幕随发烟车到位与时间动态生效）。"""
+
+    obstacles: list[ObstacleSpec] = []
+    smoke_orders: list[SmokeOrder] = []
+
+
+class AirPackage(BaseModel):
+    """空中架次（轻量时序实体，非地面平台）：起飞-进入-巡弋-打击/侦察-返航。
+
+    kind：uav 侦察校射（sensor_range_m>0，持续产出共享航迹）；
+    loitering 巡飞弹（到点后按 seek_radius_m 选高价值目标一击）；
+    helo 武装直升机（战位上对装甲多发射击）。
+    """
+
+    side: SideName
+    kind: Literal["uav", "loitering", "helo"]
+    launch_tick: int = Field(0, ge=0)
+    waypoints: list[tuple[float, float]]  # 最后一个航点为战位/巡弋中心
+    altitude_m: float = 1500.0
+    loiter_ticks: int = Field(10, ge=1)
+    seek_radius_m: float = 1500.0
+    weapon_pk: float = Field(0.0, ge=0.0, le=1.0)
+    weapon_count: int = Field(0, ge=0)
+    sensor_range_m: float = 0.0
+    sensor_kind: SensorKindName = "fused"
+    label: str = ""
+
+
 class Scenario(BaseModel):
     name: str
     mission: Mission = Mission()
@@ -158,6 +259,9 @@ class Scenario(BaseModel):
     environment: Environment = Environment()
     platform_types: dict[str, PlatformTypeSpec]
     sustainment: SustainmentSpec = SustainmentSpec()
+    # C7-a0：战场障碍/烟幕层、空中架次
+    battlefield: BattlefieldSpec = BattlefieldSpec()
+    air_packages: list[AirPackage] = []
     # 方别不对称乘子（缺省键 = 全 1.0）；如蓝方既设防御火力加成
     side_modifiers: dict[SideName, SideModifiers] = {}
     forces: dict[SideName, list[UnitSpec]] = {"red": [], "blue": []}

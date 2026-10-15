@@ -1429,4 +1429,113 @@ ms/复制 仅作量级参考）
   `brigsim agent-serve` 打开 http://127.0.0.1:8848/
 
 
+## 2026-10-15 | trae + 用户 | C7-a0：合成兵种体系扩展（多军兵种 + 雷达电磁 + 多维气象地形）
+
+### 背景（用户明确要求）
+用户指出旧想定"只见突击坦克"，要求把握"合成"要义：步战车、（突击炮留 b 包
+中型旅工况）、间瞄火炮、超视距导弹、防空、信息支援全部入模；并追加
+雷达、电磁（干扰/压制）要素与"未列出但重要的"作战要素；气象、地形尽可能
+丰富。聚合概率仿真不做弹道级（C2 已定调）；Mesa 先实现、Warp 守卫式报错、
+4GB 显存约束不变。
+
+### 数据 schema（data/schema.py，全部默认值，旧想定零改动可加载）
+- PlatformTypeSpec 新增：role（assault/artillery/missile/air_defense/
+  radar_air/radar_cb/recon/ew/c2/engineer/support 11 角色）、fire_mode
+  （direct/indirect/blos/air_defense/support）、sensor_kind
+  （optical/ir/radar/fused）、splash_radius_m、call_fire_delay_ticks、
+  emplace_ticks、ammo_basic_load、coverage_radius_m、emission_duty、
+  jam_strength/jam_mode、aura_bonus
+- UnitSpec 新增 dug_in（既设掩体，发现/被毁概率降低）、decoy（假目标）
+- BattlefieldSpec：obstacles（minefield/anti_tank_ditch/dragons_teeth
+  矩形轴对齐，breach_ticks 开辟工时）+ smoke_orders（发烟车/屏烟点/
+  半径/起始 tick/持续）
+- AirPackage：uav/loitering/helo 三类轻量时序空中实体（航点/高度/
+  巡弋时长/搜索半径/弹药）；Environment 扩九天气（clear/overcast/rain/
+  heavy_rain/snow/fog/heavy_fog/sand/haze）×三照度（day/dusk/night）+风速风向
+
+### 地形与气象（kernel/terrain.py、combat/weather.py）
+- has_los：连线按一个栅格步长采样 + 3m 离地净空，地形遮挡直瞄与地面雷达；
+  空中平台俯瞰不做遮挡
+- sensor_factors 九天气×三通道（光学/红外/雷达）+ fused 取最强通道：
+  雾遮光电不遮雷达（0.15/1.0）、夜暗压光学（0.20）红外仍可用（0.90）、
+  暴雨雨衰（雷达 0.80）且固定翼/旋翼/无人机禁飞（风速>12m/s 同样禁飞）、
+  积雪/暴雨降地面机动；烟幕只遮光电不遮雷达
+
+### Mesa 合成兵种系统（combat/systems.py，核心约 700 行）
+- 间瞄炮兵：展开 emplace→共享航迹选目标→呼叫延迟（floor 至少 1 tick）→
+  splash 面杀伤弹着；弹药基数有限耗尽即停；掩体目标 pk 折半
+- BLOS（红箭-10 类）：只接受 recon/radar_air/radar_cb/uav 的目标指示链，
+  普通直瞄航迹不构成发射条件
+- 空中层：AirAsset 状态机 pending→inbound→station/loitering→exiting→
+  killed/expended；UAV 开视野校射、巡飞弹反辐射/节点猎杀、武直战位
+  多发射击；通信干扰区内 UAV 35% 失控坠落；恶劣天候禁飞顺延
+- 防空：IFF 只打敌方空中目标；分 long/short 两档拦截，无对空雷达引导 ×0.4、
+  火控雷达被干扰 ×0.5；雷达干扰同时致盲警戒/反炮兵/防空火控雷达
+  （测试发现并修复的真实建模缺陷）
+- 电磁三域：雷达干扰致盲、通信干扰断链（航迹 TTL=0 即时过期、C2 光环失效、
+  UAV 失控）、烟幕光电遮蔽；雷达 emission_duty 间歇开机（辐射即可能被
+  反辐射猎杀）
+- C2 光环：未被通信压制的指挥车 coverage 内己方 det/pk ×(1+aura_bonus)
+- 巡飞弹目标价值序：开机雷达 > 普通角色（静默雷达降权到突击车之后）>
+  已识别假目标直接过滤（测试驱动修复的价值函数缺陷）
+- 障碍与工兵：雷场（减速 .2 + 3% 毁/9% 伤触雷）、三角锥（.15）、反坦克壕
+  （.02 近乎阻断）；工兵 400m 内累计 breach_ticks 开辟通路
+- 工兵/发烟战术动作：_follow_or_dash 沿攻击轴跟随突击矛头保持间隔、
+  矛头抵近才短促跃进（旧版直冲障碍被点名）；发烟车在屏烟点后方 1.3km
+  远程发烟（SMOKE_LAY_RANGE），到位才激活，自激活 tick 起持续 duration
+  （旧版固定时间窗晚到即错过）
+- 事件日志新增 air_frame（tick/asset_id/side/kind/x/y/alt/state）与
+  effect_frame（fire_launch/fire_impact/intercept/air_kill/loiter_strike/
+  smoke/breach，带 x/y/detail），供回放与未来实时推送共用
+
+### 想定重写（scenarios/example_brigade.yaml）
+- 红 119 / 蓝 57，22 型平台，duration 59→72 tick（约 36 分钟）
+- 红蓝成体系编成：坦克两梯队 + 步战 + 榴弹炮/迫击炮/火箭炮 + 红箭-10 BLOS
+  + 防空导弹/自行高炮 + 对空警戒/反炮兵雷达 + 电抗车 + 指挥车 + 侦察 +
+  工兵破障车 + 发烟车；蓝方 3 个假火炮假目标（decoy）
+- 4 个障碍区（三角锥/双雷场/反坦克壕）+ 双发烟车双屏烟（750m 半径，
+  start tick 6/持续 16）；10 架次空中 package（各 2 UAV/2 巡飞弹/1 武直）；
+  蓝一线 6 个 dug_in 反坦克班；三阶段进攻轴线
+
+### 可视化新军标（viz/rerun_view.py，真机浏览器验收）
+- visualize() 增 air/effects 可选参数（cli replay 与 dashboard build 同步传入）
+- 静态：障碍矩形框+内部标识点+雷场警示环（红雷场/橙三角锥/深灰反坦克壕）、
+  假目标地面菱形虚影+"假目标（可识别）"标签
+- 每 tick：体系作用包络细线环——青雷达圈+旋转扫描线、方别色防空杀伤圈、
+  品红电抗压制区、绿 C2 光环；空中航点按真实高度分层+方别色尾迹
+  （无人机/巡飞弹/武直中文标签），被击落/耗尽/返航即清除
+- 效果点：出膛黄光、弹着橙爆、拦截青色闪光、空中击杀/巡飞弹命中红点、
+  破障绿点；feed/effects 中文事件流；屏烟带为确定性贴地扁球层（起烟 tick+
+  持续时间窗，翻涌不跳变）
+- 修复天气 KeyError：九天气全部支持（暴雨更密更急、浓雾 220 球、沙尘/霾
+  贴地有色霾层），天气栏补照度与风速风向
+- 嵌入版全部细线/点图元，旅级 72 tick 隔帧 rrd 43MB（<80MB 预算）；
+  真实 Chrome 等 35s 加载后自动循环，7 类图层逐项目检 PASS
+
+### Warp 守卫与默认内核
+- warp_kernel 对含 C7-a0 要素的想定 raise NotImplementedError（明确提示
+  改用 Mesa + 多进程批量，后续工作包再移植）；dash-build CLI 与 build.py
+  全部仿真入口默认 kernel 改 mesa，保证文档路径不撞守卫
+
+### 测试（tests/test_c7_a0.py，新增 21 项）
+- 16 项机制单测：气象矩阵（雾遮光电不遮雷达/夜暗红外/暴雨雨衰+禁飞/
+  雪地减速）、山脊 LOS、间瞄延迟+面杀伤+弹药耗尽、掩体 pk 折半（200 重复）、
+  BLOS 无指示不发射、防空 IFF+引导/被干扰分档（n=60）、EW 雷达/通信分别
+  致盲、断链航迹即时过期、C2 光环 1.2 倍与压制失效、烟幕遮光学不遮雷达、
+  假目标识破后不再诱弹、破障工时+触雷分布（4000 次 1.5-5% 毁/5.5-13% 伤）、
+  反炮兵雷达开/静默、巡飞弹反辐射优先/静默后打突击车、暴雨禁飞顺延
+- 5 项消融（5 种子模块级共享基线，25 局）：去工兵→0 破障、去烟幕→0 烟幕、
+  浓雾→直瞄射击显著减少、去红防空→0 拦截、蓝通信压制→红射击不占优
+- 存量断言更新：编成 (104,63)→(119,57)、duration 59→72
+- **全量 117 项通过（96+21），385s；ruff 全仓净**
+
+### 已知留白（按粗框架先行原则显式记录）
+- a0 10 种子任务成功率 0/10：纵深攻防粗平衡属 a2（保障实体化+v4 标定）
+  工作包；a0 验收标准为机制正确、指标无极端崩塌（红存活约 49-66/119、
+  蓝 25-38/57，烟幕稳定 t22-23 激活、破障约 6/10 种子触发）
+- 11 式突击炮/大八轮中型旅工况、8 地形族×多维气象组合工况在 b 包；
+  Warp GPU 移植在后续工作包
+
+
+
 

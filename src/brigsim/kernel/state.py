@@ -65,6 +65,32 @@ class SimState:
         self.mtbf = np.asarray([s.mtbf_ticks for s in specs], dtype=np.float64)
         self.mttr = np.asarray([s.mttr_ticks for s in specs], dtype=np.float64)
 
+        # ---- C7-a0：合成兵种列（默认值保持旧想定行为不变）----
+        self.role = np.asarray([s.role for s in specs], dtype=object)
+        self.fire_mode = np.asarray([s.fire_mode for s in specs], dtype=object)
+        self.sensor_kind = np.asarray([s.sensor_kind for s in specs], dtype=object)
+        # 弹药基数：-1=不限制；间瞄/导弹/防空随射击消耗
+        self.ammo = np.asarray(
+            [-1 if s.ammo_basic_load is None else s.ammo_basic_load for s in specs],
+            dtype=np.int32,
+        )
+        self.splash = np.asarray([s.splash_radius_m for s in specs], dtype=np.float64)
+        self.fire_delay = np.asarray([s.call_fire_delay_ticks for s in specs], dtype=np.int16)
+        # 阵地展开：emplace_timer 每 tick -1，归零后可射击（0=无需展开或已就绪）
+        self.emplace_need = np.asarray([s.emplace_ticks for s in specs], dtype=np.int16)
+        self.emplace_timer = np.asarray([s.emplace_ticks for s in specs], dtype=np.int16)
+        self.coverage = np.asarray([s.coverage_radius_m for s in specs], dtype=np.float64)
+        self.jam_strength = np.asarray([s.jam_strength for s in specs], dtype=np.float64)
+        self.aura_bonus = np.asarray([s.aura_bonus for s in specs], dtype=np.float64)
+        self.emission_duty = np.asarray([s.emission_duty for s in specs], dtype=np.float64)
+        self.radar_on = np.zeros(self.n, dtype=bool)  # 本 tick 是否辐射（间歇开机）
+        jam_code = {"radar": 0, "comms": 1, "both": 2}
+        self.jam_mode = np.asarray([jam_code[s.jam_mode] for s in specs], dtype=np.int8)
+        self.dug_in = np.asarray(
+            [u.dug_in for u in units], dtype=bool
+        )
+        self.decoy = np.asarray([u.decoy for u in units], dtype=bool)
+
         self.tick = 0
         # 当前任务阶段（全局标量；M3 多阶段任务，内核推进时更新阶段与目标点）
         self.phase = 0
