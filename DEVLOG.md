@@ -2005,4 +2005,95 @@ a3 的 example_brigade 只跑了一个 geotiff DEM（`terrain/dem_demo.tif`）�
 
 
 
+## 2026-10-17 | trae + 用户 | C7-c：顶栏工况选择器 + 实时推演（轮询保底）
+
+### 背景（收口 b 包留白）
+b 包已在后端落地 8 地形族 preset 工厂 + 4 成品工况，但大屏仍是一个静态
+HTML（预构建 6 JSON）。c 包在不强行引入 SSE/WebSocket 的前提下（后端
+只用标准库 ThreadingHTTPServer），用**轮询保底**的最小增量让前端能：
+1) 顶栏下拉选择 7 种工况（含 4 个 preset 成品 + 3 个历史示例）
+2) 点 ▶ 实时推演 → 1.5s 轮询 /api/run → KPI 红战损/红完好/红修复实时变
+3) 点 ■ 停止 → stop_event 响应延迟 ~0
+4) 终局显示 红X/蓝Y
+
+### 后端 RunSession 会话池（agent/server.py，约 90 行新增）
+- 顶层全局 `_RUNS: dict[str, RunSession]` + `_RUNS_LOCK`（Windows spawn
+  pickle 限制，闭包里定义会导致 worker 未执行就终止）
+- RunSession：run_id / scenario_name / seed / max_ticks / stop_event /
+  done_event / error / log: list[dict]（环形尾部保留全量 tick）
+- `_guess_duration(name, max_ticks)`：查 YAML 元数据预估 duration_ticks，
+  POST /api/run 返回 total_ticks 用于前端进度条
+- `_run_worker(sess)`：加载 Scenario（走 preset 工厂 → HeightField synthetic
+  分支吃内联 passability_array）→ MesaKernel 逐 tick step → 入 log
+  （tick/alive_red/alive_blue/total_red/total_blue/pos_red/pos_blue 前 3 个位置）
+- 会话池最多 8 并发，超龄 stop + pop 淘汰（下次 POST 时触发）
+- AgentWebServer.stop() 先 stop 所有后台 run 再关 HTTP server
+
+### 新增端点
+- GET `/api/scenarios`：扫 scenarios/*.yaml 快速读元数据（只读元数据
+  不走 preset 工厂，~10ms 响应），按 duration_ticks 升序
+- POST `/api/run`：body `{scenario, seed}` → 起 worker 线程，返回
+  `{run_id, scenario, seed, total_ticks}`
+- GET `/api/run?run_id=X`：轮询返回 `{tick, progress, total_ticks, done,
+  error, n_red, n_blue, log}`（log 含全量 tick 快照）
+- POST `/api/run-stop`：stop_event.set()，worker 下次 tick 前 break
+
+### 前端顶栏工况选择器 + 轮询保底（index.html + main.js + dash.css）
+- `.scenario-switch` 块：`<label>情景工况</label>` + `<select id="scenario-select">`
+  + `<button id="btn-run">▶ 实时推演</button>` + `<button id="btn-run-stop" hidden>■ 停止</button>`
+  + `<span id="run-progress">—</span>`；btn-run-stop 默认 hidden，点击 ▶ 后
+  btn-run hidden / btn-run-stop visible，终局/停止后反向
+- `initScenarioSwitch()`：**放在 boot() 内部**（boot() 是 async 函数，
+  await Promise.allSettled 完 6 JSON 加载后才执行——之前放在 IIFE 末尾
+  会因 boot 异步未完成导致 fillOptions 执行时机不确定）
+- fillOptions：fetch /api/scenarios → 每项 `name · terrain_preset · Ntick · vis=X.XX`
+  默认选中 medium_brigade（故事性最强：大八轮碾压 48tick）
+- poll(runId)：1.5s setTimeout 链式轮询 → 解析 snapshot.log 最后一条 →
+  算 attr_red=1-alive_red/total_red / ready_red=alive_red/total_red →
+  更新 KPI #kpi-attr-red / #kpi-ready-red 的 .kpi-v 文本
+- 修复率面板标记"推演中"（实时推演没模拟 repair/sustain，KPI 里暂用
+  `alive/total 红存活数` 做占位）
+
+### 4 成品工况故事性实机推演（curl 端到端验证 seed=42）
+  | 工况                        | preset | tick | 红存 | 蓝存 | 解读                                   |
+  |-----------------------------|--------|------|------|------|----------------------------------------|
+  | medium_brigade              | rolling| 48   | 13/14| 0/9  | 大八轮碾压（通行 0.967、机动快）        |
+  | brigade_canyon_clear        | canyon | 96   | 3/7  | 3/6  | 深切峡谷双方惨（pass 0.69 + 190m 高差） |
+  | brigade_plain_fog           | plain  | 96   | 6/6  | 0/5  | heavy_fog vis=0.15，光/红被乘废，radar 不受 |
+  | brigade_rolling_fortified   | rolling| 96   | 2/9  | 6/10 | 中型旅硬啃既设防御（不对称）             |
+
+### 关键修复（4 个 bug）
+1. **UnitSpec pydantic BaseModel 下标**：server.py `_run_worker` 里用
+   `u["unit_id"]` 遍历 forces 抛 `TypeError: 'UnitSpec' object is not
+   subscriptable` → 改 `u.unit_id` 属性访问
+2. **loadJson 不带后缀**：common.js `loadJson('timeseries')` fetch
+   `/data/timeseries`（无 .json 后缀）→ server 的 `_send_file` 检查 suffix
+   非 `.json` → 404 → 改 `loadJson` 自动补 `.json`
+3. **initScenarioSwitch 时机**：原放在 IIFE 末尾，boot() 是 async 返回
+   Promise，initScenarioSwitch 立即执行时 boot 数据未就绪 → 改放到
+   boot() 内部 await 完成后
+4. **缓存 bust 漏改**：第一次只改了 index.html 的 CSS cache buster，
+   `<script src="...?v=c7a2">` 全是旧号 → 全量改到 v=c7c1
+
+### 测试与验收
+- **全量 159 项通过**（无新增后端单测，前后端功能靠 curl+浏览器验收），
+  约 370s；ruff 全仓净
+- curl 端到端：POST /api/run medium_brigade → tick 48 跑完 → error null
+- 真机 Chrome 强刷 v=c7c1 → [C7-c] initScenarioSwitch called → 7 工况
+  下拉默认 medium_brigade → 点 ▶ → 进度 tick 1/48 → 终局 红13/蓝0，
+  KPI 红战损率从静态值实时更新
+- console 红错仅 WASM ERR_ABORTED + Google Fonts（均非本次交付）
+
+### 已知留白
+- repair_rate 实时推演只标记"推演中"，可后续挂 MesaKernel.sustain
+  的 event_frame 算真实修复率
+- 各工况 forces.red/blue 在 `_quick_parse_scenario_meta` 里 counts 兜底
+  （example_battalion/example_brigade 的 forces 复杂嵌套），目前已能用
+  但可加更稳妥的 forces 计数
+- 前端轮询间隔固定 1.5s，推演 tick 耗时随工况变化（canyon 96tick ~10s，
+  medium 48tick ~5s），后续可自适应；SSE 在后端引入后可升级
+- d 包：10 分钟录屏彩排（需要把 4 个 preset 工况的剧情串成一个故事线）
+
+
+
 
