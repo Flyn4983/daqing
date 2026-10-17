@@ -54,8 +54,9 @@
     Object.entries(tc.arguments).map(([k, v]) => `${k}=${v}`).join(", ");
 
   DASH.loadJson = async (name) => {
-    const r = await fetch(`/data/${name}`, { cache: "no-store" });
-    if (!r.ok) throw new Error(`${name} HTTP ${r.status}`);
+    const path = name.endsWith(".json") ? name : name + ".json";
+    const r = await fetch(`/data/${path}`, { cache: "no-store" });
+    if (!r.ok) throw new Error(`${path} HTTP ${r.status}`);
     return r.json();
   };
 

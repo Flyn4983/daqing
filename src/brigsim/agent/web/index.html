@@ -5,8 +5,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>智演先知 · 保障先行 — 合成旅装备"四率"智能分析与决策支持平台</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath d='M16 2l12 4v9c0 8-5.5 13-12 15C9.5 28 4 23 4 15V6z' fill='%231d6fae'/%3E%3Cpath d='M11 16l4 4 7-8' fill='none' stroke='%237ff0d2' stroke-width='2.5'/%3E%3C/svg%3E">
-<link rel="stylesheet" href="/static/css/base.css?v=c7a2">
-<link rel="stylesheet" href="/static/css/dash.css?v=c7a2">
+<link rel="stylesheet" href="/static/css/base.css?v=c7c">
+<link rel="stylesheet" href="/static/css/dash.css?v=c7c">
 </head>
 <body>
 
@@ -15,6 +15,16 @@
   <div class="brand">
     <div class="title"><em>智演先知 · 保障先行</em></div>
     <div class="sub">合成旅装备"四率"智能分析与决策支持平台</div>
+  </div>
+  <!-- C7-c：工况选择器 + 实时推演 -->
+  <div class="scenario-switch" id="scenario-switch">
+    <label class="switch-label">情景工况</label>
+    <select id="scenario-select" class="ss-select">
+      <!-- JS 从 /api/scenarios 动态填充 -->
+    </select>
+    <button class="btn-ghost ss-btn" id="btn-run">▶ 实时推演</button>
+    <button class="btn-ghost ss-btn ss-stop" id="btn-run-stop" hidden>■ 停止</button>
+    <span class="run-progress" id="run-progress">—</span>
   </div>
   <div class="kpis">
     <div class="kpi good" id="kpi-success">
@@ -266,13 +276,13 @@
   </div>
 </div>
 
-<script src="/static/js/common.js?v=c7a2"></script>
-<script src="/static/js/agent.js?v=c7a2"></script>
-<script src="/static/js/charts.js?v=c7a2"></script>
-<script src="/static/js/views/rates.js?v=c7a2"></script>
-<script src="/static/js/views/pareto.js?v=c7a2"></script>
-<script src="/static/js/views/sensitivity.js?v=c7a2"></script>
-<script src="/static/js/views/surrogate.js?v=c7a2"></script>
-<script src="/static/js/main.js?v=c7a2"></script>
+<script src="/static/js/common.js?v=c7c1"></script>
+<script src="/static/js/agent.js?v=c7c1"></script>
+<script src="/static/js/charts.js?v=c7c1"></script>
+<script src="/static/js/views/rates.js?v=c7c1"></script>
+<script src="/static/js/views/pareto.js?v=c7c1"></script>
+<script src="/static/js/views/sensitivity.js?v=c7c1"></script>
+<script src="/static/js/views/surrogate.js?v=c7c1"></script>
+<script src="/static/js/main.js?v=c7c1"></script>
 </body>
 </html>

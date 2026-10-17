@@ -8,6 +8,33 @@
 }
 .topbar .brand .title { font-size: 16px; }
 .topbar .brand .sub { font-size: 11px; letter-spacing: 1px; }
+/* C7-c：工况选择器 */
+.scenario-switch {
+  display: flex; align-items: center; gap: 6px;
+  padding: 3px 10px 3px 8px; border: 1px solid var(--line); border-radius: 9px;
+  background: #0b1526;
+}
+.scenario-switch .switch-label {
+  font-size: 11px; color: var(--muted); margin-right: 2px;
+}
+.ss-select {
+  background: #050d1b; color: #e8f1ff; border: 1px solid var(--line);
+  border-radius: 5px; padding: 3px 6px; font-size: 12px; outline: none;
+  cursor: pointer; min-width: 180px;
+}
+.ss-select:focus { border-color: var(--accent); }
+.ss-btn {
+  padding: 3px 10px; font-size: 12px; font-weight: 600;
+  color: var(--accent); border-radius: 5px;
+}
+.ss-btn.ss-stop { color: #ff7a7a; border-color: rgba(255,122,122,.4); }
+.run-progress {
+  font: 11px var(--mono); color: var(--muted); min-width: 64px; text-align: right;
+}
+.run-progress.running { color: var(--accent); }
+.run-progress.done { color: #88e6a8; }
+.run-progress.error { color: #ff7a7a; }
+
 .kpis { display: flex; gap: 8px; flex: 1; justify-content: center; min-width: 0; }
 .kpi {
   min-width: 118px; padding: 4px 14px 5px; border: 1px solid var(--line);
