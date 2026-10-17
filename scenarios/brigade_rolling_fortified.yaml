@@ -1,0 +1,126 @@
+# C7-b：丘陵坚固防御——preset rolling（起伏丘陵 + 山脊阻隔，通行 mean 0.94）
+# 蓝方既设防御 + 电磁压制 + 炮兵纵深打击；红方突破
+name: brigade_rolling_fortified
+
+mission:
+  duration_ticks: 96
+  dt_seconds: 30
+  objective: [9000, 5000]
+  success_radius_m: 600
+
+terrain:
+  preset_family: rolling
+  size_m: [10000, 10000]
+  grid_n: 65
+
+environment:
+  weather: clear
+  illumination: day
+  visibility_factor: 1.0
+
+platform_types:
+  tank:
+    sensor_range_m: 2500
+    weapon_range_m: 2000
+    pk: 0.35
+    speed_m_per_tick: 184
+    sensor_kind: ir
+  ifv:
+    sensor_range_m: 1800
+    weapon_range_m: 1200
+    pk: 0.22
+    speed_m_per_tick: 217
+    sensor_kind: optical
+  atgm_team:
+    sensor_range_m: 2200
+    weapon_range_m: 2000
+    pk: 0.45
+    speed_m_per_tick: 100
+    sensor_kind: optical
+  howitzer:
+    role: artillery
+    fire_mode: indirect
+    sensor_range_m: 600
+    weapon_range_m: 8000
+    pk: 0.18
+    speed_m_per_tick: 60
+    reload_ticks: 4
+    splash_radius_m: 280
+    call_fire_delay_ticks: 2
+    emplace_ticks: 1
+    ammo_basic_load: 12
+    sensor_kind: optical
+  wheel_assault:
+    sensor_range_m: 2200
+    weapon_range_m: 1800
+    pk: 0.38
+    speed_m_per_tick: 250
+    sensor_kind: optical
+  ew_jammer:                     # 蓝方专用：电磁压制，雷达被 jam
+    role: ew
+    sensor_range_m: 10000
+    weapon_range_m: 0
+    pk: 0.0
+    speed_m_per_tick: 200
+    sensor_kind: radar
+
+forces:
+  red:
+    - unit_id: r_w1
+      type: wheel_assault
+      pos: [800, 4000]
+    - unit_id: r_w2
+      type: wheel_assault
+      pos: [800, 4500]
+    - unit_id: r_w3
+      type: wheel_assault
+      pos: [800, 5000]
+    - unit_id: r_w4
+      type: wheel_assault
+      pos: [800, 5500]
+    - unit_id: r_w5
+      type: wheel_assault
+      pos: [800, 6000]
+    - unit_id: r_i1
+      type: ifv
+      pos: [1100, 4200]
+    - unit_id: r_i2
+      type: ifv
+      pos: [1100, 5800]
+    - unit_id: r_h1
+      type: howitzer
+      pos: [500, 3500]
+    - unit_id: r_h2
+      type: howitzer
+      pos: [500, 6500]
+  blue:
+    - unit_id: b_t1
+      type: tank
+      pos: [5500, 4200]
+    - unit_id: b_t2
+      type: tank
+      pos: [5500, 4800]
+    - unit_id: b_t3
+      type: tank
+      pos: [5500, 5200]
+    - unit_id: b_t4
+      type: tank
+      pos: [5500, 5800]
+    - unit_id: b_a1
+      type: atgm_team
+      pos: [6500, 4500]
+    - unit_id: b_a2
+      type: atgm_team
+      pos: [6500, 5500]
+    - unit_id: b_i1
+      type: ifv
+      pos: [7500, 5000]
+    - unit_id: b_h1
+      type: howitzer
+      pos: [8500, 4000]
+    - unit_id: b_h2
+      type: howitzer
+      pos: [8500, 6000]
+    - unit_id: b_e1
+      type: ew_jammer
+      pos: [7000, 5000]

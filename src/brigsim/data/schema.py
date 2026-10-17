@@ -81,12 +81,20 @@ class ParamMeta(BaseModel):
 
 
 class Terrain(BaseModel):
+    # C7-b：程序合成地形 preset 族（terrain_presets.preset 工厂）。
+    # 非空时：按 family 生成 synthetic+passability 基线，再用下方显式字段覆盖；
+    # 空时：按 source（synthetic/geotiff）走原路径
+    preset_family: Literal["canyon", "plain", "rolling", "mountain",
+                            "paddy", "urban", "desert", "snowfield"] | None = None
     # 高程来源：synthetic=FBM 程序噪声；geotiff=读取 DEM（数组线性拉伸到 size_m）
     source: Literal["synthetic", "geotiff"] = "synthetic"
     # geotiff 相对路径相对于想定 YAML 所在目录（由 Provider 解析）
     geotiff_path: str | None = None
     # 通行性栅格（0=不可通行 … 1=道路），与 DEM 同网格约定；None=全域 1.0
     passability_path: str | None = None
+    # C7-b：程序合成地形可直接内联栅格（grid_n×grid_n，行=y 列=x）；
+    # 优先级：passability_array > passability_path （geotiff 用后者）
+    passability_array: list[list[float]] | None = None
     # 方形战场边界（米）
     size_m: tuple[float, float] = (10_000.0, 10_000.0)
     # 内核机动/插值使用的网格分辨率（GeoTIFF 会重采样到该尺度）

@@ -1,0 +1,166 @@
+# 中型合成旅快攻想定（C7-b）：
+# 红方中型合成旅（大八轮家族，约 15 台核心实体）→ 蓝方轻型防御群
+# 地形 preset rolling（起伏丘陵 + 山脊阻隔），晴日
+# 速度/传感器/武器口径按轮式原型占位（confidence 0.4）
+name: medium_brigade
+
+mission:
+  duration_ticks: 48         # 48 * 30s ≈ 24 分钟（大八轮快攻用时更短）
+  dt_seconds: 30
+  objective: [9000, 5000]
+  success_radius_m: 600
+
+terrain:
+  preset_family: rolling      # C7-b preset 工厂：起伏丘陵，通行 mean 0.938
+  size_m: [10000, 10000]
+  grid_n: 65
+
+environment:
+  weather: clear
+  illumination: day
+  visibility_factor: 1.0
+
+platform_types:
+  # ============ 中型旅大八轮（红方） ============
+  wheel_assault:              # 11 式轮式突击炮（105mm 直瞄）
+    role: assault
+    sensor_range_m: 2200
+    weapon_range_m: 1800
+    pk: 0.38
+    speed_m_per_tick: 250
+    sensor_kind: optical
+    meta: {confidence: 0.4, note: "原型占位 11 式"}
+  wheel_ifv:                  # 08 式轮式步兵战车
+    sensor_range_m: 1800
+    weapon_range_m: 1400
+    pk: 0.22
+    speed_m_per_tick: 267
+    sensor_kind: optical
+  wheel_recon:                # 05 式轮式侦察车
+    role: recon
+    sensor_range_m: 3200
+    weapon_range_m: 800
+    pk: 0.10
+    speed_m_per_tick: 300
+    sensor_kind: fused        # 光电+雷达融合
+  wheel_howitzer:             # PLZ-09 122 轮式自榴
+    role: artillery
+    fire_mode: indirect
+    sensor_range_m: 600
+    weapon_range_m: 15000
+    pk: 0.14
+    speed_m_per_tick: 200
+    reload_ticks: 3
+    splash_radius_m: 250
+    call_fire_delay_ticks: 1
+    emplace_ticks: 1
+    ammo_basic_load: 10
+    sensor_kind: optical
+  wheel_sam:                  # 红旗-17A 轮式防空
+    role: air_defense
+    sensor_range_m: 25000
+    weapon_range_m: 12000
+    pk: 0.55
+    speed_m_per_tick: 220
+    sensor_kind: radar
+  wheel_ew:                   # 轮式电抗/雷达干扰车
+    role: ew
+    sensor_range_m: 15000
+    weapon_range_m: 0         # 电磁压制（间接作用，不在本轮实现）
+    pk: 0.0
+    speed_m_per_tick: 200
+    sensor_kind: radar
+
+  # ============ 蓝方重型防御实体（共享 platform_types 池） ============
+  tank:
+    sensor_range_m: 2500
+    weapon_range_m: 2000
+    pk: 0.35
+    speed_m_per_tick: 184
+    sensor_kind: ir
+  ifv:
+    sensor_range_m: 1800
+    weapon_range_m: 1200
+    pk: 0.22
+    speed_m_per_tick: 217
+    sensor_kind: optical
+  atgm_team:
+    sensor_range_m: 2200
+    weapon_range_m: 2000
+    pk: 0.45
+    speed_m_per_tick: 100
+    sensor_kind: optical
+
+forces:
+  red:
+    - unit_id: r_a1
+      type: wheel_assault
+      pos: [800, 4200]
+    - unit_id: r_a2
+      type: wheel_assault
+      pos: [800, 4600]
+    - unit_id: r_a3
+      type: wheel_assault
+      pos: [800, 5000]
+    - unit_id: r_a4
+      type: wheel_assault
+      pos: [800, 5400]
+    - unit_id: r_a5
+      type: wheel_assault
+      pos: [800, 5800]
+    - unit_id: r_i1
+      type: wheel_ifv
+      pos: [1100, 4400]
+    - unit_id: r_i2
+      type: wheel_ifv
+      pos: [1100, 5600]
+    - unit_id: r_r1
+      type: wheel_recon
+      pos: [500, 4800]
+    - unit_id: r_r2
+      type: wheel_recon
+      pos: [500, 5200]
+    - unit_id: r_h1
+      type: wheel_howitzer
+      pos: [600, 4000]
+    - unit_id: r_h2
+      type: wheel_howitzer
+      pos: [600, 6000]
+    - unit_id: r_s1
+      type: wheel_sam
+      pos: [1200, 4500]
+    - unit_id: r_s2
+      type: wheel_sam
+      pos: [1200, 5500]
+    - unit_id: r_e1
+      type: wheel_ew
+      pos: [1500, 5000]
+
+  blue:
+    - unit_id: b_t1
+      type: tank               # 蓝方仍用重型坦克（不对称：重型 vs 中型快攻）
+      pos: [5000, 4000]
+    - unit_id: b_t2
+      type: tank
+      pos: [5000, 4500]
+    - unit_id: b_t3
+      type: tank
+      pos: [5000, 5000]
+    - unit_id: b_t4
+      type: tank
+      pos: [5000, 5500]
+    - unit_id: b_t5
+      type: tank
+      pos: [5000, 6000]
+    - unit_id: b_a1
+      type: atgm_team
+      pos: [7000, 4400]
+    - unit_id: b_a2
+      type: atgm_team
+      pos: [7000, 5600]
+    - unit_id: b_i1
+      type: ifv
+      pos: [6000, 4200]
+    - unit_id: b_i2
+      type: ifv
+      pos: [6000, 5800]

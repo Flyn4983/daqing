@@ -1,0 +1,110 @@
+# C7-b：峡谷清晰攻坚——example_brigade 换 terrain=preset canyon（深切 FBM + 中间走廊 + 两侧 0.7 + 边缘 0.4）
+# 蓝方在峡谷出口既设，红方从入口突破。难点：通行 mean 0.69 + 地形遮蔽 visibility 0.85
+name: brigade_canyon_clear
+
+mission:
+  duration_ticks: 96
+  dt_seconds: 30
+  objective: [9000, 5000]
+  success_radius_m: 600
+
+terrain:
+  preset_family: canyon
+  size_m: [10000, 10000]
+  grid_n: 65
+
+environment:
+  weather: clear
+  illumination: day
+  visibility_factor: 0.85    # canyon 遮蔽，光电降 15%，雷达不受影响
+
+# 直接引用 example_brigade 的 platform_types/forces——用 provider 代码加载
+# （让 medium_brigade 的 platform_types 先跑通再扩写；这里用内联简化版先冒烟）
+platform_types:
+  tank:
+    sensor_range_m: 2500
+    weapon_range_m: 2000
+    pk: 0.35
+    speed_m_per_tick: 184
+    sensor_kind: ir
+  ifv:
+    sensor_range_m: 1800
+    weapon_range_m: 1200
+    pk: 0.22
+    speed_m_per_tick: 217
+    sensor_kind: optical
+  atgm_team:
+    sensor_range_m: 2200
+    weapon_range_m: 2000
+    pk: 0.45
+    speed_m_per_tick: 100
+    sensor_kind: optical
+  mortar:
+    role: artillery
+    fire_mode: indirect
+    sensor_range_m: 900
+    weapon_range_m: 6000
+    pk: 0.15
+    speed_m_per_tick: 70
+    reload_ticks: 3
+    splash_radius_m: 200
+    call_fire_delay_ticks: 1
+    emplace_ticks: 1
+    ammo_basic_load: 8
+    sensor_kind: optical
+  howitzer:
+    role: artillery
+    fire_mode: indirect
+    sensor_range_m: 600
+    weapon_range_m: 8000
+    pk: 0.18
+    speed_m_per_tick: 60
+    reload_ticks: 4
+    splash_radius_m: 280
+    call_fire_delay_ticks: 2
+    emplace_ticks: 1
+    ammo_basic_load: 12
+    sensor_kind: optical
+
+forces:
+  red:
+    - unit_id: r_t1
+      type: tank
+      pos: [800, 4500]
+    - unit_id: r_t2
+      type: tank
+      pos: [800, 5000]
+    - unit_id: r_t3
+      type: tank
+      pos: [800, 5500]
+    - unit_id: r_i1
+      type: ifv
+      pos: [1100, 4200]
+    - unit_id: r_i2
+      type: ifv
+      pos: [1100, 5800]
+    - unit_id: r_h1
+      type: howitzer
+      pos: [500, 3500]
+    - unit_id: r_h2
+      type: howitzer
+      pos: [500, 6500]
+  blue:
+    - unit_id: b_t1
+      type: tank
+      pos: [6500, 4500]
+    - unit_id: b_t2
+      type: tank
+      pos: [6500, 5000]
+    - unit_id: b_t3
+      type: tank
+      pos: [6500, 5500]
+    - unit_id: b_a1
+      type: atgm_team
+      pos: [7500, 4800]
+    - unit_id: b_a2
+      type: atgm_team
+      pos: [7500, 5200]
+    - unit_id: b_m1
+      type: mortar
+      pos: [9000, 5000]

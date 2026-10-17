@@ -1907,5 +1907,102 @@ NSGA-II→C5 旋钮→Sobol→6JSON+rrd。
   推演；d 包：10 分钟录屏彩排
 
 
+## 2026-10-18 | trae + 用户 | C7-b：8 地形族 preset + 中型旅 + 4 成品工况
+
+### 背景（收口 a3 留白）
+a3 的 example_brigade 只跑了一个 geotiff DEM（`terrain/dem_demo.tif`），
+想把合成旅作战仿真做"多地貌/多气象/多敌情"工况组合，必须给合成一个可
+参数化生成地形的工厂，同时支持 YAML 想定零代码触发 preset。
+
+### 8 地形族 preset 工厂（data/terrain_presets.py，约 260 行）
+- TerrainFamily enum：canyon 深切峡谷 / plain 平原 / rolling 丘陵 /
+  mountain 高山 / paddy 水田 / urban 城镇 / desert 荒漠 / snowfield 雪原
+- 每族 FBM 基线参数（amplitude/base_height/octaves/noise_scale/
+  water_level）：canyon 深切 180m / mountain 260m / paddy 低平 15m /
+  desert 起伏仅 23m 等
+- 程序 passability 结构（_make_passability）：
+  - canyon：中间走廊 1.0 + 两侧 0.7 + 边缘 0.4（河沟 + 峭壁）
+  - plain：两条 2-3 栅格宽河沟带 0.3 + 全域 1.0
+  - rolling：山脊线 0.6 + 溪流 0.5 + 全域 1.0（mean 0.94）
+  - mountain：山脊 0.4 + 唯一通道（蜿蜒主山脊）全 1.0
+  - paddy：田块 0.2 + 田埂路 0.8 + 主道 1.0 + 局部水湾 0.0
+  - urban：建筑足迹 0.3（60%）+ 空地/街道 1.0（40%）
+  - desert：全域 1.0（无地形障碍）
+  - snowfield：全域 0.9 + 河沟 0.3
+- 验证数字（grid_n=33, seed=20261016）：
+
+  | 族        | h_amp | h_mean | pass_mean | pass_min | pass_max |
+  |-----------|-------|--------|-----------|----------|----------|
+  | canyon    | 183.4 | 39.3   | 0.669     | 0.20     | 1.00     |
+  | plain     |  42.7 | 51.4   | 0.788     | 0.30     | 1.00     |
+  | rolling   |  93.4 | 63.1   | 0.938     | 0.50     | 1.00     |
+  | mountain  | 258.1 | 83.7   | 0.636     | 0.40     | 1.00     |
+  | paddy     |  15.5 | 39.3   | 0.486     | 0.00     | 1.00     |
+  | urban     |  10.0 | 43.4   | 0.851     | 0.30     | 1.00     |
+  | desert    |  23.2 | 120.3  | 1.000     | 1.00     | 1.00     |
+  | snowfield |  53.3 | 21.8   | 0.827     | 0.30     | 0.90     |
+
+- default_environment(family, offensive)：默认晴日，canyon/mountain
+  visibility_factor 0.85（地形遮蔽），其余 1.0
+
+### YAML preset 模式（schema + provider + kernel 三改）
+1. `data/schema.py::Terrain` 加 `preset_family: Literal[...]|None` +
+   `passability_array: list[list[float]]|None` 两字段；后者把程序栅格
+   内联进想定，免去 GeoTIFF 依赖
+2. `kernel/terrain.py::HeightField.from_spec` synthetic 分支末尾：
+   `if spec.passability_array: passability = np.asarray(...);
+   return cls(size, n, heights, water, passability)`
+3. `data/provider.py::YamlFileProvider.load_scenario`：加载 YAML 后若
+   `terrain.preset_family` 非空 → 调 `terrain_presets.preset(family)` →
+   **exclude_unset 语义**：`base.model_copy(
+   update=sc.terrain.model_dump(exclude_unset=True))`，只覆盖 YAML 显式
+   写了的 terrain 字段（其余保留 preset 基线，关键——没显式写的字段如果用
+   model_dump 默认 None 覆盖基线 passability_array 就会把程序结构搞丢）
+
+### 中型合成旅想定（scenarios/medium_brigade.yaml）
+- 大八轮 platform_types：wheel_assault（11 式轮式突击炮 105mm 直瞄，
+  250m/tick）、wheel_ifv（08 式轮式步战，267m/tick）、wheel_recon
+  （05 式侦察 fused sensor 3.2km）、wheel_howitzer（PLZ-09 122 自榴
+  15km）、wheel_sam（红旗-17A 轮式防空 12km）、wheel_ew（电抗）；
+  同时共享蓝方 tank/ifv/atgm_team 三个重型防御实体
+- preset rolling（起伏丘陵 mean pass 0.967）、晴日、duration 48 tick
+  （24 分钟，大八轮快攻时域更短）
+- 红方 14 台大八轮 → 蓝方 9 台重型防御
+
+### 4 成品工况（冒烟单局 seed=42，duration 96tick 除 medium_brigade 48）
+
+  | 工况                        | 地形 preset | weather     | vis_factor | 红存 | 蓝存 | 解读                                         |
+  |-----------------------------|-------------|-------------|------------|------|------|----------------------------------------------|
+  | medium_brigade              | rolling     | clear       | 1.0        | 13/14| 0/9  | 中型旅快攻碾压（通行好、大八轮机动快）       |
+  | brigade_canyon_clear        | canyon      | clear       | 0.85       | 3/7  | 3/6  | 深切峡谷双方都惨（pass 0.69 + 190m 高差）    |
+  | brigade_plain_fog           | plain       | heavy_fog   | 0.15       | 6/6  | 0/5  | 大雾 optical/ir 被废，红方 fused/radar 全胜   |
+  | brigade_rolling_fortified   | rolling     | clear       | 1.0        | 2/9  | 6/10 | 蓝方既设防御扛住红方快攻（不对称）           |
+
+- plain_fog 的红方全胜印证 a3 修复 visibility 通道的方法论增量——
+  雷达（sensor_kind=radar/fused）完全不受 visibility_factor 影响，
+  光学/红外被乘 vis 后严重衰减，传感器优势在极端气象下显著分化
+- rolling_fortified 红方仅 2/9 幸存印证中型旅在敌既设防御下的硬啃
+  劣势（中型旅 vs 重型合成化防御是典型敌强我弱想定）
+
+### 测试
+- 新增 5 项（tests/test_c7_b_terrain_presets.py）：8 族 passability
+  结构（形状/值域/非退化）、HeightField synthetic 分支吃内联数组、
+  preset YAML override 生效、provider preset_family 端到端、example_
+  brigade/example_company 旧想定零漂移、default_environment 默认晴日
+- **全量 159 项通过**（a3 的 154 + b 的 5），约 365s；ruff 全仓净
+- 顺手修复探针 YAML 被删除后单测引用失效——改用 medium_brigade（正式
+  成品工况）做端到端断言，不依赖临时探针文件
+
+### 已知留白
+- 大屏工况选择器（在 UI 上加 preset_family/environment 下拉，切换实时
+  重建 HeightField/passability + 实体初始位置）——c 包落地
+- 4 工况的 medium_brigade 蓝方仍用共享 platform_types tank/ifv/atgm_team，
+  后续想写"中型旅 vs 轻型旅"时要拆独立 platform_types
+- 各工况 duration_ticks 先冒烟跑通（48/96），C7-d 录屏前按剧情再精调
+- terrain_presets 仅给高程/通行性，气象的 multidimensional 维度（风/云/
+  湿度/沙尘/高温/极寒）在 environment schema 里已有字段，等 weather.py
+  把沙尘/高温衰减矩阵写好后接入；目前只暴露 weather + visibility_factor
+
+
 
 

@@ -1,0 +1,96 @@
+# C7-b：平原浓雾突击——preset plain（低平 + 河沟带 0.3 通行）+ 大雾 visibility_factor=0.15
+# 光学/红外严重衰减，雷达不受影响 → 雷达传感器优势一方（红方 wheel_recon/wheel_sam fused/radar）克制蓝方 optical/ir
+name: brigade_plain_fog
+
+mission:
+  duration_ticks: 96
+  dt_seconds: 30
+  objective: [9000, 5000]
+  success_radius_m: 600
+
+terrain:
+  preset_family: plain          # 低平原，通行 mean 0.79（两条河沟带 0.3）
+  size_m: [10000, 10000]
+  grid_n: 65
+
+environment:
+  weather: heavy_fog            # 触发 weather.py 里的大雾衰减矩阵
+  illumination: day
+  visibility_factor: 0.15       # 光学/红外几乎废掉；雷达不受影响
+
+platform_types:
+  tank:
+    sensor_range_m: 2500
+    weapon_range_m: 2000
+    pk: 0.35
+    speed_m_per_tick: 184
+    sensor_kind: ir             # IR 被 visibility 大幅衰减
+  ifv:
+    sensor_range_m: 1800
+    weapon_range_m: 1200
+    pk: 0.22
+    speed_m_per_tick: 217
+    sensor_kind: optical        # optical 也被废
+  recon_radar:                  # 红方雷达侦察——不受 visibility 影响
+    role: recon
+    sensor_range_m: 4000
+    weapon_range_m: 0
+    pk: 0.0
+    speed_m_per_tick: 250
+    sensor_kind: radar
+  tank_radar:                   # 红方带雷达的突击——sensor_kind=fused，含雷达通道
+    sensor_range_m: 2500
+    weapon_range_m: 2000
+    pk: 0.35
+    speed_m_per_tick: 200
+    sensor_kind: fused
+  howitzer:
+    role: artillery
+    fire_mode: indirect
+    sensor_range_m: 600
+    weapon_range_m: 8000
+    pk: 0.18
+    speed_m_per_tick: 60
+    reload_ticks: 4
+    splash_radius_m: 280
+    call_fire_delay_ticks: 2
+    emplace_ticks: 1
+    ammo_basic_load: 12
+    sensor_kind: optical
+
+forces:
+  red:
+    - unit_id: r_t1
+      type: tank_radar
+      pos: [800, 4500]
+    - unit_id: r_t2
+      type: tank_radar
+      pos: [800, 5000]
+    - unit_id: r_t3
+      type: tank_radar
+      pos: [800, 5500]
+    - unit_id: r_r1
+      type: recon_radar
+      pos: [500, 4000]
+    - unit_id: r_r2
+      type: recon_radar
+      pos: [500, 6000]
+    - unit_id: r_h1
+      type: howitzer
+      pos: [400, 5000]
+  blue:
+    - unit_id: b_t1
+      type: tank
+      pos: [6000, 4500]
+    - unit_id: b_t2
+      type: tank
+      pos: [6000, 5000]
+    - unit_id: b_t3
+      type: tank
+      pos: [6000, 5500]
+    - unit_id: b_i1
+      type: ifv
+      pos: [7500, 4800]
+    - unit_id: b_i2
+      type: ifv
+      pos: [7500, 5200]

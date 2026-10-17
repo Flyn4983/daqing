@@ -56,7 +56,13 @@ class HeightField:
             freq *= 2.0
         h = h / total  # [-1, 1]
         heights = spec.base_height + h * spec.amplitude
-        return cls(spec.size_m, n, heights, spec.water_level)
+        # C7-b：程序合成地形可以内联 passability_array（Terrain schema 新增）
+        passability: np.ndarray | None = None
+        if spec.passability_array:
+            pa = np.asarray(spec.passability_array, dtype=np.float64)
+            if pa.shape == (n, n):
+                passability = pa
+        return cls(spec.size_m, n, heights, spec.water_level, passability)
 
     @classmethod
     def from_geotiff(
