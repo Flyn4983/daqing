@@ -1,0 +1,16 @@
+{
+  "_说明": "本地大模型连接配置。软件与大模型同机部署，走 127.0.0.1 回环，零外网。换框架只改本文件的 base_url/model，无需改代码。",
+  "_框架示例": {
+    "vLLM": "http://127.0.0.1:8000/v1",
+    "Ollama": "http://127.0.0.1:11434/v1",
+    "LM Studio": "http://127.0.0.1:1234/v1"
+  },
+  "base_url": "http://127.0.0.1:8000/v1",
+  "model": "Qwen3-32B",
+  "api_key": "EMPTY",
+  "timeout": 60,
+  "mode": "auto",
+  "_mode说明": "real=强制真实调用；mock=强制模板兜底；auto=探测到模型则用真实、否则自动降级模板（现场演示推荐 auto）",
+  "temperature": 0.3,
+  "max_tokens": 1024
+}

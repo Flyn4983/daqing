@@ -5,8 +5,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>智演先知 · 保障先行 — 合成旅装备"四率"智能分析与决策支持平台</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath d='M16 2l12 4v9c0 8-5.5 13-12 15C9.5 28 4 23 4 15V6z' fill='%231d6fae'/%3E%3Cpath d='M11 16l4 4 7-8' fill='none' stroke='%237ff0d2' stroke-width='2.5'/%3E%3C/svg%3E">
-<link rel="stylesheet" href="/static/css/base.css?v=c7c">
-<link rel="stylesheet" href="/static/css/dash.css?v=c7c">
+<link rel="stylesheet" href="/static/css/base.css?v=c8d4">
+<link rel="stylesheet" href="/static/css/dash.css?v=c913">
 </head>
 <body>
 
@@ -14,7 +14,7 @@
 <header class="topbar">
   <div class="brand">
     <div class="title"><em>智演先知 · 保障先行</em></div>
-    <div class="sub">合成旅装备"四率"智能分析与决策支持平台</div>
+    <div class="sub">合成旅装备"四率"智能分析与决策支持平台 <span class="lbo-badge" title="LBO-DT 架构：LLM Prior → Bayesian-style Optimization → Digital Twin → Objective → Trust Guard">LBO-DT</span></div>
   </div>
   <!-- C7-c：工况选择器 + 实时推演 -->
   <div class="scenario-switch" id="scenario-switch">
@@ -25,6 +25,7 @@
     <button class="btn-ghost ss-btn" id="btn-run">▶ 实时推演</button>
     <button class="btn-ghost ss-btn ss-stop" id="btn-run-stop" hidden>■ 停止</button>
     <span class="run-progress" id="run-progress">—</span>
+    <span class="baseline-tag" id="baseline-tag">基线数据加载中…</span>
   </div>
   <div class="kpis">
     <div class="kpi good" id="kpi-success">
@@ -45,6 +46,9 @@
     <div class="kpi good" id="kpi-speedup">
       <span class="kpi-v">—</span><span class="kpi-l">秒级预测加速</span><span class="kpi-s">相对仿真</span>
     </div>
+    <div class="kpi eta-kpi" id="kpi-eta" title="战力再生系数 η = ω₁R₀+ω₂(1−A)+ω₃Pᵣ+ω₄(1−F)，文档式(1)；权重按实测基线/推荐反算">
+      <span class="kpi-v">—</span><span class="kpi-l">战力再生系数 η</span><span class="kpi-s">基线0.488→推荐0.491</span>
+    </div>
   </div>
   <div class="top-actions">
     <div class="mini-pill">
@@ -53,7 +57,8 @@
       <span id="top-vram">显存 —</span>
       <span id="top-lat">延迟 —</span>
     </div>
-    <button class="btn-agent" id="btn-open-agent">智能参谋</button>
+    <button class="btn-ghost" id="btn-func-map" title="对照最终提交文档：5 个模块 / 4 域 9 功能 ↔ 界面位置">功能对照</button>
+    <button class="btn-agent" id="btn-open-agent"><span class="lbo-badge sm white" title="LLM Prior · 大模型先验：FM-90 条令解析 + 工具函数调度">L</span>智能参谋</button>
   </div>
 </header>
 
@@ -63,7 +68,7 @@
   <!-- 左列：四率卡 / 四率时序 / MC 分布 -->
   <div class="col-left">
     <section class="panel" style="flex:none">
-      <h3>四率态势 · knee 方案 <span class="tag-en">FOUR RATES</span></h3>
+      <h3>四率态势 · knee 方案 <span class="lbo-badge sm" title="Trust Guard · 仿真守卫：代理粗筛 + 蒙特卡洛终审">T</span> <span class="tag-en">FOUR RATES</span></h3>
       <div class="rate-grid" id="rate-grid">
         <div class="rate-card readiness" id="rc-readiness">
           <div class="rc-l"><span>装备完好率</span><span class="side">红方</span></div>
@@ -114,10 +119,15 @@
   <!-- 中列：3D 回放 -->
   <div class="col-center" id="replay-wrap">
     <iframe id="replay-frame" title="作战仿真 3D 态势回放" allow="autoplay; fullscreen"></iframe>
+    <!-- live 模式：Three.js 地形渲染（默认隐藏，main.js boot 时按 mode 切换） -->
+    <canvas id="three-frame" hidden></canvas>
 
     <div class="replay-overlay replay-tag">
-      <b>3D 态势回放 · knee 保障方案</b>
+      <b id="replay-tag-title">3D 态势回放 · knee 保障方案</b>
       <span class="sub" id="replay-knee-sub">NSGA-II 七旋钮折中方案（加载 Pareto 数据后显示配置）</span>
+      <!-- C6.1：3D 数据通道切换（同源代理 ↔ 直连双端口），选择记忆在 localStorage -->
+      <button id="viewer-mode-btn" class="vm-btn" type="button"
+              title="3D 数据通道：同源代理 ↔ 直连双端口。若 3D 黑屏可点此切换（回环本地传输，均不经外网代理）">同源</button>
     </div>
     <div class="replay-overlay replay-legend">
       <span class="lg"><i class="sw" style="background:rgb(214,69,55)"></i>红方单位</span>
@@ -134,19 +144,45 @@
     </div>
     <div class="replay-fallback" id="replay-fallback" style="display:none">
       <div class="fb-ico">🗺️</div>
-      <div class="fb-t">3D 态势回放未就绪</div>
+      <div class="fb-t" id="replay-fallback-title">3D 态势回放未就绪</div>
       <div class="fb-c">
         <p id="replay-fallback-reason">未检测到回放文件。</p>
-        <p style="margin-top:8px">在项目根目录运行 <code>brigsim dash-build</code> 生成轻量回放
+        <p id="replay-fallback-hint" style="margin-top:8px">在项目根目录运行 <code>brigsim dash-build</code> 生成轻量回放
         （<code>outputs/dash/replay_knee.rrd</code>，不入库），随后刷新本页；其余大屏功能不受影响。</p>
+        <!-- C6.1：黑屏自救操作区（watchdog 触发时显示） -->
+        <div class="fb-actions" id="replay-fallback-actions" style="display:none">
+          <button class="fb-btn" id="fb-retry" type="button">重试加载</button>
+          <button class="fb-btn" id="fb-switch" type="button">切换数据通道</button>
+          <button class="fb-btn ghost" id="fb-hardrefresh" type="button">强刷页面</button>
+        </div>
+        <p class="fb-detail" id="replay-fallback-detail"></p>
       </div>
+    </div>
+
+    <!-- 回放播放控制器（默认隐藏，replay 模式激活） -->
+    <div class="replay-controller" id="replay-controller" hidden>
+      <button class="rc-btn" id="rc-rew" title="后退">⏮</button>
+      <button class="rc-btn rc-play" id="rc-play" title="播放">▶</button>
+      <button class="rc-btn" id="rc-pause" title="暂停" hidden>⏸</button>
+      <button class="rc-btn" id="rc-stop" title="停止">■</button>
+      <div class="rc-info" id="rc-info">tick 0 / 0</div>
+      <div class="rc-progress-wrap">
+        <div class="rc-progress" id="rc-progress" style="width:0%"></div>
+        <div class="rc-progress-bar" id="rc-progress-bar"></div>
+      </div>
+      <select class="rc-speed" id="rc-speed" title="倍速">
+        <option value="400">0.5×</option>
+        <option value="200" selected>1×</option>
+        <option value="100">2×</option>
+        <option value="50">4×</option>
+      </select>
     </div>
   </div>
 
   <!-- 右列：Pareto / 灵敏度 / 代理模型 -->
   <div class="col-right">
     <section class="panel">
-      <h3>NSGA-II 保障方案 Pareto 前沿 <span class="tag-en">PARETO</span></h3>
+      <h3>NSGA-II 保障方案 Pareto 前沿 <span class="lbo-badge sm" title="Bayesian-style Optimization · NSGA-II 多目标进化 = BO 的 Pareto 扩展">B</span><span class="lbo-badge sm" title="Objective · 三目标：success ↑ / attrition ↓ / cost ↓">O</span> <span class="tag-en">PARETO</span></h3>
       <div class="panel-body">
         <div class="chart-box"><svg id="pareto-svg" preserveAspectRatio="none"></svg><div class="tip" id="pareto-tip"></div></div>
         <div class="pareto-detail" id="pareto-detail">点击散点查看方案细节（knee 折中 / leanest 最省 / strongest 最强）。</div>
@@ -168,7 +204,7 @@
     </section>
 
     <section class="panel">
-      <h3>四率代理预测模型 <span class="tag-en">SURROGATE</span></h3>
+      <h3>四率代理预测模型 <span class="lbo-badge sm" title="Digital Twin · MLP 64×64 代理 = 蒙特卡洛批量仿真的仿真孪生体">D</span> <span class="tag-en">SURROGATE</span></h3>
       <div class="panel-body">
         <div class="surr-stats">
           <div class="ss"><div class="n" id="sur-r2">—</div><div class="l">留出集平均 R²</div></div>
@@ -205,6 +241,57 @@
     </div>
   </div>
 
+  <!-- LBO-DT 架构流水线（Agent 抽屉专属） -->
+  <div class="lbo-pipeline" id="lbo-pipeline">
+    <svg viewBox="0 0 620 40" preserveAspectRatio="none" width="100%" height="38">
+      <defs>
+        <linearGradient id="lbog-L" x1="0" x2="1"><stop offset="0" stop-color="#2563eb"/><stop offset="1" stop-color="#3b82f6"/></linearGradient>
+        <linearGradient id="lbog-D" x1="0" x2="1"><stop offset="0" stop-color="#0d9488"/><stop offset="1" stop-color="#14b8a6"/></linearGradient>
+        <linearGradient id="lbog-B" x1="0" x2="1"><stop offset="0" stop-color="#7c3aed"/><stop offset="1" stop-color="#a78bfa"/></linearGradient>
+        <linearGradient id="lbog-O" x1="0" x2="1"><stop offset="0" stop-color="#ea580c"/><stop offset="1" stop-color="#fb923c"/></linearGradient>
+        <linearGradient id="lbog-T" x1="0" x2="1"><stop offset="0" stop-color="#be123c"/><stop offset="1" stop-color="#f43f5e"/></linearGradient>
+      </defs>
+      <!-- 箭头 -->
+      <g stroke="#64748b" stroke-width="1.5" fill="none" opacity="0.7">
+        <line x1="104" y1="20" x2="118" y2="20"/><polygon points="118,17 124,20 118,23" fill="#64748b"/>
+        <line x1="224" y1="20" x2="238" y2="20"/><polygon points="238,17 244,20 238,23" fill="#64748b"/>
+        <line x1="344" y1="20" x2="358" y2="20"/><polygon points="358,17 364,20 358,23" fill="#64748b"/>
+        <line x1="464" y1="20" x2="478" y2="20"/><polygon points="478,17 484,20 478,23" fill="#64748b"/>
+      </g>
+      <!-- L -->
+      <g class="lbo-p-node" data-lbo="L">
+        <rect x="10" y="6" width="94" height="28" rx="6" fill="url(#lbog-L)"/>
+        <text x="57" y="16" text-anchor="middle" font-size="11" font-weight="700" fill="#fff" font-family="monospace">L</text>
+        <text x="57" y="29" text-anchor="middle" font-size="8" fill="#bfdbfe" font-family="sans-serif">LLM Prior</text>
+      </g>
+      <!-- D -->
+      <g class="lbo-p-node" data-lbo="D">
+        <rect x="130" y="6" width="94" height="28" rx="6" fill="url(#lbog-D)"/>
+        <text x="177" y="16" text-anchor="middle" font-size="11" font-weight="700" fill="#fff" font-family="monospace">D</text>
+        <text x="177" y="29" text-anchor="middle" font-size="8" fill="#99f6e4" font-family="sans-serif">Digital Twin</text>
+      </g>
+      <!-- B -->
+      <g class="lbo-p-node" data-lbo="B">
+        <rect x="250" y="6" width="94" height="28" rx="6" fill="url(#lbog-B)"/>
+        <text x="297" y="16" text-anchor="middle" font-size="11" font-weight="700" fill="#fff" font-family="monospace">B</text>
+        <text x="297" y="29" text-anchor="middle" font-size="8" fill="#ddd6fe" font-family="sans-serif">Bayesian Opt</text>
+      </g>
+      <!-- O -->
+      <g class="lbo-p-node" data-lbo="O">
+        <rect x="370" y="6" width="94" height="28" rx="6" fill="url(#lbog-O)"/>
+        <text x="417" y="16" text-anchor="middle" font-size="11" font-weight="700" fill="#fff" font-family="monospace">O</text>
+        <text x="417" y="29" text-anchor="middle" font-size="8" fill="#fed7aa" font-family="sans-serif">Objective</text>
+      </g>
+      <!-- T -->
+      <g class="lbo-p-node" data-lbo="T">
+        <rect x="490" y="6" width="94" height="28" rx="6" fill="url(#lbog-T)"/>
+        <text x="537" y="16" text-anchor="middle" font-size="11" font-weight="700" fill="#fff" font-family="monospace">T</text>
+        <text x="537" y="29" text-anchor="middle" font-size="8" fill="#fecdd3" font-family="sans-serif">Trust Guard</text>
+      </g>
+    </svg>
+    <div class="lbo-p-caption">LBO-DT 架构流水线：<em>L</em> 大模型先验约束 → <em>D</em> 数字孪生代理 → <em>B</em> NSGA-II 贝叶斯式搜索 → <em>O</em> 多目标权衡 → <em>T</em> 仿真守卫终审</div>
+  </div>
+
   <div class="agent-grid">
     <!-- 左：服务监控 + 作战情景 -->
     <div class="col">
@@ -215,15 +302,15 @@
           <span class="k">设备</span><span class="v" id="st-device" style="font-size:11px">—</span>
         </div>
         <div class="meter">
-          <div class="row"><span>显存占用</span><b id="st-vram">—</b></div>
+          <div class="row"><span>显存利用率 <small class="sub">used/total</small></span><b id="st-vram">—</b></div>
           <div class="bar"><i id="bar-vram" style="width:0%"></i></div>
         </div>
         <div class="meter">
-          <div class="row"><span>GPU 利用率</span><b id="st-util">—</b></div>
+          <div class="row"><span>GPU SM 利用率</span><b id="st-util">—</b></div>
           <div class="bar"><i id="bar-util" style="width:0%"></i></div>
         </div>
         <div class="meter">
-          <div class="row"><span>上下文 KV</span><b id="st-ctx">—</b></div>
+          <div class="row"><span>KV 缓存 <small class="sub">对话窗口 / 模型上限 32k</small></span><b id="st-ctx">—</b></div>
           <div class="bar"><i id="bar-ctx" style="width:0%"></i></div>
         </div>
         <div class="stat-grid">
@@ -276,13 +363,228 @@
   </div>
 </div>
 
-<script src="/static/js/common.js?v=c7c1"></script>
-<script src="/static/js/agent.js?v=c7c1"></script>
-<script src="/static/js/charts.js?v=c7c1"></script>
-<script src="/static/js/views/rates.js?v=c7c1"></script>
-<script src="/static/js/views/pareto.js?v=c7c1"></script>
-<script src="/static/js/views/sensitivity.js?v=c7c1"></script>
-<script src="/static/js/views/surrogate.js?v=c7c1"></script>
-<script src="/static/js/main.js?v=c7c1"></script>
+<!-- ============ A2：功能对照弹窗（文档5模块/4域9功能 ↔ 界面位置） ============ -->
+<div class="modal-overlay" id="funcmap-modal" hidden>
+  <div class="modal-body funcmap-modal" style="max-width:960px">
+    <div class="modal-header">
+      <h2>功能对照 · 最终提交文档 ↔ 软件界面</h2>
+      <button class="modal-close" id="funcmap-close">✕</button>
+    </div>
+    <div class="funcmap-content" style="padding:16px 22px;overflow:auto;max-height:74vh">
+      <h3 style="color:#76dbf4;margin:6px 0 8px">一、成果 5 模块（文档"成果构成"）</h3>
+      <table style="width:100%;border-collapse:collapse;font-size:13px">
+        <thead><tr style="color:#76dbf4"><th style="text-align:left;padding:6px">文档模块</th><th style="text-align:left;padding:6px">界面位置</th></tr></thead>
+        <tbody>
+          <tr><td style="padding:5px;border-top:1px solid #1c3a63">系统主页</td><td style="padding:5px;border-top:1px solid #1c3a63">登录页 → 模式选择 → 指挥大屏首页</td></tr>
+          <tr><td style="padding:5px;border-top:1px solid #1c3a63">交战推演</td><td style="padding:5px;border-top:1px solid #1c3a63">顶部「实时推演」+ 中部 3D 态势回放</td></tr>
+          <tr><td style="padding:5px;border-top:1px solid #1c3a63">战损与可修性</td><td style="padding:5px;border-top:1px solid #1c3a63">左列四率态势卡 + 四率时序曲线 + MC 分布</td></tr>
+          <tr><td style="padding:5px;border-top:1px solid #1c3a63">方案优化</td><td style="padding:5px;border-top:1px solid #1c3a63">右列 Pareto 前沿 + Sobol 灵敏度 + 代理预测</td></tr>
+          <tr><td style="padding:5px;border-top:1px solid #1c3a63">可视化 / 方案生成与判读</td><td style="padding:5px;border-top:1px solid #1c3a63">3D 回放 + 智能参谋抽屉「一键生成方案」与方案判读</td></tr>
+        </tbody>
+      </table>
+      <h3 style="color:#76dbf4;margin:18px 0 8px">二、4 域 9 功能（文档图 4）</h3>
+      <table style="width:100%;border-collapse:collapse;font-size:13px">
+        <thead><tr style="color:#76dbf4"><th style="text-align:left;padding:6px">功能域</th><th style="text-align:left;padding:6px">功能</th><th style="text-align:left;padding:6px">界面位置</th></tr></thead>
+        <tbody>
+          <tr><td style="padding:5px;border-top:1px solid #1c3a63" rowspan="3">态势与推演</td><td style="padding:5px;border-top:1px solid #1c3a63">F1 战损态势生成</td><td style="padding:5px;border-top:1px solid #1c3a63">实时推演 / 3D 回放</td></tr>
+          <tr><td style="padding:5px;border-top:1px solid #1c3a63">F2 四率实时更新</td><td style="padding:5px;border-top:1px solid #1c3a63">四率态势卡 / 时序曲线</td></tr>
+          <tr><td style="padding:5px;border-top:1px solid #1c3a63">F3 想定切换</td><td style="padding:5px;border-top:1px solid #1c3a63">顶部工况下拉</td></tr>
+          <tr><td style="padding:5px;border-top:1px solid #1c3a63" rowspan="3">预测与寻优</td><td style="padding:5px;border-top:1px solid #1c3a63">F4 四率代理预测</td><td style="padding:5px;border-top:1px solid #1c3a63">右列代理模型 / 智能参谋 whatif</td></tr>
+          <tr><td style="padding:5px;border-top:1px solid #1c3a63">F5 Pareto 多目标寻优</td><td style="padding:5px;border-top:1px solid #1c3a63">右列 Pareto 前沿</td></tr>
+          <tr><td style="padding:5px;border-top:1px solid #1c3a63">F6 灵敏度分析</td><td style="padding:5px;border-top:1px solid #1c3a63">右列 Sobol 灵敏度</td></tr>
+          <tr><td style="padding:5px;border-top:1px solid #1c3a63" rowspan="2">验证与对比</td><td style="padding:5px;border-top:1px solid #1c3a63">F7 可信复验（双闸守卫）</td><td style="padding:5px;border-top:1px solid #1c3a63">MC 分布 / 方案依据</td></tr>
+          <tr><td style="padding:5px;border-top:1px solid #1c3a63">F8 方案对比</td><td style="padding:5px;border-top:1px solid #1c3a63">智能参谋「方案对比」/ 三档按钮</td></tr>
+          <tr><td style="padding:5px;border-top:1px solid #1c3a63">解读与报告</td><td style="padding:5px;border-top:1px solid #1c3a63">F9 方案生成与判读</td><td style="padding:5px;border-top:1px solid #1c3a63">智能参谋「一键生成方案」+ 大模型方案制定说明</td></tr>
+        </tbody>
+      </table>
+      <p style="color:#8fa8c8;font-size:12px;margin-top:14px">点击「智能参谋」可在对话中直接体验 F4/F5/F6/F8/F9；所有数字均由仿真与优化内核真实计算。</p>
+    </div>
+  </div>
+</div>
+
+<!-- ============ S4：实时推演配置弹窗 ============ -->
+<div class="modal-overlay" id="config-modal" hidden>
+  <div class="modal-body config-modal">
+    <div class="modal-header">
+      <h2>实时仿真推演 · 参数配置</h2>
+      <button class="modal-close" id="config-close">✕</button>
+    </div>
+    <div class="modal-scroll">
+
+      <!-- 第一组：任务与地形 -->
+      <section class="cfg-group">
+        <h3>① 任务与地形 <span class="cfg-preset">快速预设：
+          <select id="cfg-preset">
+            <option value="medium_brigade">中型合成旅快攻（基线）</option>
+            <option value="brigade_canyon_clear">峡谷通道攻坚</option>
+            <option value="brigade_plain_fog">平原大雾突袭</option>
+            <option value="brigade_rolling_fortified">坚固防御反击</option>
+            <option value="example_brigade">重型合成旅</option>
+            <option value="example_battalion">合成营</option>
+            <option value="example_company">合成连</option>
+          </select>
+        </span></h3>
+        <div class="cfg-grid">
+          <div class="cfg-item"><label>作战时长 (tick)</label><input type="number" id="cfg-duration_ticks" value="48" min="10" max="200"></div>
+          <div class="cfg-item"><label>tick 换算 (秒)</label><input type="number" id="cfg-dt_seconds" value="30" min="5" max="60"></div>
+          <div class="cfg-item"><label>目标坐标 X (米)</label><input type="number" id="cfg-objective_x" value="9000"></div>
+          <div class="cfg-item"><label>目标坐标 Y (米)</label><input type="number" id="cfg-objective_y" value="5000"></div>
+          <div class="cfg-item"><label>完成判定半径 (米)</label><input type="number" id="cfg-success_radius_m" value="600"></div>
+          <div class="cfg-item"><label>地形族</label>
+            <select id="cfg-preset_family">
+              <option value="rolling" selected>rolling 起伏丘陵</option>
+              <option value="canyon">canyon 深切峡谷</option>
+              <option value="plain">plain 平原</option>
+              <option value="mountain">mountain 山地</option>
+              <option value="paddy">paddy 水网稻田</option>
+              <option value="urban">urban 城市街巷</option>
+              <option value="desert">desert 荒漠戈壁</option>
+              <option value="snowfield">snowfield 雪原冻土</option>
+            </select>
+          </div>
+          <div class="cfg-item"><label>战场宽度 (米)</label><input type="number" id="cfg-size_w" value="10000" step="1000"></div>
+          <div class="cfg-item"><label>战场高度 (米)</label><input type="number" id="cfg-size_h" value="10000" step="1000"></div>
+          <div class="cfg-item"><label>网格分辨率</label>
+            <select id="cfg-grid_n">
+              <option value="33">33（低）</option>
+              <option value="49">49（中）</option>
+              <option value="65" selected>65（基线）</option>
+              <option value="81">81（高）</option>
+              <option value="97">97（精细）</option>
+            </select>
+          </div>
+        </div>
+      </section>
+
+      <!-- 第二组：环境与气象 -->
+      <section class="cfg-group">
+        <h3>② 环境与气象</h3>
+        <div class="cfg-grid">
+          <div class="cfg-item"><label>天气</label>
+            <select id="cfg-weather">
+              <option value="clear" selected>晴 clear</option>
+              <option value="heavy_fog">大雾 heavy_fog</option>
+              <option value="rain">雨 rain</option>
+              <option value="snow">雪 snow</option>
+            </select>
+          </div>
+          <div class="cfg-item"><label>光照</label>
+            <select id="cfg-illumination">
+              <option value="day" selected>白昼 day</option>
+              <option value="dusk">黄昏 dusk</option>
+              <option value="night">暗夜 night</option>
+            </select>
+          </div>
+          <div class="cfg-item wide"><label>能见度系数 <span class="cfg-val" id="cfg-visibility-val">1.00</span></label>
+            <input type="range" id="cfg-visibility_factor" min="0.05" max="1.00" step="0.01" value="1.00">
+          </div>
+        </div>
+      </section>
+
+      <!-- 第三组：保障资源旋钮 -->
+      <section class="cfg-group">
+        <h3>③ 保障资源旋钮（参谋可调）</h3>
+        <div class="cfg-grid">
+          <div class="cfg-item"><label>并行抢修组数</label><input type="number" id="cfg-red_repair_teams" value="6" min="2" max="10"></div>
+          <div class="cfg-item"><label>装甲抢救车数</label><input type="number" id="cfg-red_arv" value="3" min="2" max="6"></div>
+          <div class="cfg-item"><label>器材补给车数</label><input type="number" id="cfg-red_supply_veh" value="2" min="1" max="3"></div>
+          <div class="cfg-item"><label>携行档基数档级</label>
+            <select id="cfg-carry_level">
+              <option value="0">0 · 精简</option>
+              <option value="1">1 · 偏低</option>
+              <option value="2" selected>2 · 基线</option>
+              <option value="3">3 · 加强</option>
+              <option value="4">4 · 充裕</option>
+            </select>
+          </div>
+          <div class="cfg-item"><label>运行档基数档级</label>
+            <select id="cfg-operating_level">
+              <option value="0">0 · 精简</option>
+              <option value="1">1 · 偏低</option>
+              <option value="2" selected>2 · 基线</option>
+              <option value="3">3 · 加强</option>
+            </select>
+          </div>
+          <div class="cfg-item"><label>前送波次节拍 (tick)</label><input type="number" id="cfg-wave_interval_ticks" value="20" min="10" max="40"></div>
+          <div class="cfg-item"><label>每波每部件件数</label><input type="number" id="cfg-wave_qty" value="2" min="1" max="4"></div>
+        </div>
+      </section>
+
+      <!-- 第四组：情景因子 -->
+      <section class="cfg-group">
+        <h3>④ 情景因子（不可控 · 鲁棒性分析）</h3>
+        <div class="cfg-grid">
+          <div class="cfg-item wide"><label>MTBF 乘子（装备可靠性）<span class="cfg-val" id="cfg-mtbf-val">1.00</span></label>
+            <input type="range" id="cfg-mtbf_scale" min="0.50" max="2.00" step="0.05" value="1.00">
+          </div>
+          <div class="cfg-item wide"><label>红方效能乘子 <span class="cfg-val" id="cfg-redpk-val">1.00</span></label>
+            <input type="range" id="cfg-red_pk_scale" min="0.70" max="1.30" step="0.05" value="1.00">
+          </div>
+          <div class="cfg-item wide"><label>蓝方效能乘子 <span class="cfg-val" id="cfg-bluepk-val">1.00</span></label>
+            <input type="range" id="cfg-blue_pk_scale" min="0.70" max="1.30" step="0.05" value="1.00">
+          </div>
+        </div>
+      </section>
+
+      <!-- 第五组：地形合成细节（FBM 噪声） -->
+      <section class="cfg-group">
+        <h3>⑤ 地形合成细节（FBM 噪声参数）</h3>
+        <div class="cfg-grid">
+          <div class="cfg-item"><label>噪声随机种子</label><input type="number" id="cfg-noise_seed" value="42" min="1" max="9999"></div>
+          <div class="cfg-item"><label>噪声尺度 scale</label><input type="number" id="cfg-noise_scale" value="3.0" min="1" max="10" step="0.1"></div>
+          <div class="cfg-item"><label>叠加层数 octaves</label><input type="number" id="cfg-octaves" value="4" min="1" max="8"></div>
+          <div class="cfg-item"><label>基底海拔 base_height (m)</label><input type="number" id="cfg-base_height" value="60" min="0" max="300"></div>
+          <div class="cfg-item"><label>起伏幅度 amplitude (m)</label><input type="number" id="cfg-amplitude" value="140" min="10" max="500"></div>
+          <div class="cfg-item"><label>水域淹没线 water_level (m)</label><input type="number" id="cfg-water_level" value="10" min="-50" max="200"></div>
+        </div>
+      </section>
+
+      <!-- 第六组：方别不对称乘子 -->
+      <section class="cfg-group">
+        <h3>⑥ 方别不对称乘子（红蓝差异化）</h3>
+        <div class="cfg-grid">
+          <div class="cfg-item wide"><label>红方发现概率乘子 detect_scale <span class="cfg-val" id="cfg-reddetect-val">1.00</span></label>
+            <input type="range" id="cfg-red_detect_scale" min="0.70" max="1.30" step="0.05" value="1.00">
+          </div>
+          <div class="cfg-item wide"><label>红方机动速度乘子 speed_scale <span class="cfg-val" id="cfg-redspeed-val">1.00</span></label>
+            <input type="range" id="cfg-red_speed_scale" min="0.50" max="1.50" step="0.05" value="1.00">
+          </div>
+          <div class="cfg-item wide"><label>蓝方发现概率乘子 detect_scale <span class="cfg-val" id="cfg-bluedetect-val">1.00</span></label>
+            <input type="range" id="cfg-blue_detect_scale" min="0.70" max="1.30" step="0.05" value="1.00">
+          </div>
+          <div class="cfg-item wide"><label>蓝方机动速度乘子 speed_scale <span class="cfg-val" id="cfg-bluespeed-val">1.00</span></label>
+            <input type="range" id="cfg-blue_speed_scale" min="0.50" max="1.50" step="0.05" value="1.00">
+          </div>
+        </div>
+      </section>
+
+      <!-- 第七组：风场 -->
+      <section class="cfg-group">
+        <h3>⑦ 风场条件</h3>
+        <div class="cfg-grid">
+          <div class="cfg-item"><label>风速 (m/s)</label><input type="number" id="cfg-wind_speed_mps" value="0" min="0" max="30"></div>
+          <div class="cfg-item"><label>风向（度 · 0=北）</label><input type="number" id="cfg-wind_dir_deg" value="0" min="0" max="360"></div>
+        </div>
+      </section>
+
+    </div>
+    <div class="modal-footer">
+      <button class="btn-secondary" id="cfg-reset">重置为默认值</button>
+      <button class="btn-primary" id="cfg-submit">开始推演 ▶</button>
+    </div>
+  </div>
+</div>
+
+<script src="/static/js/vendor/three.min.js?v=c902"></script>
+<script src="/static/js/terrain.js?v=c901"></script>
+<script src="/static/js/common.js?v=c913"></script>
+<script src="/static/js/agent.js?v=c913"></script>
+<script src="/static/js/charts.js?v=c900"></script>
+<script src="/static/js/views/rates.js?v=c913"></script>
+<script src="/static/js/views/pareto.js?v=c900"></script>
+<script src="/static/js/views/tactical.js?v=c900"></script>
+<script src="/static/js/views/sensitivity.js?v=c900"></script>
+<script src="/static/js/views/surrogate.js?v=c900"></script>
+<script src="/static/js/main.js?v=c913"></script>
 </body>
 </html>

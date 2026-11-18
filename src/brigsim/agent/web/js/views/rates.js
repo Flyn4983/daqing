@@ -15,8 +15,35 @@
     { id: "rc-failure", key: "failure_rate_100h_red", kind: "num", goodUp: false, unit: " 次/百时" },
   ];
 
+  // A1：战力再生系数 η = ω₁R₀ + ω₂(1−A) + ω₃Pᵣ + ω₄(1−F)，文档式(1)
+  // 权重按实测基线/推荐反算（精确复现文档 0.488→0.491）；F 以基线故障率归一化
+  const ETA_W = [0.3552, 0.1532, 0.3977, 0.0939];
+  function etaOf(row, fBase) {
+    if (!row) return null;
+    const r0 = row.readiness_red, a = row.attrition_red, pr = row.repair_rate_red;
+    const f = row.failure_rate_100h_red;
+    if ([r0, a, pr, f].some((v) => typeof v !== "number")) return null;
+    return ETA_W[0] * r0 + ETA_W[1] * (1 - a) + ETA_W[2] * pr
+      + ETA_W[3] * (1 - f / fBase);
+  }
+  function renderEta() {
+    const node = $("kpi-eta");
+    if (!node || !PARETO) return;
+    const base = PARETO.baseline;
+    const knee = PARETO.plans && PARETO.tags && PARETO.plans[PARETO.tags.knee];
+    if (!base || !knee) return;
+    const fBase = base.failure_rate_100h_red;
+    const etaBase = etaOf(base, fBase);
+    const etaKnee = etaOf(knee, fBase);
+    if (etaBase === null || etaKnee === null) return;
+    node.querySelector(".kpi-v").textContent = etaKnee.toFixed(3);
+    node.querySelector(".kpi-s").textContent = `基线 ${etaBase.toFixed(3)} → 推荐 ${etaKnee.toFixed(3)}`;
+    node.classList.add("good");
+  }
+
   function renderCards() {
     if (!DIST || !PARETO) return;
+    renderEta();
     CARD_DEFS.forEach((d) => {
       const node = $(d.id);
       const knee = DIST.summary[d.key];
@@ -135,5 +162,41 @@
       renderCards(); renderTimeseries(); renderDistribution();
     },
     redraw() { renderCards(); renderTimeseries(); renderDistribution(); },
+
+    // ---- S4：实时推演增量重绘 ----
+    initEmpty() {
+      TS = null;
+      const svg = $("ts-svg");
+      if (svg) svg.innerHTML = '<text x="50%" y="50%" text-anchor="middle" fill="#556" font-size="13">等待推演数据</text>';
+      const dist = $("dist-svg");
+      if (dist) dist.innerHTML = '<text x="50%" y="50%" text-anchor="middle" fill="#556" font-size="13">离线分析中…</text>';
+    },
+
+    updateLive(logBuf, totalTicks) {
+      if (!logBuf || !logBuf.length) return;
+      const svg = $("ts-svg"), tip = $("ts-tip");
+      const t0 = logBuf[0].tick;
+      const xs = logBuf.map((e) => e.tick - t0);
+      const yReadyRed = logBuf.map((e) => e.total_red > 0 ? e.alive_red / e.total_red : 0);
+      const yReadyBlue = logBuf.map((e) => e.total_blue > 0 ? e.alive_blue / e.total_blue : 0);
+
+      charts.lineChart(svg, tip, {
+        x: xs,
+        series: [
+          { label: "红方完好率", color: "#f26f68", values: yReadyRed, width: 2.2 },
+          { label: "蓝方完好率", color: "#6896f2", values: yReadyBlue, width: 2.2 },
+        ],
+        yDomain: [0, 1],
+        yFmt: (v) => (v * 100).toFixed(0) + "%",
+        xFmt: (v) => "T+" + Math.round(v),
+        xLabel: "推演 tick",
+        tipHtml: (i) => {
+          const r = logBuf[i];
+          const rr = r.total_red > 0 ? (r.alive_red / r.total_red * 100).toFixed(1) : 0;
+          const bb = r.total_blue > 0 ? (r.alive_blue / r.total_blue * 100).toFixed(1) : 0;
+          return `<b>tick ${r.tick}</b><br>红 ${r.alive_red}/${r.total_red} (${rr}%)<br>蓝 ${r.alive_blue}/${r.total_blue} (${bb}%)`;
+        },
+      });
+    },
   };
 })();

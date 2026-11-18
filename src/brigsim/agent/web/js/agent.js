@@ -78,9 +78,12 @@
         body.innerHTML = `<span style="color:var(--bad)">${esc(data.error || "请求失败")}</span>`;
         return;
       }
+      const llmTag = data.llm_source === "local_llm"
+        ? `<span style="color:#7ff0d2">● 本地大模型真实生成 ${data.llm_latency_ms?.toFixed(0) || 0} ms</span>`
+        : `<span style="color:#e0bd6a">○ 内置模板（本地模型未就绪）</span>`;
       body.innerHTML = renderMd(data.answer)
         + toolChips(data.tool_calls)
-        + `<div class="meta">方案生成 · 本地推理 ${data.latency_ms.toFixed(1)} ms · 生成 ${data.completion_tokens} tok</div>`;
+        + `<div class="meta">方案生成 · ${llmTag} · 生成 ${data.completion_tokens} tok</div>`;
       data.tool_calls.forEach(addTrace);
       $("msgs").scrollTop = $("msgs").scrollHeight;
     } finally {
