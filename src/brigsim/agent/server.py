@@ -437,6 +437,7 @@ def _preview_scenario(scenario: str) -> dict:
             rr.set_time("tick", sequence=0)
             rerun_view._update_unit_models(cur, zs0, info, z_off_pre, {}, tint=False)
             rerun_view._log_markers(cur=cur, zs=zs0, info=info)
+            rerun_view._log_status_flags(cur, zs0, info)  # C7-m：图例状态色载体
             rerun_view._log_fans(cur, zs0, info, outline=True, geo=geo, los_terrain=hf)
             # C7-e：体系作用包络（雷达/防空/电抗/C2 圈）——此前 live/预览路径
             # 完全缺失，用户反馈"作用范围圈看不见"
@@ -799,6 +800,7 @@ def _run_worker(sess: RunSession) -> None:
                         )
                         rerun_view._log_weather(_tick, _sc, _geo)
                         rerun_view._log_markers(cur=_cur, zs=zs_all, info=_info)
+                        rerun_view._log_status_flags(_cur, zs_all, _info)  # C7-m：图例状态色载体
                         rerun_view._log_fans(_cur, zs_all, _info, outline=True, geo=_geo,
                                              los_terrain=_los_hf)
                         # C7-e：体系作用包络环（此前 live 逐 tick 路径缺失，

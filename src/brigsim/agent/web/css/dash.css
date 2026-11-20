@@ -178,6 +178,9 @@
                 display: flex; flex-direction: column; gap: 4px; }
 .replay-legend .lg { display: flex; align-items: center; gap: 7px; color: #a9c3e6; }
 .replay-legend .sw { width: 11px; height: 11px; border-radius: 3px; flex: none; }
+.replay-legend .lg-sep { margin-top: 5px; padding-top: 5px; border-top: 1px solid rgba(120,160,200,.22); }
+.replay-legend .sw-ring { background: transparent !important; border: 2px solid; border-radius: 50%; }
+.replay-legend .lg-note { color: #7f96b4; font-size: 13px; margin-top: 3px; font-style: italic; }
 .replay-fallback {
   position: absolute; inset: 0; z-index: 5; display: flex;
   flex-direction: column; align-items: center; justify-content: center; gap: 12px;

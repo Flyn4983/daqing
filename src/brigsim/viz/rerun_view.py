@@ -340,6 +340,8 @@ def visualize(
             _log_units_primitives(cur, zs, info)
 
         _log_markers(cur=cur, zs=zs, info=info, decoy_ids=decoy_ids)
+        # C7-m：图例状态色载体（M/F/在修/后送/K战毁），Web 回放 tint=False 也能看到
+        _log_status_flags(cur, zs, info)
         _log_fans(cur, zs, info, outline=embed, geo=geo, los_terrain=terrain)
         _log_coverages(tick, cur, zs, info, thin=embed, geo=geo, los_terrain=terrain)
         _log_smoke(tick, cur, zs)
@@ -1122,6 +1124,46 @@ def _log_markers(*, cur, zs, info, decoy_ids: set[str] | None = None) -> None:
         )
 
 
+def _log_status_flags(cur, zs, info) -> None:
+    """C7-m：图例状态色在 Web 回放中可见——轻量 Points3D 状态旗标。
+
+    Web 回放设 tint_models=False（重发带 albedo 的 GLB 会让旅级 rrd 膨胀到
+    268MB），模型本体保持原色；但这样图例里的 M 失动/F 受损/在修/后送/K 战毁
+    五种颜色完全没有载体。这里给每个"异常状态"单位在车顶上方画一个图例同色
+    的旗标点（每单位 1 点，体积可忽略；正常单位不画，避免满屏），使右下角图例
+    的每一项都能在 3D 画面里找到对应。优先级与 _log_units_primitives 一致。
+    """
+    for col in ("damaged", "under_repair"):
+        if col not in cur.columns:
+            cur = cur.copy()
+            cur[col] = False
+    has_g = "damage_grade" in cur.columns and "disposition" in cur.columns
+    pts: list = []
+    cols: list = []
+    for k, uid in enumerate(cur.index):
+        x, y, z = float(cur.at[uid, "x"]), float(cur.at[uid, "y"]), float(zs[k])
+        if not bool(cur.at[uid, "alive"]):
+            color = WRECK_K_C if has_g and int(cur.at[uid, "damage_grade"]) == 3 else WRECK_C
+        elif bool(cur.at[uid, "under_repair"]):
+            color = REPAIR_C
+        elif bool(cur.at[uid, "damaged"]):
+            if has_g and int(cur.at[uid, "disposition"]) == 4:
+                color = REAR_C
+            elif has_g and int(cur.at[uid, "damage_grade"]) == 1:
+                color = M_KILL_C
+            else:
+                color = DAMAGED_C
+        else:
+            continue  # 正常单位：红/蓝归属已由 _log_markers 标签体现
+        pts.append([x, y, z + 92.0])
+        cols.append(color)
+    # 单 entity 多点不同色：避免分色 entity 在"某色从有到无"时残留上一帧点
+    if pts:
+        rr.log("world/status/flags", rr.Points3D(pts, colors=cols, radii=16))
+    else:
+        rr.log("world/status/flags", rr.Clear(recursive=False))
+
+
 def _log_fans(cur, zs, info, *, outline: bool = False, geo=None, los_terrain=None) -> None:
     """存活单位射界扇面（半角粗取 ±10°）。
 
@@ -1310,18 +1352,31 @@ def _log_coverages(tick: int, cur, zs, info, *, thin: bool = False, geo=None,
     被山体遮挡的方向不打亮该段——与内核直瞄/雷达口径一致，避免"雷达圈画满
     全向但实际探测被地形遮蔽"的脱节。
     """
-    rings: list[list] = []
+    rings: list[list] = []          # 亮色可见弧（通视有效方向）
     ring_colors: list = []
+    rings_full: list[list] = []     # C7-m：淡色完整圈（理论作用范围，始终可见）
+    ring_full_colors: list = []
     sweeps: list[list] = []
     sweep_colors: list = []
     line_r = 3.5 if thin else 5.0
     lift = 8.0
+    # C7-m：雷达/通信天线架高 ~25m（不再是 3m 人眼高度）；真实 DEM 起伏上千米，
+    # 3m 会把作用范围圈几乎全部裁光（诊断 21 个圈 arcs=0）。天线高度更贴近物理。
+    ant_h = 25.0
+
+    def _disp_radius(r: float) -> float:
+        """C7-m：作用半径的「显示缩放」——真实 cov 2500~12000m 远超 10km 战场，
+        画出来是穿过全图的大弧而非围绕装备的圈（用户反馈"圆圈看不到"）。这里压缩
+        到战场内可读的 520~2000m，保留相对大小；**仅用于几何显示与 LOS 采样**，
+        仿真/报告中的作用半径数字完全不变。
+        """
+        return 520.0 + min(1.0, max(0.0, r / 12000.0)) * 1480.0
 
     def _visible(ox, oy, px, py):
         if los_terrain is None:
             return True
         try:
-            return bool(los_terrain.has_los(ox, oy, float(px), float(py), 3.0))
+            return bool(los_terrain.has_los(ox, oy, float(px), float(py), ant_h))
         except Exception:
             return True
 
@@ -1348,6 +1403,14 @@ def _log_coverages(tick: int, cur, zs, info, *, thin: bool = False, geo=None,
         return arcs
 
     def _emit(cx, cy, base_z, radius, n, color):
+        # C7-m：先画一条低亮度完整圈表达"理论作用范围"——用户反馈"圆圈看不到"，
+        # 根因是真实 DEM 下 LOS 把可见弧几乎裁光。完整圈用该角色色 ×0.66 的中亮色、
+        # 细线，保证任何时候都能看清范围边界；可见弧用满亮色表达通视有效方向，
+        # 保留 C7-h"遇山遮挡"语义（亮弧断在山体背后）。
+        full = _ring_pts_tf(cx, cy, radius, geo, lift, n) if geo is not None \
+            else _ring_pts(cx, cy, base_z, radius, n)
+        rings_full.append(full)
+        ring_full_colors.append(tuple(int(c * 0.66) for c in color) + (185,))
         for arc in _visible_arcs(cx, cy, base_z, radius, n):
             rings.append(arc)
             ring_colors.append(color)
@@ -1360,23 +1423,31 @@ def _log_coverages(tick: int, cur, zs, info, *, thin: bool = False, geo=None,
         if cov <= 0:
             continue
         ox, oy, oz = float(cur.at[uid, "x"]), float(cur.at[uid, "y"]), float(zs[k]) + lift
+        dr = _disp_radius(cov)  # C7-m：显示缩放半径（真实 cov 不变）
         if role in ("radar_air", "radar_cb"):
             color = RADAR_C
-            _emit(ox, oy, oz, cov, 56, color)
+            _emit(ox, oy, oz, dr, 56, color)
             # 旋转扫描线（相位按 uid 散列）；终点被地形遮挡时该方向不打扫描线
             phase = (hash(uid) % 360) * math.pi / 180.0
             a = tick * 0.32 + phase
-            ex, ey = ox + cov * math.cos(a), oy + cov * math.sin(a)
+            ex, ey = ox + dr * math.cos(a), oy + dr * math.sin(a)
             if _visible(ox, oy, ex, ey):
                 ez = (float(geo.height_at(ex, ey)) + lift) if geo is not None else oz
                 sweeps.append([[ox, oy, oz], [ex, ey, ez]])
                 sweep_colors.append(color)
         elif role == "air_defense":
-            _emit(ox, oy, oz, cov, 48, SIDE_COLOR[info[uid][1]])
+            _emit(ox, oy, oz, dr, 48, SIDE_COLOR[info[uid][1]])
         elif role == "ew":
-            _emit(ox, oy, oz, cov, 64, EW_C)
+            _emit(ox, oy, oz, dr, 64, EW_C)
         elif role == "c2":
-            _emit(ox, oy, oz, cov, 48, AURA_C)
+            _emit(ox, oy, oz, dr, 48, AURA_C)
+    # C7-m：完整圈（暗色细线）——理论作用范围边界，始终可见
+    if rings_full:
+        rr.log("world/coverages/rings_full",
+               rr.LineStrips3D(rings_full, colors=ring_full_colors, radii=line_r * 0.8))
+    else:
+        rr.log("world/coverages/rings_full", rr.Clear(recursive=False))
+    # 亮色可见弧——通视有效方向（遇山遮挡的语义保留在这里）
     if rings:
         rr.log("world/coverages/rings",
                rr.LineStrips3D(rings, colors=ring_colors, radii=line_r))
