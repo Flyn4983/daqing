@@ -377,8 +377,8 @@ def _preview_scenario(scenario: str) -> dict:
 
     sc = YamlFileProvider().load_scenario(scenario)
     hf = HeightField.from_spec(sc.terrain)
-    # C7-i：live 预览 3D 地形统一太行山真实 DEM（仅渲染/LOS，仿真数据不变）
-    hf = rerun_view._visual_terrain(hf)
+    # C7-l：live 预览用该工况专属真实 DEM 子区（仅渲染/LOS，仿真数据不变）
+    hf = rerun_view._visual_terrain(hf, scenario)
     print(f"[scene-preview] {scenario} 想定加载耗时 {time.monotonic() - _t0:.2f}s", flush=True)
 
     def _preview_apply() -> None:
@@ -398,7 +398,7 @@ def _preview_scenario(scenario: str) -> dict:
         rerun_view._log_obstacles(sc, geo)
         rerun_view._log_decoys(sc, geo)
         rerun_view._log_weather_header(sc)
-        # C7-k：无预构建 rrd 时的 sink 兜底预览也预载真实空中模型（地面仍为轻量盒体）
+        # C7-l：无预构建 rrd 时的 sink 兜底预览也预载真实空中模型
         try:
             air_pairs_pre = [
                 (f"{p.side[:1]}{p.kind[:2]}{i:02d}", p.kind)
@@ -416,6 +416,11 @@ def _preview_scenario(scenario: str) -> dict:
 
             kernel = MesaKernel(sc, seed=20261014)  # 仅取初始站位，不 step
             info = rerun_view._unit_info(sc)
+            # C7-l：静态地面 GLB 必须先于首个 set_time 发出（与回放/live 同款）
+            rerun_view._log_static_units(info, hf, use_models=True)
+            z_off_pre = {
+                typ: rerun_view.ground_offset(typ) for typ in {v[0] for v in info.values()}
+            }
             uids = [u.unit_id for s in ("red", "blue") for u in (sc.forces.get(s) or [])]
             px = kernel.state.x.tolist()
             py = kernel.state.y.tolist()
@@ -430,7 +435,7 @@ def _preview_scenario(scenario: str) -> dict:
             )
             zs0 = geo.height_at(cur["x"].to_numpy(), cur["y"].to_numpy())
             rr.set_time("tick", sequence=0)
-            rerun_view._log_units_primitives(cur, zs0, info)
+            rerun_view._update_unit_models(cur, zs0, info, z_off_pre, {}, tint=False)
             rerun_view._log_markers(cur=cur, zs=zs0, info=info)
             rerun_view._log_fans(cur, zs0, info, outline=True, geo=geo, los_terrain=hf)
             # C7-e：体系作用包络（雷达/防空/电抗/C2 圈）——此前 live/预览路径
@@ -629,8 +634,8 @@ def _run_worker(sess: RunSession) -> None:
             from ..viz import rerun_view
 
             _terrain_hf = kernel.terrain
-            # C7-i：live 逐 tick 3D 地形统一太行山真实 DEM（仅渲染/LOS，仿真数据不变）
-            _terrain_hf = rerun_view._visual_terrain(_terrain_hf)
+            # C7-l：live 逐 tick 用该工况专属真实 DEM 子区（仅渲染/LOS，仿真数据不变）
+            _terrain_hf = rerun_view._visual_terrain(_terrain_hf, getattr(sc, "name", None))
             # C7-d：渲染垂直夸张 + 缩放地形副本（物理高程不变，仅渲染）
             _z_exag = rerun_view.auto_z_exag(_terrain_hf)
             _geo_hf = _terrain_hf.scaled(_z_exag)
@@ -660,6 +665,8 @@ def _run_worker(sess: RunSession) -> None:
         air_trails: dict[str, list] = {}
         air_done: set[str] = set()
         air_model_logged: set[str] = set()
+        live_z_off: dict[str, float] = {}
+        live_model_state: dict[str, str] = {}
         # C7-k：ID 规则与 combat/systems.py 一致（side 首字母 + kind 前两字母 + 两位序号）
         air_pairs = [
             (f"{p.side[:1]}{p.kind[:2]}{i:02d}", p.kind)
@@ -671,10 +678,16 @@ def _run_worker(sess: RunSession) -> None:
             live_info = rerun_view._unit_info(sc)
             live_uids = side_vectors[0] + side_vectors[1]
             live_sides = [0] * len(side_vectors[0]) + [1] * len(side_vectors[1])
-            # 静态空中资源必须在首个 set_time 之前发出；_live_reset 之后由独立 sink 任务写入。
-            # 地面单位沿用轻量盒体（真实 GLB 每车一份会让 Web viewer 内存爆掉），
-            # 空中无人机/巡飞弹/武直仍用真实模型（3 型共 ~14KB）。
+            # C7-l：静态地面/空中装备 GLB 必须在首个 set_time 之前发出。
+            # 地面改用低面数模型（tools/build_lite_models.py，14KB/辆以内），
+            # 实时推演与回放看到的都是真实装备轮廓，不再是盒体/点球。
+            live_z_off = {
+                typ: rerun_view.ground_offset(typ)
+                for typ in {v[0] for v in live_info.values()}
+            }
+
             def _live_static_models() -> None:
+                rerun_view._log_static_units(live_info, _terrain_hf, use_models=True)
                 air_model_logged.update(rerun_view._preload_air_models(air_pairs))
 
             _sink_submit(_live_static_models)
@@ -769,6 +782,7 @@ def _run_worker(sess: RunSession) -> None:
                 _tick=tick, _pos_red=pos_red, _pos_blue=pos_blue,
                 _geo=_geo_hf, _cur=tick_cur, _sc=sc, _info=live_info,
                 _los_hf=_terrain_hf,  # C7-h：真实地形，供作用范围 LOS 遮挡
+                _z_off=live_z_off, _model_state=live_model_state,
                 _air=air_all, _air_trails=air_trails, _air_done=air_done,
                 _air_logged=air_model_logged,
             ) -> None:
@@ -778,7 +792,11 @@ def _run_worker(sess: RunSession) -> None:
                     rr.set_time("tick", sequence=_tick)
                     if _cur is not None and _info is not None:
                         zs_all = _geo.height_at(_cur["x"].to_numpy(), _cur["y"].to_numpy())
-                        rerun_view._log_units_primitives(_cur, zs_all, _info)
+                        # C7-l：live 逐帧也用与回放同款真实装备 GLB（状态色靠
+                        # 标签/烟柱表达，避免逐帧重发模型撑爆 viewer 内存）
+                        rerun_view._update_unit_models(
+                            _cur, zs_all, _info, _z_off, _model_state, tint=False
+                        )
                         rerun_view._log_weather(_tick, _sc, _geo)
                         rerun_view._log_markers(cur=_cur, zs=zs_all, info=_info)
                         rerun_view._log_fans(_cur, zs_all, _info, outline=True, geo=_geo,

@@ -33,8 +33,8 @@ def check_one(name: str) -> list[str]:
     try:
         sc = PROVIDER.load_scenario(name)
         hf = HeightField.from_spec(sc.terrain)
-        # C7-j：用可视化统一后的真实 DEM（峡谷 + 太行山才会触发全遮挡）
-        vis_hf = rv._visual_terrain(hf)
+        # C7-l：用该工况专属的真实 DEM 子区（峡谷 + 太行山才会触发全遮挡）
+        vis_hf = rv._visual_terrain(hf, name)
         zex = rv.auto_z_exag(vis_hf)
         geo = vis_hf.scaled(zex)
         info = rv._unit_info(sc)

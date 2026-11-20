@@ -32,6 +32,7 @@ SCENARIOS = [
 ]
 
 AIR_ENTITY_RE = re.compile(rb"world/air/[A-Za-z0-9_-]+/model")
+GROUND_ENTITY_RE = re.compile(rb"world/units/[A-Za-z0-9_-]+/model")
 
 
 def air_package_count(scenario: str) -> int:
@@ -41,9 +42,10 @@ def air_package_count(scenario: str) -> int:
     return len(getattr(sc, "air_packages", []) or [])
 
 
-def model_entities(path: Path) -> int:
+def model_entities(path: Path) -> tuple[int, int]:
     data = path.read_bytes()
-    return len(set(AIR_ENTITY_RE.findall(data)))
+    return (len(set(AIR_ENTITY_RE.findall(data))),
+            len(set(GROUND_ENTITY_RE.findall(data))))
 
 
 def rebuild_one(name: str, *, tick_stride: int = 2) -> tuple[bool, str]:
@@ -56,11 +58,22 @@ def rebuild_one(name: str, *, tick_stride: int = 2) -> tuple[bool, str]:
     proc = subprocess.run(cmd, cwd=str(REPO), capture_output=True, text=True, timeout=1800)
     if proc.returncode != 0 or not out.is_file():
         return False, (proc.stderr or proc.stdout or "未知错误")[-500:]
-    expected = air_package_count(name)
-    got = model_entities(out)
+    from brigsim.data.provider import YamlFileProvider
+    from brigsim.dashboard.build import DEFAULT_PATHS, KNEE_X, load_knee_vector
+    from brigsim.surrogate.design import apply_features
+
+    expected_air = air_package_count(name)
+    sc = YamlFileProvider(str(REPO / "scenarios")).load_scenario(name)
+    # build_replay 录的是 apply_features(knee) 后的编成：保障参数会裁剪少数
+    # 保障车辆（如 example_brigade 的 3 辆），预期数量必须按同一变换算。
+    x = load_knee_vector(DEFAULT_PATHS["pareto"]) or KNEE_X
+    sc = apply_features(sc, x)
+    expected_ground = sum(len(sc.forces.get(s, [])) for s in ("red", "blue"))
+    got_air, got_ground = model_entities(out)
     size_mb = out.stat().st_size / 1024 / 1024
-    ok = got == expected
-    msg = (f"{name:28s} {size_mb:7.1f}MB  空中模型 {got}/{expected}  "
+    ok = got_air == expected_air and got_ground >= expected_ground
+    msg = (f"{name:28s} {size_mb:7.1f}MB  空中模型 {got_air}/{expected_air}  "
+           f"地面模型 {got_ground}/{expected_ground}  "
            f"{time.monotonic() - t0:5.1f}s  {'OK' if ok else 'MISMATCH'}")
     return ok, msg
 

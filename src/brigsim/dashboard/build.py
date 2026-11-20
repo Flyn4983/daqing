@@ -729,9 +729,9 @@ def build_replay(
     kernel: str = "mesa",
     device: str = "cuda:0",
     tick_stride: int = 2,
-    use_models: bool = False,
+    use_models: bool = True,
 ) -> Path:
-    """跑一次 knee 方案复制并录制轻量 rrd（地面盒体；空中始终真实 GLB）。"""
+    """跑一次 knee 方案并录制 rrd（C7-l：地面/空中均为真实低面数 GLB）。"""
     from ..experiment.runner import run_once
     from ..surrogate.design import apply_features
     from ..viz.rerun_view import visualize
@@ -754,6 +754,9 @@ def build_replay(
         effects=kernel_obj.log.effect_frame(),
         app_id="brigsim-dashboard",
         use_models=use_models,
+        # C7-l：状态色由烟柱/标签表达，不再逐 state 重发整份 GLB（否则旅级
+        # rrd 会从 12MB 膨胀到 268MB，超出 Web Viewer 的 WASM 内存预算）
+        tint_models=False,
         tick_stride=tick_stride,
         embed=True,
     )

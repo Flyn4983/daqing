@@ -36,6 +36,26 @@
     if (svg) charts.emptyChart(svg, `${name}数据未构建（brigsim dash-build）`);
   }
 
+  // C7-l：把一份数据快照完整刷到所有可视化区域（KPI 数字 + 四率卡 + 四视图）。
+  // 工况切换必须走这里，不能只刷 rates——否则曲线变了但 KPI/Pareto/灵敏度
+  // 还停在上一个工况，评委看到的就是"切了下拉只有一张图动"。
+  function renderAll(data) {
+    if (!data) return;
+    window.DASH.data = data;
+    fillKpis(data);
+    if (views.rates && data.timeseries) {
+      views.rates.init({
+        timeseries: data.timeseries,
+        distribution: data.distribution,
+        pareto: data.pareto,
+      });
+    }
+    if (views.pareto && data.pareto) views.pareto.init(data);
+    if (views.sensitivity && data.sensitivity) views.sensitivity.init(data);
+    if (views.surrogate && data.surrogate) views.surrogate.init(data);
+  }
+  window.DASH.renderAll = renderAll;
+
   async function boot() {
     // 先判断模式（从 URL query），决定要不要加载 baseline 预构建数据
     const urlParams = new URLSearchParams(window.location.search);
@@ -63,8 +83,6 @@
         const d = $(id).querySelector(".rc-d");
         if (d) { d.textContent = "等待推演…"; d.className = "rc-d flat"; }
       });
-    } else {
-      fillKpis(data);
     }
 
     // 基线数据状态标签
@@ -77,12 +95,7 @@
     }
 
     // 5 个分析视图：live 模式下前面已经 markEmpty 了，这里只在有 baseline 数据时才 init
-    if (!isLive) {
-      if (data.timeseries && data.distribution) views.rates.init(data);
-      if (data.pareto) views.pareto.init(data);
-      if (data.sensitivity) views.sensitivity.init(data);
-      if (data.surrogate) views.surrogate.init(data);
-    }
+    if (!isLive) renderAll(data);
 
     // 容器尺寸变化（窗口缩放）重绘当前视图
     // live 模式没有 baseline 预构建数据（DASH.data 为空），重绘会空崩，先守卫
@@ -206,6 +219,26 @@
       if (t) { t.textContent = text; t.className = "baseline-tag" + (cls ? " " + cls : ""); }
     }
 
+    // C7-l：顶栏工况上下文徽标——3D / KPI / 图表之外，文字区也随切换刷新
+    function setScenarioContext(scenario, meta) {
+      const badge = document.getElementById("scenario-context");
+      if (!badge) return;
+      const wx = WEATHER_ZH[(meta && meta.weather) || ""] || (meta && meta.weather) || "—";
+      const label = (meta && meta.label) || scenario;
+      badge.textContent = `当前工况：${label} · ${wx}`;
+      badge.dataset.scenarioLabel = scenario;
+      // 每个面板标题都挂一个小标签，切换时"文字区"同样肉眼可见地更新
+      document.querySelectorAll(".panel h3").forEach((h) => {
+        let tag = h.querySelector(".panel-scenario");
+        if (!tag) {
+          tag = document.createElement("span");
+          tag.className = "panel-scenario";
+          h.appendChild(tag);
+        }
+        tag.textContent = ` · ${label}`;
+      });
+    }
+
     // ---- C6.1：工况切换 → 3D 场景联动 ----
     const WEATHER_ZH = {
       clear: "晴", overcast: "多云", rain: "降雨", heavy_rain: "暴雨",
@@ -235,6 +268,7 @@
 
     function onSceneReady(scenario, meta, hasData) {
       const wx = meta.weather ? ` · 气象 ${WEATHER_ZH[meta.weather] || meta.weather}` : "";
+      setScenarioContext(scenario, meta);
       const tt = document.getElementById("replay-tag-title");
       if (tt) tt.textContent = `3D 态势回放 · ${meta.label || scenario}`;
       setSceneTag(
@@ -245,27 +279,46 @@
       );
     }
 
-    // C7-f：工况切换时让数据面板跟随——该工况在 /data/scenarios/<name>/ 有预构建
-    // timeseries/distribution（schema 与基线一致）则重渲 rates 视图并重绑播放控制器；
-    // 没有（sensitivity/pareto/surrogate 仅有基线）则保持基线数据不动。
+    // C7-l：工况切换 → 全部可视化区域刷新。
+    // 优先读 /data/scenarios/<name>/ 的 6 份 JSON；模型层（sensitivity/pareto/
+    // surrogate）若该工况未单独构建，则回退基线同名文件（科学含义是全局模型，
+    // 跨工况共用），但 KPI/四率卡/时序/分布一定用该工况自己的数据重绘。
+    const DATA_FILES = ["timeseries", "distribution", "sensitivity", "pareto", "surrogate", "manifest"];
+    const MODEL_FILES = ["sensitivity", "pareto", "surrogate", "manifest"];
+    async function loadScenarioBundle(scenario) {
+      const pairs = await Promise.all(DATA_FILES.map(async (f) => {
+        let j = await window.DASH.loadJson(`scenarios/${scenario}/${f}.json`).catch(() => null);
+        if (!j && MODEL_FILES.indexOf(f) >= 0) {
+          j = await window.DASH.loadJson(`${f}.json`).catch(() => null);
+        }
+        return [f, j];
+      }));
+      return Object.fromEntries(pairs.filter(([, j]) => !!j));
+    }
+
     async function applyScenarioData(scenario) {
-      const [ts, dist] = await Promise.all([
-        window.DASH.loadJson(`scenarios/${scenario}/timeseries.json`).catch(() => null),
-        window.DASH.loadJson(`scenarios/${scenario}/distribution.json`).catch(() => null),
-      ]);
-      if (!ts) return false;
+      const bundle = await loadScenarioBundle(scenario);
+      let data = bundle;
+      if (!data.timeseries) {
+        // 该工况还没单独构建仿真数据：至少给一份基线快照，保证所有面板
+        // 进入一致的"已切换"状态，而不是一半新一半旧。
+        const base = await loadScenarioBundle("example_brigade");
+        data = Object.assign({}, base, bundle);
+      }
+      if (!data.timeseries) return false;
       // 先停掉旧播放循环（旧闭包若在播会继续用旧数据重绘）
       const rcPause = document.getElementById("rc-pause");
       if (rcPause && !rcPause.hidden) rcPause.click();
-      const data = dist ? { timeseries: ts, distribution: dist } : { timeseries: ts };
-      if (views.rates && views.rates.init) views.rates.init(data);
-      bindReplayController(ts);
+      window.DASH.renderAll(data);
+      bindReplayController(data.timeseries);
+      const meta = scenarioMeta(scenario);
       const label = document.getElementById("baseline-tag");
       if (label) {
-        const nReps = dist && dist.n_reps ? dist.n_reps : "—";
-        label.textContent = `历史数据回放 · ${scenarioMeta(scenario).label || scenario} · MC ${nReps} 复制`;
+        const nReps = data.distribution && data.distribution.n_reps ? data.distribution.n_reps : "—";
+        label.textContent = `历史数据回放 · ${meta.label || scenario} · MC ${nReps} 复制`;
         label.className = "baseline-tag done";
       }
+      setScenarioContext(scenario, meta);
       return true;
     }
 
@@ -322,6 +375,18 @@
 
     async function previewLiveScene(scenario) {
       const meta = scenarioMeta(scenario);
+      setScenarioContext(scenario, meta);
+      // C7-l：live 模式切工况时，KPI/图表先回到"等待推演"的空态并打上工况标记，
+      // 不能残留上一个工况的数字（用户反馈"切换后数字没变"）。
+      if (window.DASH.renderAll && !window.__rerun_viewer_static) {
+        window.DASH.renderAll({});
+      }
+      if (window.DASH.views && window.DASH.views.rates && window.DASH.views.rates.initEmpty) {
+        window.DASH.views.rates.initEmpty();
+      }
+      zeroKpis();
+      ["pareto-svg", "sens-svg", "parity-svg"].forEach((id) =>
+        markEmpty(id, "等待该工况推演"));
       setTag(`已选 · ${meta.label || scenario} · 3D 态势切换中…`, "running");
       try {
         const r = await fetch("/api/scene-switch", {

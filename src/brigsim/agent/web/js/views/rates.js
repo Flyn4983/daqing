@@ -228,6 +228,9 @@
 
   window.DASH.views.rates = {
     init(data) {
+      // C7-l：从 live 切回回放时必须清掉 live 曲线缓存，否则按钮切换仍走
+      // renderLive() 画旧推演数据，表现为"图表没跟随工况刷新"。
+      LIVE_BUF = null;
       TS = data.timeseries; DIST = data.distribution; PARETO = data.pareto;
       wire();
       renderCards(); renderTimeseries(); renderDistribution();

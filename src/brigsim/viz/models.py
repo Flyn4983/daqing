@@ -16,6 +16,13 @@ import numpy as np
 import trimesh
 
 ASSET_DIR = Path(__file__).resolve().parents[3] / "assets" / "models"
+# C7-l：Web 回放专用的低面数地面装备。原始 tank/ifv/atgm_team GLB 分别
+# 483KB/3.0MB/1.7MB，逐单位嵌入会让旅级 rrd 膨胀到 162~268MB，超出
+# Rerun Web Viewer 的 WASM 内存预算。这里用同一套程序化构建器生成
+# 低面数版本（几 KB/辆），仍是真实 3D 装备形体而非盒体/点球。
+LITE_DIR = ASSET_DIR / "lite"
+USE_LITE_GROUND_MODELS = True
+LITE_TYPES = ("tank", "ifv", "atgm_team", "recon_veh")
 
 OLIVE = (77, 84, 46)  # 军绿
 OLIVE_LIGHT = (87, 94, 54)
@@ -305,6 +312,10 @@ _BUILDERS = {
 
 def ensure_model(type_name: str) -> Path:
     """返回类型对应 GLB 路径，缺失则合并部件为单网格生成并缓存。"""
+    if USE_LITE_GROUND_MODELS and type_name in LITE_TYPES:
+        lite = LITE_DIR / f"{type_name}.glb"
+        if lite.is_file():
+            return lite
     path = ASSET_DIR / f"{type_name}.glb"
     if path.exists():
         return path

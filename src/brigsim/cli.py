@@ -580,7 +580,8 @@ def dash_replay_cmd(
     device: str = typer.Option("cuda:0", "--device", help="warp 设备"),
     seed: int = typer.Option(20261014, "--seed", help="随机种子"),
     tick_stride: int = typer.Option(2, "--tick-stride", help="动态帧隔（2=隔帧记录，体积减半）"),
-    with_models: bool = typer.Option(False, "--with-models", help="地面也用真实 GLB（rrd 会膨胀到百 MB，不建议 Web 用）"),
+    with_models: bool = typer.Option(True, "--with-models/--no-models",
+                                     help="地面用真实 GLB（默认；C7-l 起低面数模型，体积可控）"),
 ) -> None:
     """C6.1：单想定 3D 回放 rrd 构建（大屏工况切换按需生成）。
 

@@ -59,6 +59,13 @@
 .baseline-tag.running { background: rgba(61,247,193,.1); border-color: rgba(61,247,193,.35); color: #7ff0d2; }
 .baseline-tag.done { background: rgba(164,255,196,.1); border-color: rgba(136,230,168,.4); color: #88e6a8; }
 .baseline-tag.error { background: rgba(255,122,122,.1); border-color: rgba(255,122,122,.35); color: #ff7a7a; }
+/* C7-l：工况上下文徽标——切换时与所有面板同步刷新 */
+.scenario-context {
+  font: 10px var(--mono); color: #ffd88a; white-space: nowrap;
+  padding: 2px 8px; border-radius: 4px;
+  background: rgba(255,196,80,.09); border: 1px solid rgba(255,196,80,.28);
+}
+.panel-scenario { font-size: 10px; color: #ffd88a; margin-left: 6px; font-weight: 400; }
 
 .kpis { display: flex; gap: 6px; flex: 1; justify-content: center; min-width: 0; }
 .kpi {

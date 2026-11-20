@@ -131,12 +131,14 @@
   function viewerTargetUrl(st) {
     // 直连模式：iframe 指向 rerun viewer 自身端口；gRPC 直连（serve_grpc 已开 CORS）
     if (getViewerMode() === "direct" && st.direct_base && st.direct_grpc) {
-      return st.direct_base + "?url=" + encodeURIComponent(st.direct_grpc) + "&notebook=0";
+      return st.direct_base + "?url=" + encodeURIComponent(st.direct_grpc) + "&notebook=0&renderer=webgl";
     }
     const origin = window.location.origin;
     const grpcUrl = "rerun+" + origin + (st.grpc_path || "/proxy");
     const embedBase = st.embed_base || "/rerun-viewer/";
-    return embedBase + "?url=" + encodeURIComponent(grpcUrl) + "&notebook=0";
+    // C7-l：显式 WebGL——部分 Windows/无头环境 WebGPU requestDevice 会失败，
+    // 自动 fallback 也会抛错卡在错误页；WebGL 与大屏实测一致且稳定。
+    return embedBase + "?url=" + encodeURIComponent(grpcUrl) + "&notebook=0&renderer=webgl";
   }
 
   // C7-e：静态 rrd 文件直载 URL（replay 模式专用）——绕开 sink 累积历史
@@ -150,7 +152,7 @@
     const base = (getViewerMode() === "direct" && st.direct_base)
       ? st.direct_base
       : (st.embed_base || "/rerun-viewer/");
-    return base + "?url=" + encodeURIComponent(fileUrl) + "&notebook=0";
+    return base + "?url=" + encodeURIComponent(fileUrl) + "&notebook=0&renderer=webgl";
   }
 
   // 同源模式下 iframe 可 introspection：检查 WebGL 画布是否真的建出来

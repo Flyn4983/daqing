@@ -1,0 +1,44 @@
+{
+  "schema": "brigsim-dash/manifest/1",
+  "generated_at": "2026-10-16T00:38:54",
+  "scenario": "brigade_plain_fog",
+  "duration_ticks": 96,
+  "tick_seconds": 30,
+  "vectors": {
+    "knee": [
+      2.0,
+      2.0,
+      1.0,
+      3.0,
+      0.0,
+      21.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0
+    ],
+    "baseline": [
+      6.0,
+      4.0,
+      2.0,
+      2.0,
+      2.0,
+      20.0,
+      2.0,
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  "files": {
+    "timeseries.json": 22127,
+    "distribution.json": 1588,
+    "sensitivity.json": 6071,
+    "surrogate.json": 8430,
+    "pareto.json": 45004
+  },
+  "replay": {
+    "ready": true,
+    "path": "outputs\\dash\\replay_knee.rrd"
+  }
+}

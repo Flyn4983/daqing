@@ -23,38 +23,99 @@ from ..data.schema import Scenario
 from ..kernel.terrain import HeightField
 from .models import ensure_model, ground_offset
 
-# C7-i：可视化统一使用太行山真实 DEM（SRTM 30m，AWS Terrarium）。
-# 需求方要求"所有工况的 3D 显示都用和太行山一样的真实地形"。只在渲染层替换，
-# 不改仿真输入（四率数据/报告权威数字保持不变）；LOS 判定也用这张可见地形，
-# 保证"所见即所得"（画的山体遮挡 = 判定的山体遮挡）。
+# C7-i/C7-l：可视化使用太行山真实 DEM（SRTM 30m，AWS Terrarium），但
+# **每个工况取不同的真实 DEM 子区 + 朝向**，保证下拉切换时地图肉眼可见地变化。
+# 仍只在渲染层替换，不改仿真输入（四率数据/报告权威数字保持不变）；LOS 判定
+# 也用这张可见地形，保证"所见即所得"（画的山体遮挡 = 判定的山体遮挡）。
 VISUAL_REAL_DEM = True
 _PROJECT_ROOT = Path(__file__).resolve().parents[3]
 _REAL_DEM_TIF = _PROJECT_ROOT / "scenarios" / "terrain" / "dem_real_taihang.tif"
 _REAL_PASS_TIF = _PROJECT_ROOT / "scenarios" / "terrain" / "pass_real_taihang.tif"
 
+# 8 个工况 → 真实 DEM 变体（裁切窗口左上角行列 + 旋转 90° 次数）。
+# 385×385 原始 DEM 上取 272×272 子区，四角+四边中点组合互不相同。
+_DEM_VARIANTS: dict[str, tuple[int, int, int]] = {
+    "example_company":            (0,   113, 0),  # 东北山脊（与示例旅主景不同）
+    "medium_brigade":             (113, 0, 1),   # 东北沟谷（旋转 90°）
+    "brigade_canyon_clear":       (0,   113, 2),  # 西南深切峡谷（旋转 180°）
+    "brigade_plain_fog":          (113, 113, 3),  # 东南缓坡（旋转 270°）
+    "brigade_rolling_fortified":  (56,  56, 0),   # 中部起伏
+    "example_brigade":            (0,   0, 0),   # 示例保留完整北坡主景
+    "example_battalion":          (113, 56, 1),   # 营级东向谷地
+    "real_terrain_brigade":       (56,  113, 2),  # ★真实地形想定：南坡主景
+}
+_DEM_CROP = 272
+
 
 @functools.lru_cache(maxsize=1)
-def _real_dem_field(size_m: tuple[float, float], grid_n: int) -> HeightField | None:
-    """加载太行山真实 DEM 为 HeightField（进程内缓存，只读一次盘）。"""
+def _real_dem_native() -> tuple[np.ndarray, np.ndarray] | None:
+    """读取原始 385×385 DEM + 通行性（整个进程只读一次盘）。"""
     if not _REAL_DEM_TIF.is_file():
         return None
     try:
-        return HeightField.from_geotiff(
-            str(_REAL_DEM_TIF),
-            size=size_m,
-            grid_n=grid_n,
-            water_level=780.0,
-            passability_path=str(_REAL_PASS_TIF) if _REAL_PASS_TIF.is_file() else None,
-        )
+        import rasterio
+
+        with rasterio.open(str(_REAL_DEM_TIF)) as ds:
+            h = ds.read(1).astype(np.float64)
+        p = None
+        if _REAL_PASS_TIF.is_file():
+            with rasterio.open(str(_REAL_PASS_TIF)) as ds:
+                p = ds.read(1).astype(np.float64)
+        if p is None:
+            p = np.ones_like(h)
+        return h, p
     except Exception:
         return None
 
 
-def _visual_terrain(terrain: HeightField) -> HeightField:
-    """C7-i：把可视化地形替换为太行山真实 DEM（保持 size/grid_n 与原地形一致）。"""
+def _resize_grid(arr: np.ndarray, n: int) -> np.ndarray:
+    """双线性重采样到 (n, n)（PIL 的 F 模式，无额外重依赖）。"""
+    from PIL import Image
+
+    return np.asarray(
+        Image.fromarray(np.ascontiguousarray(arr, dtype=np.float32), mode="F")
+        .resize((n, n), Image.Resampling.BILINEAR),
+        dtype=np.float64,
+    )
+
+
+@functools.lru_cache(maxsize=16)
+def _real_dem_field(
+    size_m: tuple[float, float],
+    grid_n: int,
+    variant: str = "example_brigade",
+    preset_family: str | None = None,
+) -> HeightField | None:
+    """构造某工况的可见真实地形（不同子区/朝向 + 该工况配色预设）。"""
+    native = _real_dem_native()
+    if native is None:
+        return None
+    h_all, p_all = native
+    r0, c0, rot = _DEM_VARIANTS.get(variant, (0, 0, 0))
+    win = min(_DEM_CROP, h_all.shape[0], h_all.shape[1])
+    h = h_all[r0:r0 + win, c0:c0 + win]
+    p = p_all[r0:r0 + win, c0:c0 + win]
+    if rot:
+        h, p = np.rot90(h, rot), np.rot90(p, rot)
+    n = int(grid_n)
+    return HeightField(
+        size=size_m,
+        n=n,
+        heights=_resize_grid(h, n),
+        water_level=float(h.min()) - 30.0,
+        passability=_resize_grid(p, n),
+        preset_family=preset_family,
+    )
+
+
+def _visual_terrain(terrain: HeightField, scenario_name: str | None = None) -> HeightField:
+    """C7-l：可视化地形 = 该工况专属的真实 DEM 子区（仿真层数据不变）。"""
     if not VISUAL_REAL_DEM:
         return terrain
-    real = _real_dem_field(tuple(terrain.size), int(terrain.n))
+    real = _real_dem_field(
+        tuple(terrain.size), int(terrain.n), scenario_name or "example_brigade",
+        getattr(terrain, "preset_family", None),
+    )
     return real if real is not None else terrain
 
 SIDE_COLOR = {0: (214, 69, 55), 1: (64, 132, 240)}
@@ -117,10 +178,11 @@ WEATHER_NAME = {
 ILLUM_NAME = {"day": "昼间", "dusk": "黄昏", "night": "夜间"}
 AIR_KIND_LABEL = {"uav": "无人机", "loitering": "巡飞弹", "helo": "武直"}
 AIR_DONE_STATES = {"killed", "expended", "exiting"}
-# C7-j：空中平台真实模型独立于地面 use_models 开关——回放 rrd 为控体积地面用
-# 轻量盒体（use_models=False），但无人机/巡飞弹/武直始终用真实 GLB（3 型共 ~14KB，
-# 体积可忽略），满足"用真实装备而非圆球替代"。设 False 可退回圆球。
+# C7-j：空中平台始终用真实 GLB（3 型共 ~14KB，体积可忽略）。
 AIR_USE_REAL_MODELS = True
+# C7-l：地面真实 GLB 在 10km 战场全景下只有 6m 长，肉眼看就是点；放大到
+# 战场可读尺度（与空中模型同思路），并用低面数版本控制 rrd 体积。
+GROUND_MODEL_SCALE = 24.0
 OBSTACLE_STYLE = {
     "minefield": ((200, 84, 60), "雷场"),
     "dragons_teeth": ((239, 170, 23), "三角锥"),
@@ -173,8 +235,8 @@ def visualize(
     """
     if tint_models is None:
         tint_models = use_models
-    # C7-i：可视化地形统一为太行山真实 DEM（仅渲染与 LOS 判定用，仿真数据不变）
-    terrain = _visual_terrain(terrain)
+    # C7-l：该工况专属真实 DEM 子区（仅渲染与 LOS 判定用，仿真数据不变）
+    terrain = _visual_terrain(terrain, getattr(scenario, "name", None))
 
     rr.init(app_id, spawn=spawn)
     if rrd_path is not None:
@@ -721,7 +783,11 @@ def _update_unit_models(cur, zs, info, z_off: dict[str, float], model_state: dic
 
     C7-k：此前只有回放 rrd 的 use_models=True 分支有这段逻辑，live 逐帧只画
     红蓝圆点；抽成公共函数后，live 推演也能看到同一套坦克/步战/雷达模型。
+    C7-l：live 逐帧表没有 damaged 列，按正常态补默认值（与盒体分支一致）。
     """
+    if "damaged" not in cur.columns:
+        cur = cur.copy()
+        cur["damaged"] = False
     for k, uid in enumerate(cur.index):
         ent = f"world/units/{uid}"
         alive, damaged = bool(cur.at[uid, "alive"]), bool(cur.at[uid, "damaged"])
@@ -729,9 +795,11 @@ def _update_unit_models(cur, zs, info, z_off: dict[str, float], model_state: dic
             ent,
             rr.Transform3D(
                 translation=[float(cur.at[uid, "x"]), float(cur.at[uid, "y"]),
-                             float(zs[k]) + z_off.get(info[uid][0], 0.0)],
+                             float(zs[k]) + z_off.get(info[uid][0], 0.0) * GROUND_MODEL_SCALE],
                 rotation=rr.RotationAxisAngle(axis=[0, 0, 1],
                                               radians=float(cur.at[uid, "heading"])),
+                # C7-l：米制车体放大到战场可读尺度，否则 10km 全景下就是小点
+                scale=GROUND_MODEL_SCALE,
             ),
         )
         if not tint:
