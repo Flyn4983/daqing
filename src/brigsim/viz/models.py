@@ -9,6 +9,7 @@ M3 可用实测/扫描 GLB 直接替换 assets/models 下同名文件。
 from __future__ import annotations
 
 import functools
+import math
 from pathlib import Path
 
 import numpy as np
@@ -201,7 +202,83 @@ def _truck() -> list[trimesh.Trimesh]:
     return p
 
 
+# ---- C7-j 空中平台：无人机 / 巡飞弹 / 武装直升机（程序化，机头朝 +X）----
+# 此前空中单位用 Points3D 圆球代替，用户反馈"能否用真实装备"。复用同一套
+# trimesh → GLB 管线，三类空中目标各建可辨外形：固定翼无人机（大展弦比平直翼）
+# / 巡飞弹（小三角翼 + 筒身）/ 武直（短粗机身 + 十字主旋翼 + 尾梁尾桨）。
+
+AIR_GRAY = (128, 134, 138)   # 无人机浅灰
+AIR_TAN = (120, 108, 78)     # 巡飞弹沙褐
+AIR_OLIVE = (72, 82, 58)     # 武直军绿
+
+
+def _uav() -> list[trimesh.Trimesh]:
+    """中高空固定翼察打无人机（翼龙/彩虹级）：细长机身 + 大展弦比平直翼
+    + H 尾翼 + 腹下吊舱，机头 +X。"""
+    p = [_cyl(0.45, 8.5, (0, 0, 0), "x", AIR_GRAY, sections=14)]  # 机身
+    nose = _cyl(0.45, 1.6, (4.6, 0, 0), "x", AIR_GRAY, sections=14)  # 机头整流罩
+    p.append(nose)
+    # 主翼：大展弦比薄板（翼展 ~14m，弦长 ~1.6m）
+    wing = _box((1.6, 14.0, 0.18), (-0.4, 0, 0.1), AIR_GRAY)
+    p.append(wing)
+    # H 形尾翼：水平尾 + 双垂尾
+    p.append(_box((1.1, 4.6, 0.14), (-3.7, 0, 0.05), AIR_GRAY))
+    for y in (-2.2, 2.2):
+        fin = _box((1.0, 0.14, 1.5), (-3.8, y, 0.75), AIR_GRAY)
+        p.append(fin)
+    # 腹下光电/武器吊舱
+    p.append(_cyl(0.28, 1.4, (0.6, 0, -0.6), "x", DARK, sections=10))
+    return p
+
+
+def _loitering() -> list[trimesh.Trimesh]:
+    """巡飞弹（弹簧刀级）：小型三角翼 + 筒式机身 + 头部传感器，机头 +X。"""
+    p = [_cyl(0.16, 1.5, (0, 0, 0), "x", AIR_TAN, sections=10)]
+    p.append(_cyl(0.17, 0.35, (0.85, 0, 0), "x", DARK, sections=10))  # 导引头
+    # 三角翼：用 box 近似后掠翼（左右各一片）
+    for sign in (-1, 1):
+        w = _box((1.1, 0.9, 0.06), (-0.25, sign * 0.55, 0.05), AIR_TAN)
+        w.apply_transform(
+            trimesh.transformations.rotation_matrix(sign * 0.5, [1, 0, 0])
+        )
+        p.append(w)
+    # 尾部弹翼
+    p.append(_box((0.35, 1.1, 0.05), (-0.65, 0, 0.05), AIR_TAN))
+    return p
+
+
+def _helo() -> list[trimesh.Trimesh]:
+    """武装直升机（直-10/阿帕奇级）：短粗机身 + 串列座舱 + 十字主旋翼
+    + 尾梁尾桨 + 短翼挂架，机头 +X。"""
+    p = [_box((9.0, 2.0, 1.8), (0, 0, 0), AIR_OLIVE)]  # 机身
+    # 串列座舱（前低后高，阶梯）
+    p.append(_box((2.0, 1.6, 1.0), (2.9, 0, 0.9), DARK))
+    p.append(_box((1.8, 1.6, 1.0), (1.1, 0, 1.5), DARK))
+    # 主旋翼桅杆 + 十字旋翼（四片细长桨叶）
+    p.append(_cyl(0.18, 1.2, (-0.6, 0, 1.8), "z", DARK, sections=10))
+    for ang in (0, math.pi / 2):
+        blade = _box((15.0, 0.35, 0.06), (-0.6, 0, 2.4), DARK)
+        blade.apply_transform(
+            trimesh.transformations.rotation_matrix(ang, [0, 0, 1])
+        )
+        p.append(blade)
+    # 尾梁 + 尾桨 + 垂尾
+    p.append(_box((5.0, 0.5, 0.5), (-6.7, 0, 0.5), AIR_OLIVE))
+    tail_rotor = _box((0.08, 2.6, 0.3), (-9.0, 0, 0.9), DARK)
+    tail_rotor.apply_transform(
+        trimesh.transformations.rotation_matrix(0.5, [1, 0, 0])
+    )
+    p.append(tail_rotor)
+    p.append(_box((1.2, 0.12, 1.6), (-8.6, 0, 1.0), AIR_OLIVE))  # 垂尾
+    # 短翼挂架 + 火箭吊舱
+    for y in (-1.7, 1.7):
+        p.append(_box((1.6, 1.2, 0.2), (0.5, y, -0.3), AIR_OLIVE))
+        p.append(_cyl(0.22, 1.4, (0.5, y * 1.35, -0.5), "x", DARK, sections=10))
+    return p
+
+
 _BUILDERS = {
+    "uav": _uav, "loitering": _loitering, "helo": _helo,
     "tank": _tank, "ifv": _ifv, "atgm_team": _atgm_team,
     "mortar": lambda: _spg(2.0, 0.12),
     "howitzer": lambda: _spg(3.6, 0.09),

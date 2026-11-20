@@ -117,6 +117,10 @@ WEATHER_NAME = {
 ILLUM_NAME = {"day": "昼间", "dusk": "黄昏", "night": "夜间"}
 AIR_KIND_LABEL = {"uav": "无人机", "loitering": "巡飞弹", "helo": "武直"}
 AIR_DONE_STATES = {"killed", "expended", "exiting"}
+# C7-j：空中平台真实模型独立于地面 use_models 开关——回放 rrd 为控体积地面用
+# 轻量盒体（use_models=False），但无人机/巡飞弹/武直始终用真实 GLB（3 型共 ~14KB，
+# 体积可忽略），满足"用真实装备而非圆球替代"。设 False 可退回圆球。
+AIR_USE_REAL_MODELS = True
 OBSTACLE_STYLE = {
     "minefield": ((200, 84, 60), "雷场"),
     "dragons_teeth": ((239, 170, 23), "三角锥"),
@@ -199,6 +203,7 @@ def visualize(
     # C7-a0：空中航迹与战场效果点（None 或空表时对应图层静默）
     air_trails: dict[str, list] = {}
     air_done: set[str] = set()
+    air_model_logged: set[str] = set()  # C7-j：每架次 Asset3D 只静态 log 一次
     # 屏烟：想定中的半径/持续时间 + 效果帧给出的实际起烟 tick
     smoke_specs = {
         (round(z.at[0]), round(z.at[1])): (float(z.radius_m), int(z.duration_ticks))
@@ -207,6 +212,18 @@ def visualize(
     smoke_start: dict[tuple, int] = {}
     effects = effects if effects is not None and not effects.empty else None
     air = air if air is not None and not air.empty else None
+    # C7-j：空中模型 Asset3D 必须在首次 set_time 之前以 static 发出，否则 rerun
+    # 会把 static 数据绑到当前 tick，回放跳帧后模型消失（只剩标签）。地面单位的
+    # _log_static_units 同样在循环前调用，遵循同一约定。
+    if air is not None and AIR_USE_REAL_MODELS:
+        for aid, kind in air[["asset_id", "kind"]].drop_duplicates().itertuples(False, name=None):
+            key = f"{aid}:{kind}"
+            try:
+                rr.log(f"world/air/{aid}/model",
+                       rr.Asset3D(path=str(ensure_model(str(kind)))), static=True)
+                air_model_logged.add(key)
+            except Exception:
+                pass
 
     pos_table = {
         (int(t), uid): (float(x), float(y))
@@ -301,7 +318,9 @@ def visualize(
         _log_tow_lines(cur, info, geo)
         _log_effects(tick, effects, geo, smoke_specs, smoke_start)
         if air is not None:
-            _log_air(tick, air, air_trails, air_done)
+            _log_air(tick, air, air_trails, air_done, use_models=AIR_USE_REAL_MODELS,
+                     model_logged=air_model_logged,
+                     ground_max=float(np.asarray(geo.heights).max()))
         _log_metrics(tick, cur)
         if supply is not None and not supply.empty:
             _log_supply(tick, supply)
@@ -1085,8 +1104,8 @@ def _log_fans(cur, zs, info, *, outline: bool = False, geo=None, los_terrain=Non
                 strips.append([arc_pts[-1], [ox, oy, oz]]); strip_colors.append(c_edge)
             # 记录每个扇面的可见掩码，供三角形裁剪
             _vis_masks.append(vis)
+        indices = []
         if fill_v:
-            indices = []
             seg_i = 0
             for base in range(0, len(fill_v), seg):
                 mask = _vis_masks[seg_i] if seg_i < len(_vis_masks) else [True] * seg
@@ -1097,6 +1116,11 @@ def _log_fans(cur, zs, info, *, outline: bool = False, geo=None, los_terrain=Non
                     # 两端点均可见才画（任一端被地形遮挡即视为该方向被遮蔽）
                     if j < len(mask) and j + 1 < len(mask) and mask[j] and mask[j + 1]:
                         indices.append([base, base + j + 1, base + j + 2])
+        # C7-j（live 峡谷场景 "Mesh has no triangle indices" 根因）：扇面被地形
+        # 全部遮挡时 indices=[]，若照常 log 一个 (0,3) 空索引 Mesh3D，rerun viewer
+        # 会报 "Failed to load mesh /world/fans: Mesh has no triangle indices"。
+        # 可见三角形为 0 时改发 Clear（亮弧线 strips 不受影响，仍按可见段绘制）。
+        if fill_v and indices:
             rr.log(
                 "world/fans",
                 rr.Mesh3D(
@@ -1148,16 +1172,20 @@ def _log_fans(cur, zs, info, *, outline: bool = False, geo=None, los_terrain=Non
         for j in range(seg - 2):
             if j < len(mask) and j + 1 < len(mask) and mask[j] and mask[j + 1]:
                 indices.append([base, base + j + 1, base + j + 2])
-    # C7-i：triangle_indices 统一规范为 (N,3) int32——空索引时 np.asarray([])
-    # 会变成 shape (0,) float64，rerun viewer 解析时报 "invalid index" 警告。
-    rr.log(
-        "world/fans",
-        rr.Mesh3D(
-            vertex_positions=np.asarray(verts, dtype=np.float64),
-            triangle_indices=np.asarray(indices, dtype=np.int32).reshape((-1, 3)),
-            vertex_colors=np.asarray(colors, dtype=np.uint8),
-        ),
-    )
+    # C7-j：同样防御——所有扇面被地形遮挡时 indices=[]，改发 Clear 而非空 Mesh3D，
+    # 避免 viewer 报 "Mesh has no triangle indices"（C7-i 仅规范了 dtype/shape，
+    # 但 (0,3) 空数组仍会被 viewer 判为无索引 Mesh）。
+    if indices:
+        rr.log(
+            "world/fans",
+            rr.Mesh3D(
+                vertex_positions=np.asarray(verts, dtype=np.float64),
+                triangle_indices=np.asarray(indices, dtype=np.int32).reshape((-1, 3)),
+                vertex_colors=np.asarray(colors, dtype=np.uint8),
+            ),
+        )
+    else:
+        rr.log("world/fans", rr.Clear(recursive=False))
 
 
 def _ring_pts(cx, cy, z, radius, n=48):
@@ -1489,24 +1517,49 @@ def _log_engagements(tick, engagements, pos_table, terrain, info) -> None:
         )
 
 
+# C7-j：空中模型米制外形（机身 8~15m）在 10km 战场视野里太小，需放大才能辨认；
+# 全景相机下地形布满扇面/标签，需足够大才醒目。50× 后武直旋翼 ~750m（最小 rrd
+# 实验验证此量级清晰可见），仍远小于战场 10km 尺度。
+AIR_MODEL_SCALE = 50.0
+# 飞行高度兜底：C7-i 统一太行山真实 DEM（最高 ~2024m）后，原仿真想定的
+# alt=900/1500m 低于山峰，飞机被埋进山体。渲染时抬到地形最高点之上该余量。
+AIR_GROUND_CLEARANCE = 400.0
+
+
 def _log_air(
     tick: int,
     air: pd.DataFrame,
     trails: dict[str, list],
     done: set[str],
+    *,
+    use_models: bool = False,
+    model_logged: set[str] | None = None,
+    ground_max: float | None = None,
 ) -> None:
-    """空中架次：按真实高度分层的航点 + 尾迹；被拦截/耗尽/返航后清除。"""
+    """空中架次：按真实高度分层的航点 + 尾迹；被拦截/耗尽/返航后清除。
+
+    C7-j：use_models=True 时用程序化 GLB（无人机/巡飞弹/武直）+ Transform3D
+    渲染真实外形，按轨迹差分推算航向；False 时回退 Points3D 圆球（轻量）。
+    ground_max：渲染地形最高高程，空高度不足时抬高避免飞机埋山（C7-i 真实 DEM）。
+    """
     new = air[air["tick"] == tick]
+    floor = (ground_max + AIR_GROUND_CLEARANCE) if ground_max is not None else None
     for _, r in new.iterrows():
         aid = str(r["asset_id"])
-        trails.setdefault(aid, []).append([float(r["x"]), float(r["y"]), float(r["alt"])])
+        alt = float(r["alt"])
+        if floor is not None:
+            alt = max(alt, floor)
+        trails.setdefault(aid, []).append([float(r["x"]), float(r["y"]), alt])
         if str(r["state"]) in AIR_DONE_STATES:
             done.add(aid)
+    if model_logged is None:
+        model_logged = set()
     for aid, pts in trails.items():
         base = f"world/air/{aid}"
         if aid in done:
             rr.log(f"{base}/trail", rr.Clear(recursive=False))
             rr.log(f"{base}/mark", rr.Clear(recursive=False))
+            rr.log(f"{base}/model", rr.Clear(recursive=False))
             continue
         side = 0
         kind = "uav"
@@ -1518,13 +1571,47 @@ def _log_air(
         color = SIDE_COLOR[side]
         rr.log(f"{base}/trail", rr.LineStrips3D([pts], colors=[color], radii=2.5))
         x, y, z = pts[-1]
-        rr.log(
-            f"{base}/mark",
-            rr.Points3D(
-                [[x, y, z]], radii=120, colors=[color],
-                labels=[AIR_KIND_LABEL.get(kind, kind)],
-            ),
-        )
+        if use_models:
+            # 型号 GLB 静态资源（同一架次只发一次；换型时 kind 变化亦重发）
+            asset_key = f"{aid}:{kind}"
+            if asset_key not in model_logged:
+                try:
+                    glb = ensure_model(kind)
+                    rr.log(f"{base}/model", rr.Asset3D(path=str(glb)), static=True)
+                    model_logged.add(asset_key)
+                except Exception:
+                    pass  # 模型生成失败则退化为仅有尾迹，不阻断推演
+            # 该 tick 的位姿：轨迹末两点差分算航向（机头 +X 模型绕 Z 旋转）
+            if len(pts) >= 2:
+                dx, dy = pts[-1][0] - pts[-2][0], pts[-1][1] - pts[-2][1]
+                heading = math.atan2(dy, dx) if (dx or dy) else 0.0
+            else:
+                heading = 0.0
+            if asset_key in model_logged:
+                rr.log(
+                    base,
+                    rr.Transform3D(
+                        translation=[x, y, z],
+                        rotation=rr.RotationAxisAngle(axis=[0, 0, 1], radians=heading),
+                        scale=AIR_MODEL_SCALE,
+                    ),
+                )
+            # 型号文字标签：Points3D 极小锚点仅承载中文 label（rerun 0.39 无 Text3D）
+            rr.log(
+                f"{base}/label",
+                rr.Points3D(
+                    [[x, y, z + 45]], radii=[8], colors=[color],
+                    labels=[AIR_KIND_LABEL.get(kind, kind)],
+                ),
+            )
+        else:
+            rr.log(
+                f"{base}/mark",
+                rr.Points3D(
+                    [[x, y, z]], radii=120, colors=[color],
+                    labels=[AIR_KIND_LABEL.get(kind, kind)],
+                ),
+            )
 
 
 def _smoke_band_arrays(tick: int, cx: float, cy: float, radius: float, terrain: HeightField):
