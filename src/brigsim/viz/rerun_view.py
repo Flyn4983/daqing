@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import functools
 import math
 from pathlib import Path
 
@@ -21,6 +22,40 @@ import rerun.blueprint as rrb
 from ..data.schema import Scenario
 from ..kernel.terrain import HeightField
 from .models import ensure_model, ground_offset
+
+# C7-i：可视化统一使用太行山真实 DEM（SRTM 30m，AWS Terrarium）。
+# 需求方要求"所有工况的 3D 显示都用和太行山一样的真实地形"。只在渲染层替换，
+# 不改仿真输入（四率数据/报告权威数字保持不变）；LOS 判定也用这张可见地形，
+# 保证"所见即所得"（画的山体遮挡 = 判定的山体遮挡）。
+VISUAL_REAL_DEM = True
+_PROJECT_ROOT = Path(__file__).resolve().parents[3]
+_REAL_DEM_TIF = _PROJECT_ROOT / "scenarios" / "terrain" / "dem_real_taihang.tif"
+_REAL_PASS_TIF = _PROJECT_ROOT / "scenarios" / "terrain" / "pass_real_taihang.tif"
+
+
+@functools.lru_cache(maxsize=1)
+def _real_dem_field(size_m: tuple[float, float], grid_n: int) -> HeightField | None:
+    """加载太行山真实 DEM 为 HeightField（进程内缓存，只读一次盘）。"""
+    if not _REAL_DEM_TIF.is_file():
+        return None
+    try:
+        return HeightField.from_geotiff(
+            str(_REAL_DEM_TIF),
+            size=size_m,
+            grid_n=grid_n,
+            water_level=780.0,
+            passability_path=str(_REAL_PASS_TIF) if _REAL_PASS_TIF.is_file() else None,
+        )
+    except Exception:
+        return None
+
+
+def _visual_terrain(terrain: HeightField) -> HeightField:
+    """C7-i：把可视化地形替换为太行山真实 DEM（保持 size/grid_n 与原地形一致）。"""
+    if not VISUAL_REAL_DEM:
+        return terrain
+    real = _real_dem_field(tuple(terrain.size), int(terrain.n))
+    return real if real is not None else terrain
 
 SIDE_COLOR = {0: (214, 69, 55), 1: (64, 132, 240)}
 SIDE_COLOR_A = {0: (214, 69, 55, 22), 1: (64, 132, 240, 22)}
@@ -128,6 +163,9 @@ def visualize(
     embed=True 时写入大屏 iframe 专用极简蓝图（3D 视口独占，面板全收起）；
     默认 False 保持 ``brigsim replay`` 桌面蓝图（侧栏时序/交战日志 + 时间轴）。
     """
+    # C7-i：可视化地形统一为太行山真实 DEM（仅渲染与 LOS 判定用，仿真数据不变）
+    terrain = _visual_terrain(terrain)
+
     rr.init(app_id, spawn=spawn)
     if rrd_path is not None:
         rr.save(str(rrd_path))
@@ -1110,11 +1148,13 @@ def _log_fans(cur, zs, info, *, outline: bool = False, geo=None, los_terrain=Non
         for j in range(seg - 2):
             if j < len(mask) and j + 1 < len(mask) and mask[j] and mask[j + 1]:
                 indices.append([base, base + j + 1, base + j + 2])
+    # C7-i：triangle_indices 统一规范为 (N,3) int32——空索引时 np.asarray([])
+    # 会变成 shape (0,) float64，rerun viewer 解析时报 "invalid index" 警告。
     rr.log(
         "world/fans",
         rr.Mesh3D(
             vertex_positions=np.asarray(verts, dtype=np.float64),
-            triangle_indices=np.asarray(indices),
+            triangle_indices=np.asarray(indices, dtype=np.int32).reshape((-1, 3)),
             vertex_colors=np.asarray(colors, dtype=np.uint8),
         ),
     )
@@ -1227,9 +1267,15 @@ def _log_coverages(tick: int, cur, zs, info, *, thin: bool = False, geo=None,
         rr.log("world/coverages/sweeps", rr.Clear(recursive=False))
 
 
-def _instanced_spheres(centers, radii, colors, *, z_scale=1.0, subdiv=2):
+def _instanced_spheres(centers, radii, colors, *, z_scale=1.0, subdiv=1):
     """批量实例化低精度球 Mesh3D（Points3D/Ellipsoids3D 在 rerun 0.39 上半透明发黑，
-    Mesh3D 的 vertex_colors alpha 混合正常，烟雾/雾用它）。"""
+    Mesh3D 的 vertex_colors alpha 混合正常，烟雾/雾用它）。
+
+    C7-i：subdiv 默认 2→1（icosphere 162→42 顶点/320→80 面，减负 75%）。
+    rerun web viewer 单 entity 有内存预算上限，超预算会报 "exceeds memory
+    budget / try native viewer" 且丢弃数据引发 "invalid index"；烟雾是半透明
+    球团，subdiv=1 视觉几乎无差异，但显著减小 rrd 体积与 GPU 缓冲。
+    """
     import trimesh
 
     base = trimesh.creation.icosphere(subdivisions=subdiv)
@@ -1243,9 +1289,15 @@ def _instanced_spheres(centers, radii, colors, *, z_scale=1.0, subdiv=2):
         verts.append(vv)
         faces.append(f0 + off)
         cols.append(np.tile(np.asarray(col, dtype=np.uint8), (nv, 1)))
+    if not verts:  # C7-i：空实例→规范空 Mesh，避免 np.concatenate([]) 抛异常
+        return rr.Mesh3D(
+            vertex_positions=np.zeros((0, 3), dtype=np.float64),
+            triangle_indices=np.zeros((0, 3), dtype=np.int32),
+            vertex_colors=np.zeros((0, 4), dtype=np.uint8),
+        )
     return rr.Mesh3D(
         vertex_positions=np.concatenate(verts),
-        triangle_indices=np.concatenate(faces),
+        triangle_indices=np.asarray(np.concatenate(faces), dtype=np.int32).reshape((-1, 3)),
         vertex_colors=np.concatenate(cols),
     )
 
@@ -1573,7 +1625,7 @@ def _log_effects(
             "world/effects/smoke_bands",
             rr.Mesh3D(
                 vertex_positions=np.concatenate(vv),
-                triangle_indices=np.concatenate(ff),
+                triangle_indices=np.asarray(np.concatenate(ff), dtype=np.int32).reshape((-1, 3)),
                 vertex_colors=np.concatenate(cc),
             ),
         )

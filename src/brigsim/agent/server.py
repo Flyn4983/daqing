@@ -377,6 +377,8 @@ def _preview_scenario(scenario: str) -> dict:
 
     sc = YamlFileProvider().load_scenario(scenario)
     hf = HeightField.from_spec(sc.terrain)
+    # C7-i：live 预览 3D 地形统一太行山真实 DEM（仅渲染/LOS，仿真数据不变）
+    hf = rerun_view._visual_terrain(hf)
     print(f"[scene-preview] {scenario} 想定加载耗时 {time.monotonic() - _t0:.2f}s", flush=True)
 
     def _preview_apply() -> None:
@@ -598,6 +600,8 @@ def _run_worker(sess: RunSession) -> None:
             from ..viz import rerun_view
 
             _terrain_hf = kernel.terrain
+            # C7-i：live 逐 tick 3D 地形统一太行山真实 DEM（仅渲染/LOS，仿真数据不变）
+            _terrain_hf = rerun_view._visual_terrain(_terrain_hf)
             # C7-d：渲染垂直夸张 + 缩放地形副本（物理高程不变，仅渲染）
             _z_exag = rerun_view.auto_z_exag(_terrain_hf)
             _geo_hf = _terrain_hf.scaled(_z_exag)
