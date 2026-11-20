@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>智演先知 · 模式选择</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { height: 100%; font-family: "Microsoft YaHei", "Segoe UI", sans-serif; }
+
+body {
+  background:
+    radial-gradient(ellipse at 30% 20%, rgba(30, 120, 180, 0.35), transparent 60%),
+    radial-gradient(ellipse at 70% 80%, rgba(60, 180, 200, 0.25), transparent 55%),
+    linear-gradient(135deg, #0a1628 0%, #0d1f35 50%, #061225 100%);
+  background-attachment: fixed;
+  position: relative; overflow: hidden;
+}
+body::before {
+  content: ""; position: absolute; inset: 0;
+  background-image:
+    linear-gradient(rgba(54, 182, 245, 0.07) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(54, 182, 245, 0.07) 1px, transparent 1px);
+  background-size: 60px 60px;
+}
+/* 顶部用户栏 */
+.top-bar {
+  position: relative; z-index: 10;
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 18px 36px;
+  border-bottom: 1px solid rgba(54, 182, 245, 0.15);
+}
+.top-bar .brand {
+  font-size: 15px; color: #bfe9ff; letter-spacing: 2px;
+}
+.top-bar .brand span { color: #7ff0d2; }
+.top-bar .user {
+  display: flex; align-items: center; gap: 14px;
+  font-size: 12px; color: #8fb4d8;
+}
+.top-bar .logout {
+  padding: 6px 14px;
+  background: transparent;
+  border: 1px solid rgba(54, 182, 245, 0.35);
+  color: #8fb4d8; font-size: 11px;
+  border-radius: 6px; cursor: pointer;
+  transition: all 0.2s;
+}
+.top-bar .logout:hover { border-color: #ff7a7a; color: #ff7a7a; }
+
+/* 主内容 */
+.main {
+  position: relative; z-index: 10;
+  height: calc(100% - 70px);
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 40px; padding: 40px;
+}
+.page-title { text-align: center; }
+.page-title h2 {
+  font-size: 26px; font-weight: 700;
+  color: #bfe9ff; letter-spacing: 4px;
+}
+.page-title .sub {
+  font-size: 13px; color: #6d8bb0;
+  margin-top: 10px; letter-spacing: 2px;
+}
+
+/* 两大按钮 */
+.mode-grid {
+  display: flex; gap: 40px; max-width: 1100px; width: 100%;
+}
+.mode-card {
+  flex: 1;
+  padding: 48px 40px;
+  background: rgba(12, 26, 48, 0.6);
+  backdrop-filter: blur(12px);
+  border: 1px solid rgba(54, 182, 245, 0.25);
+  border-radius: 20px;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  text-decoration: none;
+  display: flex; flex-direction: column; align-items: center;
+  position: relative; overflow: hidden;
+}
+.mode-card::before {
+  content: ""; position: absolute; top: 0; left: 0; right: 0;
+  height: 3px; background: linear-gradient(90deg, transparent, #36b6f5, transparent);
+  opacity: 0; transition: opacity 0.3s;
+}
+.mode-card:hover {
+  transform: translateY(-4px);
+  border-color: rgba(127, 240, 210, 0.5);
+  background: rgba(12, 26, 48, 0.75);
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.4), 0 0 40px rgba(54, 182, 245, 0.1);
+}
+.mode-card:hover::before { opacity: 1; }
+
+.mode-icon {
+  width: 96px; height: 96px; margin-bottom: 24px;
+  border-radius: 20px;
+  display: flex; align-items: center; justify-content: center;
+  transition: transform 0.3s;
+}
+.mode-card:hover .mode-icon { transform: scale(1.08); }
+
+.icon-replay {
+  background: linear-gradient(135deg, rgba(54, 182, 245, 0.25), rgba(54, 182, 245, 0.05));
+  border: 1px solid rgba(54, 182, 245, 0.4);
+}
+.icon-live {
+  background: linear-gradient(135deg, rgba(127, 240, 210, 0.2), rgba(127, 240, 210, 0.03));
+  border: 1px solid rgba(127, 240, 210, 0.4);
+}
+
+.mode-icon svg { width: 48px; height: 48px; }
+
+.mode-title {
+  font-size: 20px; font-weight: 700;
+  color: #e8f1ff; letter-spacing: 3px;
+  margin-bottom: 10px;
+}
+.mode-desc {
+  font-size: 12px; color: #6d8bb0;
+  text-align: center; line-height: 1.8;
+  letter-spacing: 0.5px;
+}
+
+.mode-features {
+  margin-top: 20px;
+  display: flex; gap: 8px; flex-wrap: wrap; justify-content: center;
+}
+.mode-features .tag {
+  font-size: 10px; padding: 3px 10px;
+  background: rgba(54, 182, 245, 0.1);
+  border: 1px solid rgba(54, 182, 245, 0.25);
+  border-radius: 10px;
+  color: #8fb4d8;
+  letter-spacing: 0.5px;
+}
+.icon-live + * .mode-features .tag {
+  background: rgba(127, 240, 210, 0.1);
+  border-color: rgba(127, 240, 210, 0.25);
+  color: #7ff0d2;
+}
+</style>
+</head>
+<body>
+
+<div class="top-bar">
+  <div class="brand">智演先知<span> · </span>保障先行 — 模式选择</div>
+  <div class="user">
+    <span id="user-info">参谋 — admin</span>
+    <button class="logout" id="btn-logout">退出登录</button>
+  </div>
+</div>
+
+<div class="main">
+  <div class="page-title">
+    <h2>请选择工作模式</h2>
+    <div class="sub">SELECT YOUR WORK MODE</div>
+  </div>
+
+  <div class="mode-grid">
+    <a class="mode-card" href="/index.html?mode=live" style="display:flex;text-decoration:none;">
+      <div class="mode-icon icon-live">
+        <svg viewBox="0 0 48 48" fill="none" stroke="#7ff0d2" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="24" cy="24" r="20"/>
+          <polygon points="20,15 20,33 35,24" fill="#7ff0d2" stroke="none"/>
+        </svg>
+      </div>
+      <div class="mode-title">实时仿真推演</div>
+      <div class="mode-desc">选择火力配置、地形、气象等参数<br>构建作战想定，启动实时仿真推演</div>
+      <div class="mode-features">
+        <span class="tag">多工况配置</span>
+        <span class="tag">22 可调参数</span>
+        <span class="tag">四率实时更新</span>
+        <span class="tag">自动离线分析</span>
+      </div>
+    </a>
+
+    <a class="mode-card" href="/index.html?mode=replay" style="display:flex;text-decoration:none;">
+      <div class="mode-icon icon-replay">
+        <svg viewBox="0 0 48 48" fill="none" stroke="#36b6f5" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="6" y="10" width="36" height="28" rx="3"/>
+          <rect x="10" y="14" width="28" height="20" fill="rgba(54,182,245,0.1)" stroke="none"/>
+          <polygon points="19,20 19,28 27,24" fill="#36b6f5" stroke="none"/>
+          <rect x="14" y="38" width="20" height="2" rx="1"/>
+          <circle cx="24" cy="39" r="3" fill="#36b6f5"/>
+        </svg>
+      </div>
+      <div class="mode-title">历史数据回放</div>
+      <div class="mode-desc">加载预生成的仿真推演数据<br>逐步回放作战过程与四率演变</div>
+      <div class="mode-features">
+        <span class="tag">进度控制</span>
+        <span class="tag">拖拽跳转</span>
+        <span class="tag">离线分析结果</span>
+        <span class="tag">复盘研判</span>
+      </div>
+    </a>
+  </div>
+</div>
+
+<script>
+const user = sessionStorage.getItem("user");
+if (!user) window.location.href = "/login.html";
+else {
+  const u = JSON.parse(user);
+  document.getElementById("user-info").textContent =
+    (u.role === "admin" ? "管理员" : "参谋") + " — " + u.username;
+}
+document.getElementById("btn-logout").addEventListener("click", () => {
+  sessionStorage.clear();
+  window.location.href = "/login.html";
+});
+</script>
+</body>
+</html>

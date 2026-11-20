@@ -66,6 +66,6 @@
       });
       renderParity();
     },
-    redraw() { renderParity(); },
+    redraw() { if (!D) return; renderParity(); },
   };
 })();

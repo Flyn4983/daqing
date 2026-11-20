@@ -138,6 +138,7 @@
     { file: "example_brigade",           label: "重型旅 · 合成兵种示例",     pre: "geotiff",   dur: "48", wx: "clear",     terrain: "DEM地形" },
     { file: "example_company",           label: "连级 · 装步冲击示例",       pre: "synthetic", dur: "60", wx: "clear",     terrain: "程序地形" },
     { file: "example_battalion",         label: "营级 · 三阶段进攻示例",     pre: "geotiff",   dur: "80", wx: "clear",     terrain: "DEM地形" },
+    { file: "real_terrain_brigade",      label: "★真实地形 · 太行山地形+ERA5气象", pre: "geotiff", dur: "48", wx: "overcast", terrain: "真实DEM" },
   ];
 
   function initScenarioSwitch() {
@@ -321,14 +322,25 @@
 
     async function previewLiveScene(scenario) {
       const meta = scenarioMeta(scenario);
-      setTag(`已选 · ${meta.label || scenario} · 3D 地形/气象预览中…`, "running");
+      setTag(`已选 · ${meta.label || scenario} · 3D 态势切换中…`, "running");
       try {
         const r = await fetch("/api/scene-switch", {
           method: "POST", headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ scenario, mode: "preview" }),
         });
         const j = await r.json();
-        if (j.ok) {
+        if (j.ok && j.mode === "static") {
+          // C7-g：静态直载该工况的完整 rrd（地形/气象/编成/作用范围全对齐），
+          // 绕开 gRPC sink 中 replay_knee recording 的 static 地形残留导致"切工况不变"。
+          if (j.file && window.DASH && window.DASH.loadViewerFile) {
+            window.DASH.loadViewerFile(j.file);
+          }
+          const title = document.getElementById("replay-tag-title");
+          if (title) title.textContent = `3D 实时推演 · ${meta.label || scenario}`;
+          const wx = meta.weather ? ` · 气象 ${WEATHER_ZH[meta.weather] || meta.weather}` : "";
+          const terrain = (meta.terrain || "").indexOf("DEM") >= 0 ? "DEM 实测地形" : (meta.terrain || "程序地形");
+          setTag(`已选 · ${meta.label || scenario} · ${terrain}${wx} · 3D 态势已切换 · 点▶启动推演`, "done");
+        } else if (j.ok) {
           const wx = WEATHER_ZH[j.weather] || j.weather || "—";
           const terrain = j.terrain_source === "geotiff"
             ? "DEM 实测地形" : (j.terrain_preset || "程序地形");
@@ -623,6 +635,8 @@
         });
         const j = await r.json();
         if (!j.run_id) { alert("启动失败: " + (j.error || "未知")); return; }
+        // C7-g：切工况后 3D 处于静态 rrd 直载态；启动推演需切回 gRPC sink 看实时 tick
+        if (window.DASH && window.DASH.ensureLiveSink) window.DASH.ensureLiveSink();
         if (views.tactical) views.tactical.hideOverlay();
         startLivePolling(j.run_id, params);
       } catch (e) {

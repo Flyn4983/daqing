@@ -197,6 +197,7 @@ def _list_scenarios() -> list[dict]:
         "example_brigade":             "重型旅 · 合成兵种示例",
         "example_company":             "连级 · 装步冲击示例",
         "example_battalion":           "营级 · 三阶段进攻示例",
+        "real_terrain_brigade":        "★真实地形 · 太行山地形+ERA5气象",
     }
     out: list[dict] = []
     if not _SCENARIOS_ROOT.is_dir():
@@ -640,6 +641,46 @@ def _run_worker(sess: RunSession) -> None:
             n_red = sess.n_red
             alive_r = int(alive[:n_red].sum())
             alive_b = int(alive[n_red:].sum())
+
+            # S4-fix：逐 tick 四率（口径同 experiment/four_rates.py，保证 live 曲线
+            # 与离线分析/文档一致）。available = alive & ~damaged & ~under_repair；
+            # attrition = 1 - alive/total；repair = repairs_done/repairs_required；
+            # failure = failures_natural / 累计可用单位·tick（每百装备小时）。
+            # 逐 tick 暴露量用 kernel.log.supply_rows 的 in_repair 不合适，直接按
+            # 当前 available_n 累加到会话级计数器（与 four_rates_timeseries 的 cumsum 一致）。
+            try:
+                import numpy as _np
+
+                _s = kernel.state
+                _avail = _np.asarray(_s.alive).astype(bool) \
+                    & ~_np.asarray(_s.damaged).astype(bool) \
+                    & ~_np.asarray(_s.under_repair).astype(bool)
+                _sustain = kernel.sustain
+                _dt = float(sc.mission.dt_seconds)
+                # 会话级累计暴露（available 单位·tick），每方一条
+                if step_i == 0:
+                    _expo_cum = {"red": 0.0, "blue": 0.0}
+                _expo_cum["red"] += float(_avail[:n_red].sum())
+                _expo_cum["blue"] += float(_avail[n_red:].sum())
+
+                def _rates(sl, name, total):
+                    req = _sustain.repairs_required[0 if name == "red" else 1]
+                    done = _sustain.repairs_done[0 if name == "red" else 1]
+                    nat = _sustain.failures_natural[0 if name == "red" else 1]
+                    ar = int(_np.asarray(_s.alive)[sl].sum())
+                    av = int(_avail[sl].sum())
+                    ready = av / total if total > 0 else 0.0
+                    attr = 1.0 - ar / total if total > 0 else 0.0
+                    repair = (done / req) if req > 0 else 1.0
+                    expo = _expo_cum[name]
+                    fail100 = (nat / expo) * (3600.0 / _dt) * 100.0 if expo > 0 else 0.0
+                    return ready, attr, repair, fail100
+
+                rr_r = _rates(slice(0, n_red), "red", n_red)
+                rr_b = _rates(slice(n_red, n_red + sess.n_blue), "blue", sess.n_blue)
+            except Exception:
+                rr_r = rr_b = None
+
             xs = kernel.state.x.tolist()
             ys = kernel.state.y.tolist()
             pos_red = [
@@ -715,7 +756,7 @@ def _run_worker(sess: RunSession) -> None:
                 pass
 
             with sess.lock:
-                sess.log.append({
+                _row = {
                     "tick": tick,
                     "alive_red": alive_r,
                     "alive_blue": alive_b,
@@ -723,7 +764,15 @@ def _run_worker(sess: RunSession) -> None:
                     "total_blue": sess.n_blue,
                     "pos_red": pos_red,
                     "pos_blue": pos_blue,
-                })
+                }
+                # S4-fix：四率逐 tick 字段（red/blue × ready/attr/repair/failure）
+                if rr_r is not None:
+                    for _pfx, _v in (("red", rr_r), ("blue", rr_b)):
+                        _row[f"ready_{_pfx}"] = round(_v[0], 6)
+                        _row[f"attr_{_pfx}"] = round(_v[1], 6)
+                        _row[f"repair_{_pfx}"] = round(_v[2], 6)
+                        _row[f"failure_{_pfx}"] = round(_v[3], 4)
+                sess.log.append(_row)
                 sess.last_tick = tick
                 sess.last_progress_at = time.time()
 
@@ -1303,6 +1352,19 @@ def _make_handler(engine: AgentEngine, viewer_status: dict | None = None):
                             ).start()
                         self._send_json({"status": "building", "scenario": scenario})
                     else:
+                        # C7-g：live 工况切换改走静态 rrd 直载（与 replay 同款）。
+                        # 根因：log_file_from_path 把 replay_knee.rrd 导入为独立 recording，
+                        # viewer 连 gRPC 后显示该 recording；而 preview 用 SDK rr.log 写的是
+                        # 当前 recording——两者不同，static 地形写入对 viewer 不可见，
+                        # 表现为"切工况地形始终一样"。静态直载加载完整工况 rrd，天然正确。
+                        rrd = _resolve_scene_rrd(scenario)
+                        if rrd is not None:
+                            self._send_json({
+                                "ok": True, "scenario": scenario, "mode": "static",
+                                "file": rrd.name,
+                            })
+                            return
+                        # 无预构建 rrd 的想定：回退到 sink 预览（老路径）
                         res = _preview_scenario(scenario)
                         self._send_json(res, code=200 if res.get("ok") else 409)
                 elif path == "/api/run-config":

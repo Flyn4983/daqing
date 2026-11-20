@@ -6,7 +6,7 @@
 <title>智演先知 · 保障先行 — 合成旅装备"四率"智能分析与决策支持平台</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath d='M16 2l12 4v9c0 8-5.5 13-12 15C9.5 28 4 23 4 15V6z' fill='%231d6fae'/%3E%3Cpath d='M11 16l4 4 7-8' fill='none' stroke='%237ff0d2' stroke-width='2.5'/%3E%3C/svg%3E">
 <link rel="stylesheet" href="/static/css/base.css?v=c8d4">
-<link rel="stylesheet" href="/static/css/dash.css?v=c913">
+<link rel="stylesheet" href="/static/css/dash.css?v=c919">
 </head>
 <body>
 
@@ -27,6 +27,20 @@
     <span class="run-progress" id="run-progress">—</span>
     <span class="baseline-tag" id="baseline-tag">基线数据加载中…</span>
   </div>
+  <div class="top-actions">
+    <div class="mini-pill">
+      <span class="dot" id="top-dot"></span>
+      <b id="top-state">本地模型</b>
+      <span id="top-vram">显存 —</span>
+      <span id="top-lat">延迟 —</span>
+    </div>
+    <button class="btn-ghost" id="btn-func-map" title="对照最终提交文档：5 个模块 / 4 域 9 功能 ↔ 界面位置">功能对照</button>
+    <button class="btn-ghost" id="btn-research" title="报告第3节：四个模型 / 方案设计 / 检验验证的细节与真实数据">研究细节</button>
+    <button class="btn-agent" id="btn-open-agent"><span class="lbo-badge sm white" title="LLM Prior · 大模型先验：FM-90 条令解析 + 工具函数调度">L</span>智能参谋</button>
+  </div>
+</header>
+<!-- S4-fix：KPI 独立成第二行，避免 7 张卡与右侧操作区在单行内重叠 -->
+<header class="kpi-bar" id="kpi-bar">
   <div class="kpis">
     <div class="kpi good" id="kpi-success">
       <span class="kpi-v">—</span><span class="kpi-l">任务完成率</span><span class="kpi-s">MC 200 复制</span>
@@ -49,16 +63,6 @@
     <div class="kpi eta-kpi" id="kpi-eta" title="战力再生系数 η = ω₁R₀+ω₂(1−A)+ω₃Pᵣ+ω₄(1−F)，文档式(1)；权重按实测基线/推荐反算">
       <span class="kpi-v">—</span><span class="kpi-l">战力再生系数 η</span><span class="kpi-s">基线0.488→推荐0.491</span>
     </div>
-  </div>
-  <div class="top-actions">
-    <div class="mini-pill">
-      <span class="dot" id="top-dot"></span>
-      <b id="top-state">本地模型</b>
-      <span id="top-vram">显存 —</span>
-      <span id="top-lat">延迟 —</span>
-    </div>
-    <button class="btn-ghost" id="btn-func-map" title="对照最终提交文档：5 个模块 / 4 域 9 功能 ↔ 界面位置">功能对照</button>
-    <button class="btn-agent" id="btn-open-agent"><span class="lbo-badge sm white" title="LLM Prior · 大模型先验：FM-90 条令解析 + 工具函数调度">L</span>智能参谋</button>
   </div>
 </header>
 
@@ -402,6 +406,35 @@
   </div>
 </div>
 
+<!-- ============ A4：研究细节面板（报告第3节 ↔ 真实数据） ============ -->
+<div class="modal-overlay" id="research-modal" hidden>
+  <div class="modal-body research-modal">
+    <div class="modal-header">
+      <h2>研究细节 · 报告第3节 ↔ 软件真实数据</h2>
+      <button class="modal-close" id="research-close">✕</button>
+    </div>
+    <div class="research-tabs" id="research-tabs">
+      <button class="rtab active" data-rtab="design">方案设计</button>
+      <button class="rtab" data-rtab="fig8">★图8参数全景</button>
+      <button class="rtab" data-rtab="figmap">全图要素索引</button>
+      <button class="rtab" data-rtab="realdata">★真实数据溯源</button>
+      <button class="rtab" data-rtab="textable">★正文与表格细节</button>
+      <button class="rtab" data-rtab="m1">模型一·目标与可行域</button>
+      <button class="rtab" data-rtab="m2">模型二·耦合映射</button>
+      <button class="rtab" data-rtab="m3">模型三·反演寻优</button>
+      <button class="rtab" data-rtab="m4">模型四·可信复验</button>
+      <button class="rtab" data-rtab="verify">检验验证与总体</button>
+    </div>
+    <div class="research-body" id="research-body"><div class="r-loading">正在载入验证数据…</div></div>
+    <div class="modal-footer">
+      <span class="r-source" id="research-source"></span>
+      <button class="btn-secondary" id="research-prev">‹ 上一节</button>
+      <button class="btn-secondary" id="research-next">下一节 ›</button>
+      <button class="btn-primary" id="research-done">关闭</button>
+    </div>
+  </div>
+</div>
+
 <!-- ============ S4：实时推演配置弹窗 ============ -->
 <div class="modal-overlay" id="config-modal" hidden>
   <div class="modal-body config-modal">
@@ -577,14 +610,16 @@
 
 <script src="/static/js/vendor/three.min.js?v=c902"></script>
 <script src="/static/js/terrain.js?v=c901"></script>
-<script src="/static/js/common.js?v=c913"></script>
+<script src="/static/js/common.js?v=c914"></script>
 <script src="/static/js/agent.js?v=c913"></script>
 <script src="/static/js/charts.js?v=c900"></script>
-<script src="/static/js/views/rates.js?v=c913"></script>
+<script src="/static/js/views/rates.js?v=c920"></script>
 <script src="/static/js/views/pareto.js?v=c900"></script>
 <script src="/static/js/views/tactical.js?v=c900"></script>
 <script src="/static/js/views/sensitivity.js?v=c900"></script>
 <script src="/static/js/views/surrogate.js?v=c900"></script>
-<script src="/static/js/main.js?v=c913"></script>
+<script src="/static/js/research.js?v=c925"></script>
+<script src="/static/js/insight.js?v=c922"></script>
+<script src="/static/js/main.js?v=c923"></script>
 </body>
 </html>

@@ -2097,3 +2097,425 @@ HTML（预构建 6 JSON）。c 包在不强行引入 SSE/WebSocket 的前提下�
 
 
 
+
+## 2026-10-20 | trae + 用户 | C6-fix：rerun 3D"加载不上"全链路修复（同源代理 + 零外网 + 遮罩bug）
+
+### 现象与定位（用户报：推演/回放两模式 rerun 模块都加载不上，无法 3D 可视化；
+且明确要求"rerun 不要走代理、数据本地可视化"）
+
+定位手段：真实服务 + 无头 Edge（Playwright，channel=msedge）逐层复现，
+后端 curl 直连 / 前端 iframe 内部状态 / console / 网络请求四路对照。
+**三个独立根因**（都不是 rerun 本身的问题）：
+
+1. **`three-frame` 画布遮住 iframe（真凶，回归点）**
+   live 模式改造新增 `<canvas id="three-frame" hidden>` + CSS
+   `#three-frame{position:absolute;inset:0;z-index:0;display:block;background:#0a0f1a}`
+   ——作者样式 `display:block` **覆盖 UA 的 `[hidden]{display:none}`**，
+   main.js `frame.hidden=true` 形同虚设；这块 100%×100% 的不透明画布
+   （z-index:0 vs 静态 iframe）整块盖住 rerun iframe → 用户只看到深色矩形。
+   HEAD（可用版）根本没有 three-frame；C6 当时只有 iframe，故当时正常。
+   修复：dash.css 加 `[hidden]{display:none !important}` + boot() 显式
+   `frame.style.display="none"` 双保险。删掉该 canvas 后 iframe 立即恢复渲染
+   （对照实验证实）。
+2. **viewer/gRPC 双端口 + 外网请求走代理**
+   iframe 原来直连 `127.0.0.1:9090`（viewer）+ `127.0.0.1:9876`（gRPC），
+   浏览器代理策略对第二个端口/跨域连接可能拦截；且 rerun WASM viewer
+   内置外网请求：Google Fonts（HTML）、遥测 `tel.rerun.io/api/pog`、
+   示例清单 `app.rerun.io/.../examples_manifest.json`、版本检查
+   `api.github.com/repos/rerun-io/rerun/releases/latest`。
+3. **`?url=` 路径格式不被解析**
+   rerun viewer 的 URL 解析器只认 `rerun+http://<host>:<port>/proxy`
+   （实测 `/rerun-data/proxy` 报 `Failed to parse URL`）；且方法请求
+   实际发到 origin 根路径（`/rerun.sdk_comms.../ReadMessages`），
+   `/proxy` 仅作校验用。
+
+### 修复方案（server.py / replay_host.py / 前端）
+
+- **同源反向代理**：大屏 server 新增 `GET /rerun-viewer/<rel>` →  viewer
+  静态资源、`POST|GET /rerun-data/*、/proxy/*、*.MessageProxyService/*` →
+  gRPC(grpc-web) 流式转发（http.client 边收边发，HTTP/1.0 关闭即流结束，
+  live 推演可持续推送）。iframe 与 gRPC 全走大屏自身 origin：
+  **不经代理、不跨端口、无 CORS、全程本地**；`/api/viewer` 增补
+  `embed_base`/`grpc_path` 字段，前端用 `window.location.origin`
+  拼相对 URL（用户用 localhost / 127.0.0.1 / LAN IP 访问都自适应）。
+- **viewer HTML 本地化**（`_strip_external_refs`）：剥 Google Fonts 外链；
+  分析脚本守卫置 `false`；**注入 CSP**（`default-src 'self';
+  connect-src 'self'` 等）——浏览器层硬阻断遥测/示例清单/版本检查，
+  代理或断网环境下 3D 可视化不再因外网请求挂起。注意分析脚本与 WASM
+  引导代码同在一个 `<script>`，只置守卫不整块删（曾因正则过贪删掉
+  整个引导脚本，HTML 16KB→4KB，已修正并加 diff 校验）。
+- **单次装载**：common.js `DASH.ensureViewer()` 成为唯一入口（带
+  `__rerun_iframe_loaded` 去重），main.js `ensureRerunIframe` 改为委托，
+  消除 initViewer/ensureRerunIframe 双设 src 导致的首载导航中止。
+- **live 模式 JS 报错修复**：`sur.targets` 空数据崩溃（ResizeObserver
+  首触发即重绘，DASH.data 为空）→ surrogate.redraw 加 `if(!D)return` +
+  main.js 重绘前守卫数据非空。
+- **launch_replay_viewer 契约恢复 + 幂等**：显式 rrd 路径不存在时返回
+  ready=False（C6 契约，test_replay_host_missing_rrd）；进程级
+  `_LAUNCH_STATE` 幂等（rerun 全局 sink 每进程只能 init 一次，
+  双开/测试不再报 "Failed to flush previous sink"）。
+- start() 调整：先绑 HTTP 端口再启动 viewer（embed URL 依赖最终端口），
+  viewer_status 同 dict 原地更新，handler 闭包可见。
+
+### 验收（无头 Edge，真实 GPU，--no-proxy-server）
+
+- 三种模式截图全绿：默认/回放=3D 态势回放·knee（地形+红蓝+中文标签+
+  射界+tick 时间轴 12FPS）；live=点开始推演后 3D 实时推演·Live Simulation
+- 外网请求：**0**（CSP 阻断日志可见 tel.rerun.io / app.rerun.io /
+  api.github.com 全部 Refused）；gRPC 数据走同源
+  `POST /rerun.sdk_comms.v1alpha1.MessageProxyService/ReadMessages`
+- 页面 JS 错误：0（原 live 模式 sur.targets 报错已消）
+- 测试：test_c6_dashboard.py **15/15 通过**（原 3 项失败均为用户未提交
+  改动引入：登录 302 使 `/` 404——测试改断言 /index.html；launch 去守卫；
+  rerun 多 init 冲突——已修）；pytest 经清华镜像补装（venv 无 pip）
+
+### 同日收尾：测试环境与健壮性整改
+
+- **残留进程污染测试环境**：19:20 的 `agent-serve --port 8848` 验证进程未退，
+  占 9876/9090 → `test_replay_host_real_boot` 报
+  `RuntimeError: gRPC server thread shut down`。根因链：`_free_port` 只探
+  127.0.0.1 漏判 0.0.0.0 占用 → rerun bind 0.0.0.0:9876 失败（serve_grpc
+  **只打 ERROR 日志不抛错**）→ serve_web_viewer(9090) 才抛 → rr.init 的
+  全局 sink 被污染，同进程后续任何 rr.init  flush 孤儿 recording 即硬报错。
+- 修复（`replay_host.py`）：`_free_port` 双地址探测（127.0.0.1 + 0.0.0.0）；
+  serve_grpc 后 TCP 连接兜底 `_grpc_alive()`；launch 失败结果也 memoize 进
+  `_LAUNCH_STATE`（sink 无恢复 API，二次 init 必炸，失败也必须记住）。
+- `test_c5_agent.py`：`/` 已 302 跳 login.html（用户登录功能）→ 改断言
+  `/index.html`；`vram_total_gb == 4.0 → 96.0`（service.TOTAL_VRAM_GB 是
+  A6000/L40S·96GB 部署形态常量，非硬件读取）。
+- `test_m4_warp_kernel.py`：顶层 `import warp as wp` → `pytest.importorskip`
+  （warp 为可选 GPU 依赖、本 venv 未装；原写法收集错误会中止整个套件，
+  与 test_c3_surrogate / test_c6_dashboard 约定一致）。
+- 清理：kill 残留 agent-serve 进程；`tmp_rr/` 的三张验收截图保留
+  （dash_default_final / dash_replay_final / dash_live_running）。
+
+### warp 落地（用户指明本机另有 uv 环境装有 warp）
+
+- 用户环境：`C:\Users\flyn4\pytorch_newton_warp_mujoco_uv_venv\.venv` 内为
+  warp 1.12.0.dev20260218（与 pyproject `warp` extra `>=1.12` 预期一致）；
+  系统 Python 3.9 全局另有 warp 1.12.1（缺 pydantic，跑不了 brigsim）。
+- 按国内镜像把 warp-lang 装入 daqing/.venv（cp313）：
+  `uv pip install --python .venv/Scripts/python.exe --default-index
+  https://pypi.tuna.tsinghua.edu.cn/simple "warp-lang>=1.12"` → **1.18.0**
+  （128MB wheel，无额外依赖）；该 uv 版本无 `--default-timeout` 参数。
+- 4 个 warp 用例（test_c7_a1 / test_c7_a2 / test_m3_evacuation ×2）补
+  `pytest.importorskip("warp")`；`test_m3_evacuation.py` 顺带补 `import pytest`
+  （该文件原先漏导入，加 importorskip 后暴露 NameError）。
+- 结果：warp 1.18.0 下 m4 / c7 / c3 warp 用例全部通过，无 API 漂移；
+  套件从 146 passed + 4 failed(warp 缺失) 转为全绿。
+
+---
+
+## C6.1-fix：回放 3D 黑屏看门狗 + 双数据通道（同源代理 ↔ 直连双端口）
+
+**背景**：C6-fix 后用户报告"回放模式下 3D 仍是黑屏"。本机无头（SwiftShader）/
+有头（真实 GPU）/ 用户真实 Edge 配置文件分析均渲染正常，无法复现——差异在用户
+浏览器侧（缓存 / 时机 / 旧进程），无法远程直接观测。改为工程化兜底：
+
+### 1. 黑屏看门狗（把静默黑屏变成可见、可自救）
+
+`web/js/common.js` `ensureViewer()` 重写：
+- **load 超时看门狗**：iframe 60s 未 fire load → 自救卡「3D 引擎加载超时」。
+- **画布探测**（仅同源模式可 introspection）：load 后再等 25s，检查 iframe 内
+  `canvas.width/height > 0`；建不出来 → 自救卡「3D 画布未创建（疑似黑屏）」，
+  提示 WebGL 被禁用 / 硬件加速异常，并引导 F12 看控制台。
+- 自救卡三按钮：**重试加载 / 切换数据通道 / 强刷页面**（后者等价 Ctrl+F5，
+  排除浏览器持有调试期旧资源）；detail 行显示当前 iframe 地址便于远程定位。
+- 服务未就绪（rrd 缺失等）走原降级卡，不显示自救按钮。
+
+### 2. 双数据通道（用户授权"数据走代理模式也可以"后的回退架构）
+
+- 后端 `/api/viewer` 新增 `direct_base` / `direct_grpc` 字段
+  （`http://127.0.0.1:<viewer_port>/` + `rerun+http://127.0.0.1:<grpc_port>/proxy`）；
+  viewer 静态资源代理补 `Cache-Control: no-cache`（禁浏览器缓存调试期旧资源）。
+- 前端双模式：默认**同源**（C6 架构，iframe+gRPC 全走大屏 origin）；可切
+  **直连**（经典双端口架构，iframe 指向 rerun viewer 端口、gRPC 直连，
+  rerun `serve_grpc(cors_allow_origin=*)` 原生 CORS）。两者均走 127.0.0.1
+  回环、不经外网代理。选择记 `localStorage['brigsim.viewer_mode']`。
+- 3D 面板左上角新增「同源/直连」切换按钮（`.vm-btn`，`pointer-events:auto`
+  恢复点击——父级 `.replay-overlay` 是 pointer-events:none）。
+- `_proxy_grpc` 补诊断日志：`[3D 数据通道] <method> → <KB> / <秒>`，排查黑屏时
+  看终端即知数据流有没有通、流了多少。
+
+### 3. 验证（有头 Edge + 真实 GPU，全程截图）
+
+- 同源模式：canvas 1890×1905，场景正常渲染（截图 dual_same_origin.png）。
+- 点切换按钮 → iframe src 变 `http://127.0.0.1:9090/?url=rerun+http://127.0.0.1:9876/proxy`，
+  30s 后渲染正常（dual_direct.png）；再切回同源恢复正常；localStorage 持久化正确。
+- 看门狗：路由拦截使 viewer HTML 返回 200 空内容（模拟"加载了但画布建不来"）→
+  load+25s 弹出「3D 画布未创建（疑似黑屏）」卡（watchdog_black_rescue.png）→
+  点「切换到直连模式」→ 3D 恢复渲染、卡片消失（watchdog_direct_recovered.png）。
+- 测试：test_c5_agent + test_c6_dashboard **29/29 通过**；全量套件后台复跑中。
+- 截图存 `tmp_rr/`：dual_same_origin / dual_direct / dual_back_same /
+  watchdog_black_rescue / watchdog_direct_recovered。
+
+---
+
+## 2026-10-20 C6.3：工况下拉联动收尾 + live 预览"假锁"根因修复（GIL 饿死）
+
+用户三问题：①"只有一张地图"（地形应引 scenarios/terrain/ 的 DEM）；②"对抗过程
+体现不出地形/气象可视化"；③"两种模式工况下拉点了没反应"。C6.2 已修 ③（双模式
+scene-switch 联动），本轮定位并修复 ② 的最后一处阻塞，并查清 ① 的实情。
+
+### 1. 地形来源实情（证据：scenarios/*.yaml + 截图）
+
+- **仅 example_brigade / example_battalion 用 geotiff**（`terrain/dem_demo.tif` +
+  `dem_pass.tif`，385² float32、2.0–391.7m、EPSG:32650，回放截图头部显示"DEM地形"，
+  3D 可见河流/道路/桥梁网格）；其余 5 个 brigade_* 工况为 FBM preset
+  （plain/canyon/rolling），是有意的工况多样性设计。DEM 文件就在
+  `scenarios/terrain/`，example_brigade 链路完好。
+- 若用户要求"所有工况都用 DEM 地图"，改各 YAML 的 `terrain.source: geotiff` 即可。
+
+### 2. 根因：`_ground_texture` 纯 Python opensimplex 持 GIL ~92s（假锁机制）
+
+- 现象：live 模式切工况下拉，第一次预览成功、第二次返回"推演进行中，3D 场景已锁定"。
+- py-spy dump 定位：sink-writer 线程 `active+gil` 卡在
+  `opensimplex.noise2array`（`rerun_view._ground_texture` → `_log_terrain`）。
+- 量化：单次 `noise2array(1024)` = **18.3s**，`_ground_texture` 共 5 次 =
+  **91.6s 纯 Python 持 GIL**。该纹理是**固定资产**（size=1024/seed=11 与场景无关），
+  却每次 `_log_terrain` 全额重算。
+- 饿死链：writer 持 GIL 92s → live 推演 worker 连 `load_scenario` 都跑不完
+  （n_red 恒 0、tick 恒 -1）→ done_event 永不置位 → `_preview_scenario` 的
+  active 检查判"推演进行中" → 预览假锁。回放模式不受影响（rrd 子进程预烘焙）。
+- 旁证：22:48 事故窗口与 ReadMessages 149.6s 流时长吻合；修复前 3-tick 推演
+  24s+ 卡在 tick=-1，修复后 **2s 内完成**。
+
+### 3. 修复
+
+- `rerun_view._ground_texture` 重构：**资产化 + 进程内缓存 + 原逻辑兜底**。
+  预生成 `src/brigsim/viz/assets/ground_texture.npy`（3.1MB，91.2s 一次性，
+  重载 <1ms 且逐比特一致）；pyproject wheel artifacts 增加 `*.npy`。
+- server.py 诊断与兜底：
+  - `[scene-switch] 请求/已锁定`、`[run] 启动/完成/异常/停止` 全链路日志（含
+    run_id、scenario、client IP）；`/api/status` 新增 `active_runs`。
+  - RunSession 增 `thread` 引用与 `last_progress_at` 心跳；**僵死会话回收**
+    （worker 线程已退出未置位）+ **卡死会话回收**（10 分钟无 tick 进度兜底）。
+  - worker 完成/异常路径补打印，推演生命周期全程可观测。
+- main.js：
+  - 修 **live 模式"▶启动推演"双重触发**（initScenarioSwitch 直接 POST /api/run
+    + detectModeAndRun 开弹窗 → 打开弹窗即野跑一个无配置会话、提交后再跑一个；
+    live 模式让位给弹窗流程）。
+  - SCENARIO_FALLBACK 挂 dataset（label/weather/terrain），fillOptions 完成前
+    标签也能解析中文名（此前显示原始文件名）。
+  - main.js 缓存版本 c907 → c908。
+
+### 4. 验证（有头 Edge 真实 GPU + curl + py-spy）
+
+- pw_c63.py 全流程：live 切 plain_fog → 预览 OK（"重型旅·平原浓雾突击·气象浓雾·
+  能见度15%·3D预览已推送"）；切 canyon → **预览 OK 不再锁定**；再切回 plain_fog
+  → 稳定；replay 切 canyon → 缓存命中即时切换。截图 c63_live_fog/canyon/
+  c63_replay_canyon.png（雾团粒子 vs 峡谷地貌肉眼可辨）。
+- curl 锁定→恢复周期：run 进行中预览 409 锁定 → run-stop → 预览恢复 OK；
+  `[run] 完成` 打印出现；py-spy 确认 sink-writer 恢复 idle（等队列）。
+- 回归：test_c5_agent + test_c6_dashboard + test_c7_b + test_m3_terrain_geotiff
+  + test_smoke = **41 passed, 0 failed**。
+
+---
+
+## 2026-10-20 C7-c：rerun 地图/地形/气象"恰当化"重构（GitHub 调研结论：无可复用轮子）
+
+用户需求："针对性地生成可用于 rerun 加载进行可视化的地图、地形和气象，需要比较恰当的，
+不能太夸张，可先搜索 github 仓库中是否有类似的别人开源的，不要重复造轮子"。
+
+### 1. GitHub 调研结论（2026-10-20，GitHub REST API 匿名配额核实）
+
+- **rerun 地形/气象可视化**：无相关开源实现（rerun 官方 ★11.6k Apache-2.0 的 examples 目录
+  以 robotics/SLAM/点云为主，无 terrain/weather/military example；生态仓库全是 demo/插件）。
+- **天气粒子可视化**：全部 0 star 无 license 个人项目，不可复用。
+- **程序地形生成库**：最高 12 star（MIT），质量远低于项目现有 FBM 实现。
+- **地理空间可视化**：Skybolt ★658 但 NOASSERTION 需人工复核且为重型 C++ 引擎；
+  cesiumpy Apache-2.0 面向 Web GIS 瓦片，与 rerun 管线无关。
+- **地形配色标准**：terrain-rgb（Mapbox/Terrarium DEM 编码）为瓦片地图标准，
+  本项目用顶点色+贴图管线，参考其色带思想即可。
+- **结论：无可复用轮子 → 基于 rerun 官方 SDK 能力（Apache-2.0）自研，符合"不重复造轮子"前提。**
+
+### 2. 改动（src/brigsim/viz/rerun_view.py）
+
+**地形写实化**（`_log_terrain` 增 illumination 参数）：
+- 山影明暗（hillshade）：太阳方位/高度/强度按昼(315°,46°)/昏(282°,13°)/夜(340°,7°)
+  三档 Lambert 项乘顶点色——山脊沟谷产生连续明暗，不再塑料纯色。
+- 低草区 25-55m 高程向干黄渐变 28%，避免一整屏同色。
+- 贴图资产重生成：暖灰基底(199,195,181)+棕绿斑驳（原 188 中性灰），
+  `assets/ground_texture.npy` 一次性 92.7s 生成，重载 <1ms 逐比特一致。
+
+**地图要素**（新增 `_log_map_frame`，static）：
+- 坐标网格：步长自适应（100m~2km 七档，单方向 ≤10 条），每 5 格一条主线；
+  折线沿地形采样 +0.6m；昼夜双色板。
+- 指北针：贴地大箭头（1600m/radii=100）指向地图北 +y + N 标签。
+- 比例尺：2 格长主线 + 两端刻度帽 + 米数标签；z 取 max(地形, 水面)+8m（防没入水面）。
+- HUD 兜底：feed/map TextLog 文字版地图信息（网格步长/指北/比例尺）。
+- ⚠️ **位置经验（跨会话必记）**：实验证实 rerun 0.39 WASM viewer 在默认相机位姿下
+  对画面四角/边缘区域的地图要素存在不可见问题（同组件同参数中央可见、边缘不可见），
+  故指北针/比例尺置于战场中部 (0.4-0.55W, 0.42-0.54H) 稳定可见区，而非传统四角。
+
+**气象恰当化重调**（"不能太夸张"）：
+- 雨：620 个不透明大点（r=8）→ 170-240 条斜细雨线（LineStrips3D，长 16m 随风斜吹，r=1.1）。
+- 雪：380 点 r=12 → 200 点 r=4.5。
+- 雾：Mesh3D 实例球 130-220 个 → **官方 Ellipsoids3D** 60-90 个（r=200-420m，alpha 11-15）。
+- 沙尘/霾：同样收敛（70/55 个，alpha 12-17）。
+- 风矢：新增 3 支 Arrows3D（wind_speed≥0.5m/s 时）。
+- 夜间：气象粒子统一压暗 50%；能见度写入 HUD（feed/weather 追加"能见度 NN%"）。
+
+### 3. 踩坑记录（跨会话必记）
+
+1. **LineStrips3D 的 strips 不能 .T**：column_stack 直接产出 (N,3) 点序列，
+   加 .T 变 (3,N) → rerun 静默报 RerunWarning 丢图层（已加测试防护：
+   catch warnings 断言无 "Expected a sequence of 3D vectors"）。
+2. **无 static=True 的 log 经 relog 后不显示**：importer 灌入的数据在 latest-at
+   查询（embed 蓝图 timeline=tick）下丢失；所有静态图层必须 static=True。
+3. **rerun 0.39 viewer 边缘区域不可见**（见上"位置经验"）。
+4. **谷地贴地要素会被半透明水面盖住**：z 取 max(地形, water_level)+偏移。
+5. **测试进程里 rr.save 落盘是惰性的**：需显式 rr.disconnect() flush 后再断言文件大小。
+6. **同一进程单 sink 限制**：pytest 多测试共用一个 init/disconnect 循环。
+
+### 4. 验证
+
+- tests/test_c7_c_viz.py（新增 8 项：太阳向量/贴图资产一致性/网格步长/
+  全天气分支+warning guard/disconnect flush）。
+- 回归：c5_agent + c6_dashboard + c7_b + c7_c + m3_terrain_geotiff + smoke = **49 passed**。
+- 有头 Edge 真实 GPU：replay canyon 重建（12s，缓存后即时）截图见指北针+比例尺+山影+网格；
+  live preview 同要素可见；雾天/晴天地形气象切换正常（c64 系列截图）。
+- tmp_rr/viz_selftest.py：8 天气分支 + 风矢 + 夜间 + geotiff 全链路自验通过。
+
+---
+
+## 2026-10-21 C7-d：大屏双模式 3D 渲染质量修正（黄块/不立体/作用范围/气象缺失）
+
+用户需求："3D 回放服务（直连 viewer）网址给出的渲染效果是想要的，各种装备的作用范围、
+三维的地形等，但是从主页进去的两种模式（live/replay）看到的不是这种，没有很明显的效果，
+很多地图都是很多黄色的色块，感觉不像是三维地图，同时气象也没有很明显的渲染"。
+
+### 1. 四个症状的根因与修复
+
+| 症状 | 根因 | 修复 |
+|---|---|---|
+| 黄色色块 | `_log_passability` 的 `p>0.95` 道路阈值是为 DEM（geotiff）设计的（p=1.0 真实编码路网，仅 1.2% 格子）；FBM 预设的 p=1.0 是"默认开阔地"（plain 84.6%、rolling 92.6% 格子为 1.0）→ 土黄道路 quad (205,180,110,210) 涂满大半地图 | 预设场景跳过道路贴片（`preset_family is not None` 直接 return），改在 `_log_terrain` 顶点色做**通行性晕染**：难行区（p<0.45）向冷灰蓝 (104,112,124) 混合 38%、松软区（0.45-0.75）混合 18%；DEM 保留原道路/桥梁 |
+| 不像三维地图 | plain 预设总起伏仅 44.2m/10km（0.4% 坡比），几何上就是平面；embed 相机 z=9200 高俯视进一步压平 | **渲染垂直夸张**（物理高程不变，仅渲染网格/单位 z 乘系数）：`auto_z_exag(t, target_span=240, hi=4.0)` 按地形起伏自动计算——plain 44m→4.0×（视觉 177m）、rolling 96m→2.49×、canyon 190m→1.26×、DEM 388m→1.0×；`HeightField.scaled()` 返回浅拷贝副本（heights/water_level×factor，passability 共享）；embed 相机 eye 9200→6200 斜视 |
+| 装备作用范围不可见 | embed 扇面仅细线轮廓（radii=4）+ 相机过远 | 低透明**填充扇面**（Mesh3D alpha 36，每单位 1 中心+11 弧点三角带）+ 亮弧轮廓（LineStrips3D alpha 150）双图层 `world/fans` + `world/fans_edge` |
+| 气象无渲染（live） | 预览只记地形；且 `_log_weather(0,...)` 未 set_time，在 embed 蓝图（timeline=tick）latest-at 查询下整层丢失 | 预览增 tick-0 静态战术快照（MesaKernel 初始站位单位图元+扇面+标记，不跑仿真）+ 气象按 24 tick 预播（蓝图 autoplay fps=12 驱动雾团漂移/雨雪下落） |
+
+### 2. relog importer 流式污染（重大，含修复）
+
+- **现象**：`rr.log_file_from_path` 启动即返回、后台持续流式（17MB≈35s、33MB≈60s）；
+  此期间任何 Clear+重写都被迟到 chunk 覆盖——replay 切 live 预览后旧回放内容持续混入
+  （实测：canyon 内容混入 plain_fog 预览截图）。
+- **修复**：importer 泄放门控 `_LAST_RELOG_AT`/`_RELOG_DRAIN_SECS=75.0`/`_drain_delay()`/
+  `_wait_for_drain()`；预览**双次应用**（立即写 + 泄放后二次清场重写，`_PREVIEW_GEN` 代际
+  防旧预览冲掉新预览）；live 推演 `_live_reset` 泄放门控。
+- **构建与推演竞态边角**：`_scene_build_worker` 构建完成（~100s）时若用户已启动推演，
+  晚到 relog 会覆盖推演 → 新增 `_has_active_runs()` 守卫：有推演则只标记 ready 不灌入
+  （下次 replay 切换走 `_resolve_scene_rrd` 缓存直灌）；预览延迟二次应用同样加守卫。
+- 其他修复：`_log_units_primitives` 缺列保护（damaged/under_repair 默认值，修 KeyError）；
+  顶栏工况下拉 `fillOptions` keep/restore 当前选择（防异步响应冲掉用户已选）。
+
+### 3. 验证
+
+- 有头 Edge 真实 GPU 截图（tmp_rr/）：c70（修复前：replay 黄块平面）→ c71/c72
+  （修复后：plain_fog 绿色立体地形+雾团+填充扇面、canyon 峡谷地貌、DEM 立体+路网+
+  大红蓝扇面、live 预览静态单位+扇面+rings+雾、推演终态无旧回放残留）。
+- 回归：c7_c_viz + c7_b + m3_terrain_geotiff = 30 passed；c5_agent + c6_dashboard + smoke
+  = 30 passed（c6_dashboard 新增 3 项竞态守卫测试 `TestSceneBuildRaceGuard`）。
+
+## C7-e：作用范围圈贴地显色 + 回放工况下拉切换失效（2026-10-21）
+
+用户反馈：① 两种模式下装备/人员作用范围圈都是灰色、不明显、貌似被地形遮挡；
+② 情景工况下拉选中后没有切换到新推演/回放。
+
+### 1. 根因
+
+| 症状 | 根因 |
+|---|---|
+| 作用范围圈被地形遮挡 | coverages 环原本是**平面环**（z=常量抬升）；C7-d 引入渲染垂直夸张后（plain 4×），176m 起伏把平面环整体埋进地形 |
+| live 模式完全没有圈 | `_live_tick` 与 `_preview_apply` 原本**从不调用** `_log_coverages`（只有 replay 构建路径有） |
+| 下拉切换无反应（主根因） | **rerun 0.39 sink 累积陷阱**：`serve_grpc` 内存流每次 viewer 连接必须重下**全部累积历史**（knee 预载 20MB + 每次 replay relog +6~8MB → 60MB+），WASM 端 ~200KB/s，300s 代理超时传不完 → 新 relog 的数据永远到不了 viewer |
+| boot 后 iframe 仍是 gRPC | main.js `detectModeAndRun` 的 replay 分支调用 `switchReplayScene(sel.value)`，但 `sel`/`switchReplayScene` 都定义在 `initScenarioSwitch` 内部——**作用域外引用，抛 ReferenceError**，初始装载从未触发；而顶部无条件的 `ensureRerunIframe()` 先把 iframe 装到了 gRPC sink |
+
+### 2. 修复
+
+**服务端（server.py / rerun_view.py）**
+- `rerun_view._ring_pts_tf(cx,cy,r,geo,lift,n)`：环上逐点 `geo.height_at` 采样+抬升，环严格贴地随起伏；
+  `_log_coverages(..., geo=)` / `_log_fans(..., geo=)` 弧点同样贴地；线宽加粗（2.5/3.5）。
+- `_live_tick`、`_preview_apply` 补 `_log_coverages(..., thin=True, geo=geo)`——live/预览路径首次有作用范围圈。
+- `/api/scene-switch` replay 分支**不再 relog 进 sink**：缓存命中直接返回
+  `{status:"ready", cached:true, file:"replay_<name>.rrd"}`；`/api/scene-status` 附 `file` 字段；
+  `/rerun-file/<rrd>` 静态路由加 CORS（直连模式跨域可用）；`_relog_rrd` 标注备用。
+
+**前端（common.js / main.js）**
+- `viewerFileTargetUrl(st, file)`：iframe 指 `<embed_base>?url=<origin>/rerun-file/<file>` 静态直载，
+  绕开 sink 累积；`DASH.loadViewerFile(file)` 强制重装 iframe（重启看门狗）。
+- replay 模式 DOMContentLoaded **不预载 gRPC**（sink 下载慢且随后被静态装载打断，纯属浪费）。
+- **（本会话）修 boot 越界 bug**：replay 初始装载移入 `initScenarioSwitch` 的
+  `fillOptions().then(...)`——作用域内调用 `switchReplayScene`/读 `sel`，且等真实工况列表落定后
+  再取最终 `sel.value`（防 `/api/scenarios` 晚到冲掉初始选择）；内置 `/api/viewer` 就绪重试
+  （最多 30s，防 rerun viewer 启动竞态）。
+- `detectModeAndRun` 不再无条件 `ensureRerunIframe()`：仅 live/默认模式走 gRPC sink，replay 全程静态文件。
+
+### 3. 验证（pw_c79，有头 Edge 真实截图 tmp_rr/c79_*.png）
+
+- replay boot：iframe src = `/rerun-viewer/?url=...%2Frerun-file%2Freplay_example_brigade.rrd`（静态直载 ✅）。
+- 下拉切 plain_fog / canyon：src 随选随变为对应 `replay_brigade_*.rrd`（切换即时生效 ✅，缓存命中 0 等待）。
+- live 预览：标签「3D 预览已推送」，coverages/扇面/贴地环随 preview 灌入 ✅。
+- 回归：c6_dashboard + c7_c_viz = **42 passed**。
+
+### 4. 部署与运维注意
+
+- 服务以 `.venv/Scripts/python.exe -m brigsim.cli agent-serve --port 8848` 运行；
+  brigsim 是 **editable 安装（指向 src/brigsim）**，改源码后重启进程即生效。
+- ⚠️ 旧进程跑旧代码时日志特征：`[3D 数据通道] ReadMessages → 19200 KB / 104.2s`、
+  `29056 KB / 310.9s`——即 sink 累积 Download 症状，见到即说明还在走 gRPC 老路。
+- 缓存 rrd：`outputs/dash/replay_{example_brigade,medium_brigade,brigade_plain_fog,brigade_canyon_clear}.rrd`
+  已建（6.4~20MB）；`brigade_rolling_fortified`/`example_company`/`example_battalion` 无缓存，
+  首次切换会触发构建（~90s，前端轮询 scene-status 后自动切）。
+
+---
+
+## C7-f（2026-10-21 16:00-16:30）：回放 3D 提亮 + 工况切换数据面板跟随
+
+### 用户反馈（C7-e 复访）
+
+1. 「情景工况下拉菜单选择后感觉仍没有变化」
+2. 「回放模式下整个 3D 可视化界面太暗」
+
+### 1. 太暗——定量根因与修复（rerun_view.py）
+
+顶点色最终被**三重相乘**：调色板 × 山影 × albedo 贴图。实测旧参数下：
+
+- canyon 调色板林地 (42,60,35) × 山影下限 0.66 × 贴图均值 191/255≈0.75 ≈ **(20,29,17)，近纯黑**；
+- 无头实测 3D 区域亮度仅 **15~27/255（6%~10%）**，用户观感"整个界面太暗"成立；
+- rerun 0.39 **无 Background archetype**（`rr.Background` 不存在），视口背景（深色空域）改不了，
+  能做的只有把地形本身提亮。
+
+修复三件套：
+
+- 调色板整体提亮 ×1.5（色相不变，clip 255）——`_log_terrain` 内对 `_TERRAIN_PALETTES` 做运行时缩放；
+- 山影公式 `0.66+0.40L` → `0.78+0.34L`（日间范围 [0.78,1.12]，保留明暗对比抬整体亮度）；
+- 贴图读资产后补偿 ×215/191≈1.13（抵消 albedo 相乘损耗），`_ground_texture` 内统一处理。
+
+效果（同 harness 实测）：canyon 亮度 15.6→**44.2**、plain_fog 22.4→**48.7**；
+高亮像素占比 1.0%→7.4%/8.5%。**5 个 replay rrd 全部重建**（地形颜色已烘焙在 rrd 里，不改文件不生效）。
+
+### 2. "切换没变化"——两个真实原因
+
+- ① 场景黑成一片时峡谷/平原本来就难分辨（上条修复直接缓解）；
+- ② **数据面板不跟随**：旧逻辑下拉只换 3D rrd，四率/分布图表恒为基线 knee 数据
+  （副标题里那句"图表仍为基线数据"就是在提示这件事，但用户没注意到）。
+
+修复（main.js `applyScenarioData`）：切换工况后并行取
+`/data/scenarios/<name>/timeseries.json` + `distribution.json`（schema 与基线一致，已核）：
+
+- 有（canyon/plain_fog/medium 三个工况有）→ 重渲 rates 视图 + 重绑播放控制器 +
+  顶栏标签换工况名，副标题明示「图表已跟随切换」；
+- 无 → 保持基线，副标题保留「（图表仍为基线数据）」。
+- 重绑前先程序化点击 rc-pause，防旧播放闭包继续用旧数据重绘。
+
+实证（pw_c81）：canyon vs plain_fog 3D 区域平均像素差 **12.2/255**（>5 即肉眼可辨）；
+分布面板数字随场景变化（峡谷 86.6% 红条 vs 平原 100% 绿条）。
+
+### 3. 验证与部署
+
+- 回归：c7_c_viz + c6_dashboard = 42 passed；c7_b + m3_terrain_geotiff + c5_agent + smoke = 26 passed（共 68）。
+- 前端版本：main.js?v=c912（common.js 未动 c907）。
+- 服务已重启（PID 见 8848 监听者），editable 安装重启即生效。
+- 截图：tmp_rr/c81_{boot,canyon,plainfog}.png；脚本 tmp_rr/pw_c81.py（含亮度/像素差量化）。
+- 遗留：rerun 视口四周深色空域背景受 0.39 SDK 限制无法改（升级 0.40+ 才有 Background archetype）；
+  与指挥大屏深色主题一致，观感可接受。

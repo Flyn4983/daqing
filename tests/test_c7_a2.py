@@ -374,6 +374,7 @@ def test_blue_side_keeps_a1_time_abstraction():
 
 
 def test_warp_guard_rejects_echelon():
+    pytest.importorskip("warp")  # 可选 GPU 依赖：缺失则跳过而非失败
     from brigsim.combat.warp_kernel import WarpKernel
 
     with pytest.raises(NotImplementedError):

@@ -34,6 +34,8 @@ brigsim = "brigsim.cli:app"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/brigsim"]
+# 地表纹理等二进制资产生效于 wheel/sdist（避免安装后重新纯 Python 生成 90s）
+artifacts = ["src/brigsim/viz/assets/*.npy", "*.npy"]
 
 [tool.ruff]
 line-length = 100
@@ -45,3 +47,11 @@ select = ["E", "F", "I"]
 [tool.pytest.ini_options]
 pythonpath = ["src"]
 testpaths = ["tests"]
+
+[dependency-groups]
+tools = [
+    "edge-tts>=7.3.1",
+    "imageio>=2.38.1",
+    "imageio-ffmpeg>=0.6.0",
+    "playwright>=1.64.0",
+]

@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+import json
 from functools import lru_cache
 from pathlib import Path
 
@@ -33,6 +34,7 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_MODEL_PATH = REPO_ROOT / "models" / "surrogate_brigade_v1.joblib"
 DEFAULT_PARETO_PATH = REPO_ROOT / "models" / "pareto_brigade_v1.csv"
 DEFAULT_VALIDATION_PATH = REPO_ROOT / "models" / "pareto_brigade_v1_validation.csv"
+DEFAULT_SENS_PATH = REPO_ROOT / "src" / "brigsim" / "agent" / "web" / "data" / "sensitivity.json"
 
 TICK_SECONDS = 30  # 1 tick = 30 秒（C1 口径，见 docs/data-interface.md)
 N_PARTS = 4        # 器材部件种类（行走/动力/火控/武器）
@@ -91,6 +93,19 @@ TOOLS: dict[str, dict] = {
         "desc": "查询 GJB 口径四率与任务完成率的定义、分母口径与模型适用边界",
         "args": [],
     },
+    # --- C8 扩展：灵敏度 / 多方案对比 / 归因诊断 ---
+    "get_sobol_indices": {
+        "desc": "查询 Sobol 方差分解灵敏度指数（ST 总效应+一阶 S1），回答'什么因子影响最大'",
+        "args": ["metric"],
+    },
+    "compare_plans": {
+        "desc": "两套保障方案并排对比（knee vs leanest vs strongest，可指定任意两个标签）",
+        "args": ["tag_a", "tag_b"],
+    },
+    "diagnose_four_rates": {
+        "desc": "归因诊断：按 Sobol 灵敏度+代理预测+Pareto 建议解释当前四率水平的主要影响因子",
+        "args": ["metric"],
+    },
 }
 
 # 决策名 → 工具参数名
@@ -137,6 +152,14 @@ class AgentToolkit:
         self.pareto = pd.read_csv(pareto_path)
         self.validation = pd.read_csv(validation_path)
         self._baseline: pd.Series | None = None
+        # 扩展：Sobol 灵敏度数据（供 get_sobol_indices / diagnose_four_rates 使用）
+        self._sensitivity: dict | None = None
+        sens_path = Path(DEFAULT_SENS_PATH)
+        if sens_path.exists():
+            try:
+                self._sensitivity = json.loads(sens_path.read_text(encoding="utf-8"))
+            except Exception:
+                pass
 
     # ---- 基础：方案预测 ----
 
@@ -309,6 +332,124 @@ class AgentToolkit:
             "适用边界": (
                 f"模型时域为单场短促战斗（本想定 {self.duration_minutes:.0f} 分钟），"
                 "MTTR 原型值只映射火线抢修；战役级周/月修理不在时域内。"
+            ),
+        }
+
+    # ---- C8 扩展：灵敏度 / 多方案对比 / 归因诊断 ----
+
+    def _find_sens_metric(self, metric: str) -> dict | None:
+        """在 sensitivity.json 中找一个 metric 条目。支持英文 key 和中文 label。"""
+        if not self._sensitivity:
+            return None
+        metric = (metric or "").lower()
+        for m in self._sensitivity.get("metrics", []):
+            if m["key"] == metric or m["label"].startswith(metric):
+                return m
+        # 模糊匹配
+        alias = {
+            "完成率": "success", "成功率": "success", "success": "success",
+            "红完好": "readiness_red", "红方完好率": "readiness_red",
+            "红战损": "attrition_red", "红方战损率": "attrition_red",
+            "蓝战损": "attrition_blue", "蓝方战损率": "attrition_blue",
+            "蓝完好": "readiness_blue",
+        }
+        key = alias.get(metric)
+        if key:
+            for m in self._sensitivity.get("metrics", []):
+                if m["key"] == key:
+                    return m
+        return None
+
+    def get_sobol_indices(self, metric: str = "success") -> dict:
+        """Sobol 方差分解灵敏度（ST 总效应 + 一阶 S1）。"""
+        m = self._find_sens_metric(metric)
+        if not m:
+            return {
+                "metric": metric, "found": False,
+                "hint": "可用 metric：success / attrition_red / attrition_blue / readiness_red / readiness_blue",
+            }
+        rows = [
+            {
+                "param": r["param"], "label": r["label"],
+                "S1": round(float(r["S1"]), 4),
+                "ST": round(float(r["ST"]), 4),
+                "rank": int(r["rank"]),
+            }
+            for r in m["rows"]
+        ]
+        return {
+            "metric": m["key"], "label": m["label"],
+            "method": self._sensitivity["method"],
+            "found": True,
+            "top3": m.get("top3", []),
+            "rows": sorted(rows, key=lambda x: x["rank"]),
+        }
+
+    def compare_plans(self, tag_a: str = "knee", tag_b: str = "baseline") -> dict:
+        """两套 Pareto 标签方案并排对比（含基线）。"""
+        def _predict_tag(tag: str) -> tuple[dict, dict]:
+            if tag == "baseline":
+                cur = dict(self.baseline())
+                cur["decisions"] = {k: int(v) for k, v in zip(DECISION_VARS, baseline_decisions()[0], strict=True)}
+            else:
+                p = self.query_pareto_front(tag=tag, top_n=1)
+                if not p["plans"]:
+                    return {"_error": f"tag '{tag}' not found"}, {}
+                row = p["plans"][0]   # 直接是 DECISION_VARS 为 key 的行 dict
+                decisions = {k: int(row.get(k, 0)) for k in DECISION_VARS}
+                arr = np.array([[float(decisions[k]) for k in DECISION_VARS]])
+                X = build_feature_matrix(arr, self.ctx)
+                pred = self.model.predict(X).iloc[0]
+                cur = {m: float(pred[m]) for m in METRIC_META}
+                cur["cost"] = float(resource_cost(arr, self.duration_ticks)[0])
+                cur["decisions"] = decisions
+            base = dict(self.baseline())
+            base["decisions"] = {k: int(v) for k, v in zip(DECISION_VARS, baseline_decisions()[0], strict=True)}
+            return cur, base
+
+        cur_a, _ = _predict_tag(tag_a)
+        cur_b, _ = _predict_tag(tag_b)
+        if "_error" in cur_a or "_error" in cur_b:
+            return {"tag_a": tag_a, "tag_b": tag_b, "error": cur_a.get("_error") or cur_b.get("_error")}
+
+        out = {"tag_a": tag_a, "tag_b": tag_b, "metrics": {}}
+        for m in KEY_METRICS + ["cost"]:
+            va = cur_a.get(m, float("nan"))
+            vb = cur_b.get(m, float("nan"))
+            out["metrics"][m] = {
+                "name": METRIC_META.get(m, (m, "pct"))[0],
+                "a": round(float(va), 4), "b": round(float(vb), 4),
+                "delta": round(float(va) - float(vb), 4),
+            }
+        out["decisions_a"] = cur_a.get("decisions", {})
+        out["decisions_b"] = cur_b.get("decisions", {})
+        return out
+
+    def diagnose_four_rates(self, metric: str = "success") -> dict:
+        """归因诊断：Sobol 灵敏度 + 代理预测当前值 + 基线对比。"""
+        sens = self.get_sobol_indices(metric)
+        cur = self.predict_four_rates()          # knee/基线默认方案
+        base = dict(self.baseline())
+        if not sens.get("found"):
+            return {"metric": metric, "found": False}
+
+        top = sens["top3"]
+        current_val = cur.get(metric, cur.get("cost"))
+        baseline_val = base.get(metric, base.get("cost", float("nan")))
+        delta = current_val - baseline_val
+        return {
+            "metric": sens["metric"],
+            "label": sens["label"],
+            "current": round(float(current_val), 4),
+            "baseline": round(float(baseline_val), 4),
+            "delta": round(float(delta), 4),
+            "top_influencers": top,
+            "interpretation": (
+                f"当前{sens['label']}代理预测 {current_val*100:.1f}%，"
+                f"较基线 {baseline_val*100:.1f}% {'高' if delta > 0 else '低'} {abs(delta)*100:.1f}pp；"
+                f"Sobol ST 总效应最高的 3 个因子是 "
+                + "、".join(f"{t['label']}({t['ST']*100:.1f}%)" for t in top)
+                + "。"
             ),
         }
 

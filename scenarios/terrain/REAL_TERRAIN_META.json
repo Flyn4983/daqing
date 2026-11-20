@@ -1,0 +1,21 @@
+{
+  "source": "AWS Open Data elevation-tiles-prod (Terrarium, SRTM/ASTER GDEM derived)",
+  "tile_url": "https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png",
+  "center_lat": 37.0,
+  "center_lon": 113.5,
+  "region": "太行山中段（山西-河北交界，华北典型山地丘陵）",
+  "zoom": 12,
+  "tile_range": [
+    3338,
+    1593,
+    3340,
+    1595
+  ],
+  "n_out": 385,
+  "approx_resolution_m": 30,
+  "elev_min_m": 879.0,
+  "elev_max_m": 2052.0,
+  "elev_mean_m": 1295.77783203125,
+  "collected_at": "2026-11-20T01:15:34.160167+00:00",
+  "license_note": "AWS Open Data 公共数据集；原型阶段按用户授权忽略版权"
+}

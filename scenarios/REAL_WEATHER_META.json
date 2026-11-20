@@ -1,0 +1,28 @@
+{
+  "source": "Open-Meteo Historical Weather API (ECMWF ERA5 reanalysis)",
+  "period": [
+    "2024-07-10",
+    "2024-07-12"
+  ],
+  "lat": 37.0,
+  "lon": 113.5,
+  "n_hours": 72,
+  "daily_weather": [
+    [
+      "2024-07-10",
+      "overcast",
+      0.7
+    ],
+    [
+      "2024-07-11",
+      "clear",
+      0.6
+    ],
+    [
+      "2024-07-12",
+      "clear",
+      0.6
+    ]
+  ],
+  "license_note": "ERA5 再分析数据由 Open-Meteo 提供；原型阶段按用户授权忽略版权"
+}

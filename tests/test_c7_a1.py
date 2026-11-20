@@ -349,6 +349,7 @@ def test_legacy_mode_matches_old_roll_logic():
 # ----------------------------------------------------------------------
 
 def test_warp_guard_rejects_a1_scenarios():
+    pytest.importorskip("warp")  # 可选 GPU 依赖：缺失则跳过而非失败
     from brigsim.combat.warp_kernel import WarpKernel
 
     with pytest.raises(NotImplementedError):

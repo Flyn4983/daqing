@@ -263,7 +263,16 @@
   // C7-e：replay 模式装载指定静态 rrd 文件（强制重设 iframe src + 重启看门狗）
   DASH.loadViewerFile = function (file) {
     if (!file) return;
+    window.__rerun_viewer_static = true;
     ensureViewer(true, file);
+  };
+  // C7-g：live 模式切工况走静态直载后，启动推演必须切回 gRPC sink 才能看到实时 tick。
+  // 仅在确实处于静态文件态时才重载（避免每次启动都无谓刷新、闪烁）。
+  DASH.ensureLiveSink = function () {
+    if (!window.__rerun_viewer_static) return;
+    window.__rerun_viewer_static = false;
+    window.__rerun_iframe_loaded = false;
+    ensureViewer(true);
   };
 
   // 黑屏自救卡：重试 / 切换数据通道 / 强刷

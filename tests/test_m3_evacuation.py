@@ -5,6 +5,7 @@
 """
 
 import numpy as np
+import pytest
 
 from brigsim.combat.mesa_kernel import MesaKernel
 from brigsim.data.provider import YamlFileProvider
@@ -46,6 +47,7 @@ def test_mesa_under_repair_moves_toward_station():
 
 
 def test_warp_under_repair_moves_toward_station():
+    pytest.importorskip("warp")  # 可选 GPU 依赖：缺失则跳过而非失败
     from brigsim.combat.warp_kernel import WarpKernel
 
     sc = _scenario_with_station()
@@ -61,6 +63,7 @@ def test_warp_under_repair_moves_toward_station():
 
 
 def test_warp_batch_under_repair_moves_toward_station():
+    pytest.importorskip("warp")  # 可选 GPU 依赖：缺失则跳过而非失败
     from brigsim.combat.warp_batch import WarpBatchKernel
 
     sc = _scenario_with_station()

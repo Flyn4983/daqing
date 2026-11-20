@@ -570,5 +570,29 @@ def dash_build_cmd(
             typer.echo(f"  [完成] {name}: {res}{size}")
 
 
+@app.command("dash-replay")
+def dash_replay_cmd(
+    scenario: str = typer.Argument("example_brigade", help="想定名称或 YAML 路径"),
+    out: Path = typer.Option(
+        Path("outputs/dash/replay.rrd"), "--out", help="3D 回放 rrd 输出路径"
+    ),
+    kernel: str = typer.Option("mesa", "--kernel", help="mesa 或 warp（GPU 不可用自动回退）"),
+    device: str = typer.Option("cuda:0", "--device", help="warp 设备"),
+    seed: int = typer.Option(20261014, "--seed", help="随机种子"),
+    tick_stride: int = typer.Option(2, "--tick-stride", help="动态帧隔（2=隔帧记录，体积减半）"),
+) -> None:
+    """C6.1：单想定 3D 回放 rrd 构建（大屏工况切换按需生成）。
+
+    独立进程运行：server 进程已占用 rerun 全局 sink，同进程二次 rr.init 会硬报
+    "Failed to flush previous sink"，因此回放重建必须走子进程。
+    """
+    from .dashboard.build import DEFAULT_PATHS, KNEE_X, build_replay, load_knee_vector, load_scenario
+
+    sc = load_scenario(scenario)
+    x = load_knee_vector(DEFAULT_PATHS["pareto"]) or KNEE_X
+    p = build_replay(out, sc, x, seed=seed, kernel=kernel, device=device, tick_stride=tick_stride)
+    typer.echo(f"[完成] {scenario} → {p}（{Path(p).stat().st_size / 1024 / 1024:.1f} MB）")
+
+
 if __name__ == "__main__":
     app()

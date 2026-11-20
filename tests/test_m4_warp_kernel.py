@@ -11,7 +11,9 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 import pytest
-import warp as wp
+# warp 是可选 GPU 依赖（pyproject warp extra）：缺失时整文件跳过而非收集报错
+# （与 test_c3_surrogate / test_c6_dashboard 的 importorskip 约定一致）。
+wp = pytest.importorskip("warp")
 
 from brigsim.combat.mesa_kernel import MesaKernel
 from brigsim.combat.warp_batch import run_batch

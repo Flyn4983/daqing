@@ -31,8 +31,8 @@
 - [x] **比赛主线 C1–C6：合成旅装备"四率"智能分析与决策支持平台**
   （[DEVLOG](DEVLOG.md) 各 C 条目）——
   C1 四率 GJB 口径对齐；C2 数据接口规范+参数模板（真实数据留白）；
-  C3 四率代理预测模型（MLP，留出 R²=0.881，端到端 0.003ms/方案≈4.1 万倍加速）；
-  C4 pymoo NSGA-II 多目标保障决策（71 方案 Pareto 前沿 + 蒙特卡洛复验）；
+  C3 四率代理预测模型（轻量 MLP(64×64)，留出集九项指标平均 R²=0.705（红方故障率单项 0.882），端到端 0.003ms/方案≈38 万倍加速）；
+  C4 pymoo NSGA-II 多目标保障决策（74 方案 Pareto 前沿 + 蒙特卡洛复验）；
   C5 国产大模型智能体（**模拟本地化部署**：服务监控+函数调用+对话/一键方案，规则引擎驱动真实数据）；
   **C6 一屏式指挥大屏**（1920×1080，内嵌 rerun WASM 3D 回放自动循环、
   四率卡/时序/MC 分布/Pareto/灵敏度/parity 零依赖手写 SVG、C5 收为全屏抽屉）
@@ -67,7 +67,7 @@ uv run pytest
 |---|---|---|---|
 | L4 应用 | `brigsim/cli.py`、`brigsim/agent/`、`brigsim/dashboard/` | 想定加载、跑批、报告；**本地大模型智能参谋**（模拟本地部署：推理服务监控 + 对话问答 + 保障方案一键生成，函数调用直连代理/Pareto/复验真实数据）；**C6 指挥大屏**（C1–C5 产物→6 JSON，一屏仪表盘 + 内嵌 3D） | Typer；标准库 http.server（无新依赖） |
 | L3 可视化 | `brigsim/viz/`、`agent/web/` | rerun 桌面/嵌入 WASM 3D 态势回放；一屏大屏 SVG 图表（时序/分布/Pareto/灵敏度/parity） | rerun-sdk（桌面 + 0.39 web viewer iframe）；手写 SVG（零前端依赖） |
-| L2 实验 | `brigsim/experiment/`、`brigsim/surrogate/`、`brigsim/optimize/` | 蒙特卡洛、灵敏度、**四率代理模型**（轻量 MLP，R²=0.88）、**NSGA-II 保障决策 Pareto 优化** | pandas / SALib / scikit-learn / pymoo |
+| L2 实验 | `brigsim/experiment/`、`brigsim/surrogate/`、`brigsim/optimize/` | 蒙特卡洛、灵敏度、**四率代理模型**（轻量 MLP(64×64)，九项平均 R²=0.705）、**NSGA-II 保障决策 Pareto 优化** | pandas / SALib / scikit-learn / pymoo |
 | L1 内核 | `brigsim/kernel combat sustainment/` | 交战 ABM ＋ 保障 DES | Mesa + SimPy；Warp 向量化后端（M4 切片 1） |
 | L0 数据 | `brigsim/data/` | 想定/装备/地形参数资产 | Pydantic + YAML，Provider 可替换 |
 

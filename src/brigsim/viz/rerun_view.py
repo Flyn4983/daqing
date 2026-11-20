@@ -36,6 +36,28 @@ C_FOREST = (58, 88, 46)
 C_ROCK = (120, 108, 92)
 C_SNOW = (228, 230, 228)
 
+# C7-b：8 地形族差异化色表（让不同 preset 在 3D 里一眼可辨）
+_TERRAIN_PALETTES: dict[str, dict[str, tuple[int, int, int]]] = {
+    "canyon":      {"water": (60, 75, 95),   "sand": (165, 140, 105), "grass": (80, 100, 55),
+                    "forest": (42, 60, 35),  "rock":  (95, 80, 65),   "snow": (210, 215, 210)},
+    "plain":       {"water": (50, 100, 140), "sand": (210, 195, 145), "grass": (115, 140, 70),
+                    "forest": (72, 100, 55),  "rock":  (130, 120, 105), "snow": (235, 235, 230)},
+    "rolling":     {"water": (42, 88, 128),  "sand": (200, 185, 138), "grass": (102, 132, 66),
+                    "forest": (65, 92, 50),   "rock":  (118, 106, 88),  "snow": (228, 230, 228)},
+    "mountain":    {"water": (30, 60, 95),   "sand": (155, 140, 110), "grass": (68, 92, 52),
+                    "forest": (38, 56, 32),  "rock":  (85, 72, 58),   "snow": (240, 242, 240)},
+    "paddy":       {"water": (28, 72, 65),   "sand": (180, 175, 120), "grass": (82, 118, 55),
+                    "forest": (52, 78, 40),   "rock":  (115, 108, 90),  "snow": (225, 228, 225)},
+    "urban":       {"water": (55, 85, 115),  "sand": (170, 165, 155), "grass": (82, 105, 68),
+                    "forest": (50, 72, 42),   "rock":  (100, 98, 96),   "snow": (220, 222, 220)},
+    "desert":      {"water": (70, 90, 100),  "sand": (220, 190, 120), "grass": (125, 120, 55),
+                    "forest": (90, 78, 38),   "rock":  (145, 120, 80),  "snow": (240, 235, 220)},
+    "snowfield":   {"water": (35, 65, 90),   "sand": (200, 200, 195), "grass": (120, 145, 135),
+                    "forest": (80, 110, 100), "rock":  (135, 135, 130), "snow": (245, 248, 248)},
+    None:          {"water": C_WATER, "sand": C_SAND, "grass": C_GRASS,  # 默认（geotiff 或无 preset）
+                    "forest": C_FOREST, "rock": C_ROCK, "snow": C_SNOW},
+}
+
 
 REPAIR_C = (168, 85, 247)  # 在修单位图元色（紫）
 WRECK_C = (72, 72, 80)  # 战损残骸图元色（深灰）
@@ -120,14 +142,20 @@ def visualize(
         for u in scenario.forces.get(side_name, [])
         if u.decoy
     }
-    _log_terrain(terrain)
-    _log_passability(terrain)
+    # C7-d：渲染垂直夸张——物理高程不变，几何/单位/贴地要素统一缩放，
+    # 平原地形（plain 总起伏 44m）也有可感知的三维地貌
+    z_exag = auto_z_exag(terrain)
+    geo = terrain.scaled(z_exag)
+
+    _log_terrain(terrain, scenario.environment.illumination, z_exag)
+    _log_map_frame(geo, scenario.environment.illumination)
+    _log_passability(geo)
     _log_static_units(info, terrain, use_models)
-    _log_objective(scenario, terrain)
-    _log_repair_stations(scenario, terrain)
-    _log_depots(scenario, terrain)
-    _log_obstacles(scenario, terrain)
-    _log_decoys(scenario, terrain)
+    _log_objective(scenario, geo)
+    _log_repair_stations(scenario, geo)
+    _log_depots(scenario, geo)
+    _log_obstacles(scenario, geo)
+    _log_decoys(scenario, geo)
     _log_weather_header(scenario)
 
     # C7-a0：空中航迹与战场效果点（None 或空表时对应图层静默）
@@ -181,7 +209,7 @@ def visualize(
         cur = grp.set_index("unit_id")
         xs = cur["x"].to_numpy()
         ys = cur["y"].to_numpy()
-        zs = terrain.height_at(xs, ys)
+        zs = geo.height_at(xs, ys)  # C7-d：单位 z 随渲染夸张同步缩放，贴合成像地面
         alive_idx, dead_idx = [], []
         if use_models:
             for k, uid in enumerate(cur.index):
@@ -227,13 +255,13 @@ def visualize(
             _log_units_primitives(cur, zs, info)
 
         _log_markers(cur=cur, zs=zs, info=info, decoy_ids=decoy_ids)
-        _log_fans(cur, zs, info, outline=embed)
-        _log_coverages(tick, cur, zs, info, thin=embed)
+        _log_fans(cur, zs, info, outline=embed, geo=geo)
+        _log_coverages(tick, cur, zs, info, thin=embed, geo=geo)
         _log_smoke(tick, cur, zs)
-        _log_weather(tick, scenario, terrain)
-        _log_engagements(tick, engagements, pos_table, terrain, info)
-        _log_tow_lines(cur, info, terrain)
-        _log_effects(tick, effects, terrain, smoke_specs, smoke_start)
+        _log_weather(tick, scenario, geo)
+        _log_engagements(tick, engagements, pos_table, geo, info)
+        _log_tow_lines(cur, info, geo)
+        _log_effects(tick, effects, geo, smoke_specs, smoke_start)
         if air is not None:
             _log_air(tick, air, air_trails, air_done)
         _log_metrics(tick, cur)
@@ -261,8 +289,32 @@ def _unit_info(scenario: Scenario) -> dict[str, tuple[str, int, str, float, str,
     return out
 
 
-def _ground_texture(size: int = 1024, seed: int = 11) -> np.ndarray:
-    """中性灰度地表细节纹理（泥地斑驳+碎石颗粒），与顶点色相乘保留高程分层配色。"""
+# 地表细节纹理资产（size=1024, seed=11 的确定性产物，与场景无关）：
+# 纯 Python opensimplex 生成一次需 ~92s 且全程持 GIL，会饿死服务进程内所有线程
+# （live 推演 worker / HTTP handler 全被拖住 → 预览"假锁"）——故预生成为 .npy 资产。
+_TEXTURE_ASSET = Path(__file__).resolve().parent / "assets" / "ground_texture.npy"
+_TEXTURE_CACHE: dict[tuple[int, int], np.ndarray] = {}
+
+
+def auto_z_exag(t: HeightField, target_span: float = 240.0, hi: float = 4.0) -> float:
+    """渲染垂直夸张系数：按地形实际起伏量自动放大（C7-d）。
+
+    物理高程不变（内核机动/单位站位仍用真实高程），仅渲染网格与单位 z 乘该
+    系数。平原预设总起伏仅 44m/10km（0.4%），真实比例下永远是"一张黄纸"；
+    target_span 为期望视觉起伏量（米），起伏已达目标则返回 1.0（如 DEM 388m）。
+    plain→4.0×、rolling→2.5×、canyon→1.26×、DEM→1.0×。
+    """
+    span = float(np.max(t.heights) - np.min(t.heights))
+    if not np.isfinite(span) or span < 1.0:
+        return 1.0
+    return float(min(hi, max(1.0, target_span / span)))
+
+
+def _ground_texture_generate(size: int, seed: int) -> np.ndarray:
+    """自然色地表细节纹理（暖灰基底 + 泥地斑驳 + 碎石颗粒）。
+
+    与顶点色相乘后呈土地质感而非塑料纯色；粗细两级 FBM 噪声同源资产化。
+    """
     from opensimplex import OpenSimplex
 
     coarse = np.zeros((size, size))
@@ -279,10 +331,59 @@ def _ground_texture(size: int = 1024, seed: int = 11) -> np.ndarray:
     flin = np.linspace(0.0, 130.0, size, endpoint=False)
     fine = np.asarray(fine_noise.noise2array(flin, flin))
     shade = (1.0 + coarse * 0.24 + fine * 0.07).clip(0.55, 1.5)
-    return np.clip(np.full((size, size, 3), 188.0) * shade[..., None], 0, 255).astype(np.uint8)
+    # 暖灰基底（微偏黄褐），粗噪再叠一点绿棕斑驳，接近真实地表航片质感
+    warm = np.array([199.0, 195.0, 181.0])
+    mottle = np.stack([coarse * 0.9 - fine * 0.3, coarse * 0.6 + fine * 0.5, -coarse * 0.4], axis=-1)
+    rgb = warm[None, None, :] * shade[..., None] + mottle * 6.0
+    return np.clip(rgb, 0, 255).astype(np.uint8)
 
 
-def _log_terrain(t: HeightField) -> None:
+def _ground_texture(size: int = 1024, seed: int = 11) -> np.ndarray:
+    """地表细节纹理：优先读预生成资产（毫秒级），缺失时按原逻辑生成并缓存。
+
+    纹理是固定资产（默认 size/seed 与场景无关），rerun 只读取不修改，可安全共享同一数组。
+    """
+    key = (size, seed)
+    hit = _TEXTURE_CACHE.get(key)
+    if hit is not None:
+        return hit
+    tex = None
+    if key == (1024, 11) and _TEXTURE_ASSET.is_file():
+        try:
+            tex = np.load(_TEXTURE_ASSET)
+        except Exception:
+            tex = None
+    if tex is None:
+        tex = _ground_texture_generate(size, seed)
+    # C7-f：贴图亮度补偿——albedo 纹理与顶点色相乘（均值 191/255≈0.75，整体压暗 25%），
+    # 统一再乘 ~1.13 把均值提到 ≈215，抵消相乘损耗；clip 防溢出
+    tex = np.clip(tex.astype(np.float32) * (215.0 / 191.0), 0, 255).astype(np.uint8)
+    _TEXTURE_CACHE[key] = tex
+    return tex
+
+
+_SUN = {
+    # illumination -> (方位角°, 高度角°, 光照强度)
+    "day":   (315.0, 46.0, 1.00),
+    "dusk":  (282.0, 13.0, 0.92),
+    "night": (340.0, 7.0, 0.55),
+}
+
+
+def _sun_direction(illumination: str) -> tuple[float, float, float, float]:
+    """想定昼/昏/夜 → 太阳方向单位向量 + 光照强度（山影明暗用）。"""
+    az, alt, inten = _SUN.get(illumination, _SUN["day"])
+    a, e = math.radians(az), math.radians(alt)
+    return (math.sin(a) * math.cos(e), math.cos(a) * math.cos(e), math.sin(e), inten)
+
+
+def _log_terrain(t: HeightField, illumination: str = "day", z_exag: float = 1.0) -> None:
+    """写实地形网格（C7-d：几何垂直夸张 + 颜色按真实高程分带 + 通行性晕染）。
+
+    z_exag 为渲染垂直夸张系数（物理高程不变）：网格/法线/水面按缩放高程构建，
+    颜色分带（水/沙/草/林/岩/雪）与坡度岩面判定仍用真实高程——视觉上是一座
+    更高的青山，而不是把 44m 丘陵涂成雪山。
+    """
     # 视觉网格 4 倍细分并采样 height_at：保证渲染三角面与内核双线性高程一致，
     # 否则 156m 粗网格的三角面与插值面能差数米，单位会被埋入地下
     n = (t.n - 1) * 4 + 1
@@ -290,29 +391,75 @@ def _log_terrain(t: HeightField) -> None:
     xs = np.linspace(0, t.size[0], n)
     ys = np.linspace(0, t.size[1], n)
     gx, gy = np.meshgrid(xs, ys)
-    heights = t.height_at(gx.ravel(), gy.ravel()).reshape(n, n)
+    h = t.height_at(gx.ravel(), gy.ravel()).reshape(n, n)  # 真实高程（颜色/坡度）
+    heights = h * z_exag  # 渲染高程（几何）
     verts = np.column_stack([gx.ravel(), gy.ravel(), heights.ravel()])
 
-    # 坡度（中心差分）
-    dhd_y, dhd_x = np.gradient(heights, dx_world, dx_world)
-    slope = np.hypot(dhd_x, dhd_y).ravel()
-    h = heights.ravel()
-    colors = np.zeros((n * n, 4), dtype=np.uint8)
-    colors[:] = C_GRASS + (255,)
-    colors[(h > 40) & (h < 110)] = C_FOREST + (255,)
-    colors[h >= 110] = C_ROCK + (255,)
-    colors[h >= 185] = C_SNOW + (255,)
-    colors[(h < t.water_level + 4) & (h >= t.water_level)] = C_SAND + (255,)
-    colors[h < t.water_level] = C_WATER + (255,)
-    rocky = (slope > 0.35) & (h >= t.water_level)
-    colors[rocky] = C_ROCK + (255,)
+    # C7-b：按 preset_family 取差异化色表（默认 None → geotiff/无 preset 用原始标准色）
+    # C7-f：提亮 ×1.5——顶点色最终被 山影(0.78~1.12) × 暖灰贴图(均值≈0.75) 双重相乘，
+    # 原暗调色板（canyon 林地 (42,60,35)）乘完只剩 ≈(22,31,18)，整屏近黑（用户反馈
+    # "回放模式整个 3D 界面太暗"）。调色板本身保持色相不变，只提亮度。
+    pal = {
+        k: tuple(min(255, int(round(v * 1.5))) for v in c)
+        for k, c in _TERRAIN_PALETTES.get(t.preset_family, _TERRAIN_PALETTES[None]).items()
+    }
+    c_water, c_sand, c_grass = pal["water"], pal["sand"], pal["grass"]
+    c_forest, c_rock, c_snow = pal["forest"], pal["rock"], pal["snow"]
 
-    # 顶点法线：让方向光在坡面上产生明暗，地形不再是塑料平面
+    # 坡度（中心差分，真实高程）——岩面判定不受垂直夸张影响
+    dhd_y, dhd_x = np.gradient(h, dx_world, dx_world)
+    slope = np.hypot(dhd_x, dhd_y).ravel()
+    hr = h.ravel()
+    colors = np.zeros((n * n, 4), dtype=np.uint8)
+    colors[:] = c_grass + (255,)
+    colors[(hr > 40) & (hr < 110)] = c_forest + (255,)
+    colors[hr >= 110] = c_rock + (255,)
+    colors[hr >= 185] = c_snow + (255,)
+    colors[(hr < t.water_level + 4) & (hr >= t.water_level)] = c_sand + (255,)
+    colors[hr < t.water_level] = c_water + (255,)
+    rocky = (slope > 0.35) & (hr >= t.water_level)
+    colors[rocky] = c_rock + (255,)
+
+    # 低草区随高程向干黄渐变（25m→50m，C7-d 收敛到 15%：此前 28% 叠加暖色贴图
+    # 后整屏发黄，用户反馈"很多黄色的色块"）
+    low_grass = (hr >= t.water_level + 4) & (hr < 40.0)
+    blend = np.clip((hr - 25.0) / 25.0, 0.0, 1.0)
+    dry_rgb = (
+        np.array(c_grass, float) * (1.0 - 0.15 * blend[:, None])
+        + np.array(c_sand, float) * (0.15 * blend[:, None])
+    )
+    colors[low_grass, :3] = dry_rgb[low_grass].astype(np.uint8)
+
+    # C7-d：通行性淡色晕染（仅 FBM 预设）——预设的 p=1.0 是"默认开阔地"而非道路，
+    # 不能按 DEM 逻辑铺路网；难行区（河沟/绝壁/水田 <0.45）冷灰蓝、松软区
+    # （0.45-0.75）轻蒙，让通行性差异可感知又不喧宾夺主
+    if t.preset_family is not None and not np.allclose(t.passability, 1.0):
+        ci = np.minimum(np.arange(n) // 4, t.n - 1)
+        p_f = t.passability[np.ix_(ci, ci)].ravel()
+        c_arr = colors[:, :3].astype(np.float32)
+        obst = np.array([104, 112, 124], dtype=np.float32)
+        hard = p_f < 0.45
+        soft = (p_f >= 0.45) & (p_f < 0.75)
+        c_arr[hard] = c_arr[hard] * 0.62 + obst * 0.38
+        c_arr[soft] = c_arr[soft] * 0.82 + obst * 0.18
+        colors[:, :3] = np.clip(c_arr, 0, 255).astype(np.uint8)
+
+    # 顶点法线：按缩放高程求梯度——夸张后坡面更陡，山影明暗对比更强、立体感更足
+    dz_y, dz_x = np.gradient(heights, dx_world, dx_world)
     normals = np.zeros((n * n, 3))
-    normals[:, 0] = -dhd_x.ravel()
-    normals[:, 1] = -dhd_y.ravel()
+    normals[:, 0] = -dz_x.ravel()
+    normals[:, 1] = -dz_y.ravel()
     normals[:, 2] = 1.0
     normals /= np.linalg.norm(normals, axis=1, keepdims=True)
+
+    # 山影明暗（hillshade，制图学标准地貌表达）：太阳方向 Lambert 项乘顶点色，
+    # 山脊/沟谷/陡坡产生连续明暗层次；昼夜用不同太阳方位/强度
+    sx, sy, sz, inten = _sun_direction(illumination)
+    lambert = np.clip(normals @ np.array([sx, sy, sz]), 0.0, 1.0)
+    # C7-f：0.66+0.40L → 0.78+0.34L（日间范围 [0.78,1.12]）——原下限 0.66 让背光坡面
+    # 过暗（叠贴图后近黑），保留明暗对比但整体抬亮
+    shade = (1.0 - inten) + inten * (0.78 + 0.34 * lambert)
+    colors[:, :3] = np.clip(colors[:, :3].astype(np.float32) * shade[:, None], 0, 255).astype(np.uint8)
 
     # 归一化 UV（0..1，纹理覆盖全战场，约 10m/texel）
     uvs = np.column_stack([gx.ravel() / t.size[0], gy.ravel() / t.size[1]])
@@ -338,15 +485,136 @@ def _log_terrain(t: HeightField) -> None:
         ),
         static=True,
     )
-    # 半透明水面
+    # 半透明水面（随垂直夸张同步缩放，谷地水面不会与地形脱节）
     qx, qy = np.meshgrid([0, t.size[0]], [0, t.size[1]])
-    water = np.column_stack([qx.ravel(), qy.ravel(), np.full(4, t.water_level)])
+    water = np.column_stack([qx.ravel(), qy.ravel(), np.full(4, t.water_level * z_exag)])
     rr.log(
         "world/water",
         rr.Mesh3D(
             vertex_positions=water,
             triangle_indices=[[0, 1, 3], [0, 3, 2]],
             vertex_colors=[(30, 70, 110, 120)] * 4,
+        ),
+        static=True,
+    )
+
+
+def _log_map_frame(t: HeightField, illumination: str = "day") -> None:
+    """地图要素（贴地 static）：坐标网格 + 指北针 + 比例尺。
+
+    - 网格步长自适应：单方向网格线控制在 ~10 条以内（100m~2km 七档候选）；
+    - 每 5 格一条主线（稍亮稍粗），其余次线；
+    - 折线沿地形采样高度 +0.6m，不穿地；
+    - 指北针/比例尺放战场东北/东南角上空，颜色随昼夜明暗调整。
+    """
+    W, H = float(t.size[0]), float(t.size[1])
+    step = 2000.0
+    for cand in (100.0, 200.0, 250.0, 500.0, 1000.0, 2000.0):
+        if W / cand <= 10 and H / cand <= 10:
+            step = cand
+            break
+    night = illumination == "night"
+    c_minor = (96, 102, 116) if night else (192, 196, 202)
+    c_major = (128, 136, 150) if night else (224, 227, 232)
+    c_mark = (150, 156, 168) if night else (240, 240, 234)
+
+    n_s = 65
+    ys = np.linspace(0.0, H, n_s)
+    xs = np.linspace(0.0, W, n_s)
+    strips: list[np.ndarray] = []
+    majors: list[np.ndarray] = []
+    x, k = 0.0, 0
+    while x <= W + 1e-6:
+        zz = t.height_at(np.full(n_s, x), ys) + 0.6
+        line = np.column_stack([np.full(n_s, x), ys, zz])
+        strips.append(line)
+        if k % 5 == 0:
+            majors.append(line)
+        x += step
+        k += 1
+    y, k = 0.0, 0
+    while y <= H + 1e-6:
+        zz = t.height_at(xs, np.full(n_s, y)) + 0.6
+        line = np.column_stack([xs, np.full(n_s, y), zz])
+        strips.append(line)
+        if k % 5 == 0:
+            majors.append(line)
+        y += step
+        k += 1
+
+    # 指北针（战场中部贴地大箭头，指向地图北 +y）。
+    # 注意：实验证实画面边缘/四角区域在默认相机位姿下受视锥/裁剪影响不可见，
+    # 中部为各相机位姿下稳定可见区，故地图要素置于中部而非传统四角。
+    nx, ny = W * 0.52, H * 0.54
+    tail_len = 1600.0
+    nz = float(t.height_at(nx, ny))
+    tail_z = float(t.height_at(nx, ny - tail_len))
+    rr.log(
+        "world/map/north",
+        rr.Arrows3D(
+            vectors=[[0.0, tail_len, nz - tail_z]],
+            origins=[[nx, ny - tail_len, tail_z + 6.0]],
+            colors=[c_mark],
+            radii=100.0,
+        ),
+        static=True,
+    )
+    rr.log(
+        "world/map/north_label",
+        rr.Points3D(
+            [[nx, ny + 220.0, nz + 150.0]],
+            labels=["N"],
+            radii=0.01,
+            colors=[c_mark],
+        ),
+        static=True,
+    )
+    # 比例尺（指北针左下贴地：2 格长主线和两端刻度帽 + 米数标签；
+    # z 取地形/水面较高者 +8m，避免谷地比例尺没入半透明水面下不可见）
+    sx0, sy0 = W * 0.40, H * 0.42
+    bar = step * 2
+    sz = max(float(t.height_at(sx0 + bar / 2.0, sy0)), t.water_level) + 8.0
+    cap = 200.0
+    rr.log(
+        "world/map/scale",
+        rr.LineStrips3D(
+            [
+                # 主线（3 点）
+                np.column_stack([
+                    [sx0, sx0 + bar / 2.0, sx0 + bar],
+                    [sy0, sy0, sy0],
+                    [sz + 6.0, sz + 6.0, sz + 6.0],
+                ]),
+                # 两端刻度帽（4 点折线：下-上-下-上）
+                np.column_stack([
+                    [sx0, sx0, sx0 + bar, sx0 + bar],
+                    [sy0 - cap, sy0 + cap, sy0 - cap, sy0 + cap],
+                    [sz + 6.0, sz + 6.0, sz + 6.0, sz + 6.0],
+                ]),
+            ],
+            colors=[c_mark],
+            radii=80.0,
+        ),
+        static=True,
+    )
+    rr.log(
+        "world/map/scale_label",
+        rr.Points3D(
+            [[sx0 + bar / 2.0, sy0 + 240.0, sz + 100.0]],
+            labels=[f"{int(bar)} m"],
+            radii=0.01,
+            colors=[c_mark],
+        ),
+        static=True,
+    )
+    rr.log("world/map/grid", rr.LineStrips3D(strips, colors=c_minor, radii=0.7), static=True)
+    rr.log("world/map/grid_major", rr.LineStrips3D(majors, colors=c_major, radii=1.6), static=True)
+    # HUD 文字版地图信息（3D 要素之外的兜底可读性）
+    rr.log(
+        "feed/map",
+        rr.TextLog(
+            f"地图：坐标网格 {int(step)}m（主线每 5 格） · 指北 N=+y · 比例尺 {int(step * 2)}m",
+            level="INFO",
         ),
         static=True,
     )
@@ -385,8 +653,17 @@ def _dilate4(m: np.ndarray) -> np.ndarray:
 
 
 def _log_passability(t: HeightField) -> None:
-    """通行性叠加层：只显式标绘道路/桥梁（p>0.95；普通地表 0.6/0.9 不上色，
-    否则整个地形都会被贴片覆盖）。水面上的为桥梁（灰褐），旱地为公路（土黄）。"""
+    """通行性叠加层：只显式标绘 DEM 道路/桥梁（geotiff 专用）。
+
+    C7-d 修复：原按 p>0.95 绝对阈值识别"公路"，但 FBM 预设的 p=1.0 语义是
+    "默认开阔地"而非道路——plain/rolling 预设 84%~93% 的格子都是 1.0，导致
+    大屏上大半张地图被土黄贴片盖住（用户报"很多黄色的色块"）。
+    现在：geotiff（preset_family=None，DEM 通行性栅格真实编码路网）才画
+    道路(土黄)/桥梁(灰褐)；预设的通行性差异改由 _log_terrain 的冷灰蓝
+    淡色晕染表达（河沟/绝壁更灰蓝、开阔地不着色）。
+    """
+    if t.preset_family is not None:
+        return  # FBM 预设无路网语义，不上贴片（晕染在 _log_terrain）
     if np.allclose(t.passability, 1.0):
         return  # 无通行性栅格（默认全 1），不画
     p, h = t.passability, t.heights
@@ -420,6 +697,11 @@ def _log_units_primitives(cur: pd.DataFrame, zs: np.ndarray, info) -> None:
     M 失动深蓝 > F 火力受损琥珀 > 正常方别色；死亡残骸深灰，
     K 战毁（grade=3）棕黑。旧数据无 grade 列时回退旧三态。
     """
+    # C7-d：兼容最小列集（live 预览只构造 x/y/heading/alive）——缺省列按正常态补全
+    for col, default in (("damaged", False), ("under_repair", False)):
+        if col not in cur.columns:
+            cur = cur.copy()
+            cur[col] = default
     has_grade = "damage_grade" in cur.columns and "disposition" in cur.columns
     alive_centers: list = []
     alive_rot: list = []
@@ -689,39 +971,72 @@ def _log_markers(*, cur, zs, info, decoy_ids: set[str] | None = None) -> None:
         )
 
 
-def _log_fans(cur, zs, info, *, outline: bool = False) -> None:
+def _log_fans(cur, zs, info, *, outline: bool = False, geo=None) -> None:
     """存活单位射界扇面（半角粗取 ±10°）。
 
-    桌面版用半透明三角网格填充；C6 大屏嵌入版（outline=True）改用细线轮廓
-    （两条射界边 + 弧），避免几十个半透明扇面叠加成刺眼尖刺、喧宾夺主。
+    桌面版用半透明三角网格填充；C6 大屏嵌入版（outline=True）改用低透明度
+    填充扇面 + 亮弧线轮廓（C7-d：纯细线轮廓用户看不见）。
+    C7-e：geo 传入时弧点逐点贴地（垂直夸张后扁平弧会被地形埋没）。
     """
     half = np.deg2rad(10)
     arc = np.linspace(-half, half, 11)
 
     if outline:
+        # C7-d：用户反馈大屏里"装备作用范围不可见"——由纯细线轮廓改为
+        # 低透明度填充扇面（alpha 36）+ 亮弧线轮廓（alpha 150）：
+        # 既清晰表达各装备作用范围，又避免高透明尖刺喧宾夺主
+        fill_v: list = []
+        fill_c: list = []
         strips, strip_colors = [], []
+        seg = len(arc) + 1
         for k, uid in enumerate(cur.index):
             if not bool(cur.at[uid, "alive"]):
                 continue
             side = info[uid][1]
             rng_ = info[uid][3]
             h = float(cur.at[uid, "heading"])
-            ox, oy, oz = float(cur.at[uid, "x"]), float(cur.at[uid, "y"]), float(zs[k]) + 2
+            ox, oy = float(cur.at[uid, "x"]), float(cur.at[uid, "y"])
+            oz = float(zs[k]) + 2
+            ax = ox + rng_ * np.cos(h + arc)
+            ay = oy + rng_ * np.sin(h + arc)
+            if geo is not None:
+                # C7-e：贴地扇面（缩放地形逐点采样 + 抬升，防被夸张后的地形埋没）
+                az = np.asarray(geo.height_at(ax, ay), dtype=float) + 4.0
+            else:
+                az = np.full(len(arc), oz)
             arc_pts = [
-                [ox + rng_ * np.cos(h + a), oy + rng_ * np.sin(h + a), oz]
-                for a in arc
+                [float(a_), float(b_), float(c_)]
+                for a_, b_, c_ in zip(ax, ay, az)
             ]
-            c = SIDE_COLOR[side] + (150,)
+            fill_v.append([ox, oy, oz])
+            fill_v += arc_pts
+            fill_c += [SIDE_COLOR[side] + (36,)] * seg
+            c_edge = SIDE_COLOR[side] + (150,)
             strips += [[arc_pts[0], [ox, oy, oz]], arc_pts,
                        [arc_pts[-1], [ox, oy, oz]]]
-            strip_colors += [c, c, c]
-        if strips:
+            strip_colors += [c_edge, c_edge, c_edge]
+        if fill_v:
+            indices = []
+            for base in range(0, len(fill_v), seg):
+                for j in range(seg - 2):
+                    indices.append([base, base + j + 1, base + j + 2])
             rr.log(
                 "world/fans",
-                rr.LineStrips3D(strips, colors=strip_colors, radii=4.0),
+                rr.Mesh3D(
+                    vertex_positions=np.asarray(fill_v, dtype=np.float64),
+                    triangle_indices=np.asarray(indices),
+                    vertex_colors=np.asarray(fill_c, dtype=np.uint8),
+                ),
             )
         else:
             rr.log("world/fans", rr.Clear(recursive=False))
+        if strips:
+            rr.log(
+                "world/fans_edge",
+                rr.LineStrips3D(strips, colors=strip_colors, radii=5.5),
+            )
+        else:
+            rr.log("world/fans_edge", rr.Clear(recursive=False))
         return
 
     verts, colors = [], []
@@ -731,10 +1046,17 @@ def _log_fans(cur, zs, info, *, outline: bool = False) -> None:
         side = info[uid][1]
         rng_ = info[uid][3]
         h = float(cur.at[uid, "heading"])
-        ox, oy, oz = float(cur.at[uid, "x"]), float(cur.at[uid, "y"]), float(zs[k]) + 2
+        ox, oy = float(cur.at[uid, "x"]), float(cur.at[uid, "y"])
+        oz = float(zs[k]) + 2
         verts.append([ox, oy, oz])
-        for a in arc:
-            verts.append([ox + rng_ * np.cos(h + a), oy + rng_ * np.sin(h + a), oz])
+        ax = ox + rng_ * np.cos(h + arc)
+        ay = oy + rng_ * np.sin(h + arc)
+        if geo is not None:
+            az = np.asarray(geo.height_at(ax, ay), dtype=float) + 4.0
+        else:
+            az = np.full(len(arc), oz)
+        for a_, b_, c_ in zip(ax, ay, az):
+            verts.append([float(a_), float(b_), float(c_)])
         c = SIDE_COLOR_A[side]
         colors += [c] * (len(arc) + 1)
     if not verts:
@@ -760,14 +1082,35 @@ def _ring_pts(cx, cy, z, radius, n=48):
     return [[cx + radius * np.cos(a), cy + radius * np.sin(a), z] for a in th]
 
 
-def _log_coverages(tick: int, cur, zs, info, *, thin: bool = False) -> None:
+def _ring_pts_tf(cx, cy, radius, geo, lift, n=48):
+    """贴地圆环：每点按（缩放后）地形高程采样 + 固定抬升。
+
+    C7-e：用户反馈"作用范围圈被地形遮挡、颜色发灰不明显"——根因是圆环为
+    平面 z=中心地形高+3，而渲染垂直夸张（plain 4×）后圈内地形起伏可达
+    上百年（44m×4≈176m），扁平圈被山丘埋没。改为逐点贴地 + 抬升可见。
+    """
+    th = np.linspace(0, 2 * np.pi, n)
+    px = cx + radius * np.cos(th)
+    py = cy + radius * np.sin(th)
+    pz = np.asarray(geo.height_at(px, py), dtype=float) + lift
+    return [[float(a), float(b), float(c)] for a, b, c in zip(px, py, pz)]
+
+
+def _log_coverages(tick: int, cur, zs, info, *, thin: bool = False, geo=None) -> None:
     """体系作用包络（每 tick 跟随单位）：雷达探测圈+扫描线、防空杀伤圈、
-    电抗压制区、C2 指挥光环。全部细线图元，控制 rrd 体积。"""
+    电抗压制区、C2 指挥光环。geo 传入时圆环/扫描线逐点贴地（C7-e）。"""
     rings: list[list] = []
     ring_colors: list = []
     sweeps: list[list] = []
     sweep_colors: list = []
-    line_r = 2.5 if thin else 3.5
+    line_r = 3.5 if thin else 5.0
+    lift = 8.0
+
+    def _ring(cx, cy, base_z, radius, n):
+        if geo is not None:
+            return _ring_pts_tf(cx, cy, radius, geo, lift, n)
+        return _ring_pts(cx, cy, base_z, radius, n)
+
     for k, uid in enumerate(cur.index):
         if not bool(cur.at[uid, "alive"]):
             continue
@@ -775,25 +1118,26 @@ def _log_coverages(tick: int, cur, zs, info, *, thin: bool = False) -> None:
         cov = info[uid][5]
         if cov <= 0:
             continue
-        ox, oy, oz = float(cur.at[uid, "x"]), float(cur.at[uid, "y"]), float(zs[k]) + 3
+        ox, oy, oz = float(cur.at[uid, "x"]), float(cur.at[uid, "y"]), float(zs[k]) + lift
         if role in ("radar_air", "radar_cb"):
             color = RADAR_C
-            rings.append(_ring_pts(ox, oy, oz, cov, 56))
+            rings.append(_ring(ox, oy, oz, cov, 56))
             ring_colors.append(color)
             # 旋转扫描线（相位按 uid 散列，多部雷达不同步）
             phase = (hash(uid) % 360) * math.pi / 180.0
             a = tick * 0.32 + phase
-            sweeps.append([[ox, oy, oz],
-                           [ox + cov * math.cos(a), oy + cov * math.sin(a), oz]])
+            ex, ey = ox + cov * math.cos(a), oy + cov * math.sin(a)
+            ez = (float(geo.height_at(ex, ey)) + lift) if geo is not None else oz
+            sweeps.append([[ox, oy, oz], [ex, ey, ez]])
             sweep_colors.append(color)
         elif role == "air_defense":
-            rings.append(_ring_pts(ox, oy, oz, cov, 48))
+            rings.append(_ring(ox, oy, oz, cov, 48))
             ring_colors.append(SIDE_COLOR[info[uid][1]])
         elif role == "ew":
-            rings.append(_ring_pts(ox, oy, oz, cov, 64))
+            rings.append(_ring(ox, oy, oz, cov, 64))
             ring_colors.append(EW_C)
         elif role == "c2":
-            rings.append(_ring_pts(ox, oy, oz, cov, 48))
+            rings.append(_ring(ox, oy, oz, cov, 48))
             ring_colors.append(AURA_C)
     if rings:
         rr.log("world/coverages/rings",
@@ -873,64 +1217,112 @@ def _log_weather_header(scenario: Scenario) -> None:
         wind = f"  风速 {env.wind_speed_mps:.0f}m/s 风向 {env.wind_dir_deg:.0f}°"
     else:
         wind = "  无风"
+    vis = f"  能见度 {env.visibility_factor:.0%}"
     rr.log(
         "feed/weather",
-        rr.TextLog(f"气象：{name}（{illum}）{wind}", level="INFO"),
+        rr.TextLog(f"气象：{name}（{illum}）{wind}{vis}", level="INFO"),
         static=True,
     )
 
 
-def _ground_haze(tick, terrain, n_fog, color, *, r_lo=160, r_hi=300, h=28):
-    """贴地漂移雾/霾/沙尘扁球层（Mesh3D 半透明实例）。"""
+def _ground_haze(tick, terrain, n_fog, color, *, r_lo, r_hi, h):
+    """贴地漂移雾/霾/沙尘椭球层（Ellipsoids3D 实例，官方轻量组件）。
+
+    半径/数量/透明度按"恰当可辨"收敛：能看清战场轮廓，不糊成一片。
+    """
     rng = np.random.default_rng(7)
     fx = rng.uniform(0, terrain.size[0], n_fog)
     fy = rng.uniform(0, terrain.size[1], n_fog)
     fr = rng.uniform(r_lo, r_hi, n_fog)
     drift = (tick * 6) % 300
-    centers = np.column_stack([(fx + drift) % terrain.size[0], fy, np.zeros(n_fog)])
-    gz = terrain.height_at(centers[:, 0], centers[:, 1])
-    centers[:, 2] = gz + h
-    return _instanced_spheres(centers, fr, [color] * n_fog, z_scale=0.14, subdiv=1)
+    cx = (fx + drift) % terrain.size[0]
+    gz = terrain.height_at(cx, fy)
+    centers = np.column_stack([cx, fy, gz + h])
+    return rr.Ellipsoids3D(
+        centers=centers,
+        radii=np.column_stack([fr, fr, fr * 0.16]),
+        colors=[color] * n_fog,
+    )
 
 
 def _log_weather(tick: int, scenario: Scenario, terrain: HeightField) -> None:
-    w = scenario.environment.weather
-    n_pts = 620 if w == "heavy_rain" else 380
+    env = scenario.environment
+    w = env.weather
+    night = env.illumination == "night"
+    dim = 0.5 if night else 1.0
+
+    def _dim(c):
+        vals = [int(round(v * dim)) for v in c[:3]]
+        if len(c) > 3:
+            vals.append(c[3])
+        return tuple(vals)
+
+    # 风矢（3 支横排箭头，仅有效风速时显示）
+    if env.wind_speed_mps >= 0.5:
+        wd = math.radians(env.wind_dir_deg)
+        vx, vy = math.sin(wd), math.cos(wd)
+        W, H = terrain.size
+        origins = [[W * 0.08, H * f, 0.0] for f in (0.22, 0.5, 0.78)]
+        for o in origins:
+            o[2] = float(terrain.height_at(o[0], o[1])) + 8.0
+        rr.log(
+            "world/weather/wind",
+            rr.Arrows3D(
+                vectors=[[vx * 320.0, vy * 320.0, 0.0]] * 3,
+                origins=origins,
+                colors=[_dim((196, 203, 214))],
+                radii=14.0,
+            ),
+        )
+
     rng = np.random.default_rng(7)
-    px = rng.uniform(0, terrain.size[0], n_pts)
-    py = rng.uniform(0, terrain.size[1], n_pts)
     if w in ("rain", "heavy_rain"):
-        # Points3D 不支持半透明，用不透明淡蓝小点表现雨幕；暴雨更密更急
+        # 斜细雨线（LineStrips3D，长 ~18m 随风斜吹）：比不透明大点更接近真实雨幕。
+        # C7-d：用户反馈"气象没有明显渲染"——密度/线宽上调约 40%，仍保持细雨质感
+        n_pts = 340 if w == "heavy_rain" else 260
         speed = 160 if w == "heavy_rain" else 110
-        z = 250 + ((rng.uniform(0, 900, n_pts) - tick * speed) % 900)
-        color = (120, 150, 200) if w == "heavy_rain" else (150, 180, 220)
+        L = 18.0
+        px = rng.uniform(0, terrain.size[0], n_pts)
+        py = rng.uniform(0, terrain.size[1], n_pts)
+        z = 260 + ((rng.uniform(0, 900, n_pts) - tick * speed) % 900)
+        wd = math.radians(env.wind_dir_deg)
+        dx, dy = math.sin(wd) * L * 0.25, math.cos(wd) * L * 0.25
+        strips = [
+            np.array([[px[i], py[i], z[i]], [px[i] + dx, py[i] + dy, z[i] - L]])
+            for i in range(n_pts)
+        ]
         rr.log(
             "world/weather/precip",
-            rr.Points3D(np.column_stack([px, py, z]), radii=8, colors=[color]),
+            rr.LineStrips3D(strips, colors=[_dim((105, 138, 188))], radii=2.0),
         )
     elif w == "snow":
+        n_pts = 260
+        px = rng.uniform(0, terrain.size[0], n_pts)
+        py = rng.uniform(0, terrain.size[1], n_pts)
         z = 150 + ((rng.uniform(0, 700, n_pts) - tick * 30) % 700)
         rr.log(
             "world/weather/precip",
-            rr.Points3D(np.column_stack([px, py, z]), radii=12, colors=[(235, 240, 245)]),
+            rr.Points3D(np.column_stack([px, py, z]), radii=5.5, colors=[_dim((238, 242, 246))]),
         )
     elif w in ("fog", "heavy_fog"):
-        # 贴地扁球雾团，缓慢漂移；多球重叠 alpha 会叠加，取低值
-        n_fog = 220 if w == "heavy_fog" else 130
-        alpha = 22 if w == "heavy_fog" else 16
+        # 贴地扁球雾团，缓慢漂移；多球重叠 alpha 会叠加，取低值。
+        # C7-d：数量/半径/透明度上调——大团雾贴地漂移才看得出"雾"，
+        # 此前 60 球 alpha 11 在 WASM viewer 里几乎不可见
+        n_fog = 120 if w == "heavy_fog" else 85
+        alpha = 26 if w == "heavy_fog" else 20
         rr.log(
             "world/weather/precip",
-            _ground_haze(tick, terrain, n_fog, (202, 207, 214, alpha)),
+            _ground_haze(tick, terrain, n_fog, _dim((205, 210, 216)) + (alpha,), r_lo=260, r_hi=520, h=26),
         )
     elif w == "sand":
         rr.log(
             "world/weather/precip",
-            _ground_haze(tick, terrain, 150, (196, 162, 104, 26), r_lo=200, r_hi=380, h=46),
+            _ground_haze(tick, terrain, 85, _dim((196, 162, 104)) + (22,), r_lo=280, r_hi=500, h=38),
         )
     elif w == "haze":
         rr.log(
             "world/weather/precip",
-            _ground_haze(tick, terrain, 100, (200, 200, 196, 18), r_lo=260, r_hi=460, h=60),
+            _ground_haze(tick, terrain, 70, _dim((200, 200, 196)) + (18,), r_lo=300, r_hi=520, h=55),
         )
     else:
         rr.log("world/weather/precip", rr.Clear(recursive=False))
@@ -1249,8 +1641,10 @@ def _make_embed_blueprint(
     加载即自动循环播放（录屏无需手动点播放）；timeline 锚定序列轴 tick。
     """
     scene = _scene_view(
-        eye or (2400.0, -7600.0, 9200.0),
-        look or (5200.0, 4600.0, 160.0),
+        # C7-d：相机由 z=9200 高俯视降到 z=6200 斜视（与桌面版 6800 接近）——
+        # 高俯视下垂直夸张的地形仍像平面地图，斜视才看得出三维地貌
+        eye or (3800.0, -4800.0, 6200.0),
+        look or (5000.0, 5000.0, 200.0),
     )
     return rrb.Blueprint(
         scene,

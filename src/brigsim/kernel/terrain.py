@@ -22,13 +22,31 @@ class HeightField:
         heights: np.ndarray,
         water_level: float,
         passability: np.ndarray | None = None,
+        preset_family: str | None = None,
     ) -> None:
         self.size = size
         self.n = n
         self.heights = heights  # (n, n)，行=y，列=x
         self.water_level = water_level
-        # 通行性系数（n,n），1=道路/硬地，越小越难走（水面/林地/沼泽）
         self.passability = passability if passability is not None else np.ones((n, n))
+        self.preset_family = preset_family  # "canyon" / "plain" / "rolling" ... 用于渲染层视觉差异化
+
+    def scaled(self, factor: float) -> "HeightField":
+        """返回垂直夸张副本（仅渲染用）：heights/water_level × factor。
+
+        内核机动/单位位置仍用真实高程；可视化层把地形网格、单位 z、贴地要素
+        统一乘该系数，让平原地形（如 plain 预设总起伏仅 44m/10km）也有可感知
+        的立体感。passability/preset_family 等只读属性共享，不复制大数组。
+        factor<=1 时返回自身（零开销）。
+        """
+        if factor <= 1.0 + 1e-9:
+            return self
+        import copy as _copy
+
+        clone = _copy.copy(self)
+        clone.heights = self.heights * factor
+        clone.water_level = self.water_level * factor
+        return clone
 
     @classmethod
     def from_spec(cls, spec: Terrain) -> "HeightField":
@@ -41,10 +59,10 @@ class HeightField:
                 grid_n=spec.grid_n,
                 water_level=spec.water_level,
                 passability_path=spec.passability_path,
+                preset_family=spec.preset_family,
             )
         n = spec.grid_n
         noise = OpenSimplex(seed=spec.noise_seed)
-        # noise2array(x, y) 返回 shape=(y.size, x.size)，行=y、列=x，即高度场布局
         xs = np.linspace(0.0, spec.noise_scale, n, endpoint=False)
         ys = np.linspace(0.0, spec.noise_scale, n, endpoint=False)
         h = np.zeros((n, n))
@@ -54,15 +72,14 @@ class HeightField:
             total += amp
             amp *= 0.5
             freq *= 2.0
-        h = h / total  # [-1, 1]
+        h = h / total
         heights = spec.base_height + h * spec.amplitude
-        # C7-b：程序合成地形可以内联 passability_array（Terrain schema 新增）
         passability: np.ndarray | None = None
         if spec.passability_array:
             pa = np.asarray(spec.passability_array, dtype=np.float64)
             if pa.shape == (n, n):
                 passability = pa
-        return cls(spec.size_m, n, heights, spec.water_level, passability)
+        return cls(spec.size_m, n, heights, spec.water_level, passability, spec.preset_family)
 
     @classmethod
     def from_geotiff(
@@ -72,6 +89,7 @@ class HeightField:
         grid_n: int = 65,
         water_level: float = 10.0,
         passability_path: str | None = None,
+        preset_family: str | None = None,
     ) -> "HeightField":
         """读取单波段 DEM（可选通行性栅格）：GDAL 双线性重采样到 (grid_n, grid_n)。"""
         import rasterio
@@ -91,7 +109,7 @@ class HeightField:
                     1, out_shape=(grid_n, grid_n), resampling=Resampling.bilinear
                 ).astype(np.float64)
             passability = np.clip(np.nan_to_num(passability, nan=1.0), 0.0, 1.0)
-        return cls(size, grid_n, band, water_level, passability)
+        return cls(size, grid_n, band, water_level, passability, preset_family)
 
     def _ij(self, x: np.ndarray | float, y: np.ndarray | float):
         fx = np.clip(np.asarray(x) / self.size[0], 0.0, 1.0) * (self.n - 1)

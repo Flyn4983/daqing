@@ -6,6 +6,17 @@
 
   const state = { metric: "availability", side: "red", both: true };
   let TS = null, DIST = null, PARETO = null;
+  // S4-fix：live 模式下缓存逐 tick 日志，供四率指标按钮切换时即时重绘
+  let LIVE_BUF = null;
+  const LIVE_LABEL = {
+    availability: "完好率", attrition: "战损率",
+    repair_rate: "修复率", failure_rate: "故障率",
+  };
+  // 四率字段在 live log 中的前缀映射（后端 S4-fix 已逐 tick 写入）
+  const LIVE_FIELD = {
+    availability: "ready", attrition: "attr",
+    repair_rate: "repair", failure_rate: "failure",
+  };
 
   // knee 终值取 distribution 9 指标均值；基线取 pareto.baseline（与 C5 同源）
   const CARD_DEFS = [
@@ -129,13 +140,19 @@
       + `<span>成功 <b style="color:#7ff0d2">${ok}</b> / ${n} · 成功率 ${pct(DIST.success_rate)}</span>`;
   }
 
+  // S4-fix：live 与静态共用同一个切换入口，按当前数据源分派重绘
+  function redrawSeries() {
+    if (LIVE_BUF) renderLive(LIVE_BUF);    // live：按选中指标/方别重绘
+    else renderTimeseries();               // 静态：原有逻辑
+  }
+
   function wire() {
     document.querySelectorAll("#ts-metric-toggle .seg").forEach((s) => {
       s.onclick = () => {
         state.metric = s.dataset.tsMetric;
         document.querySelectorAll("#ts-metric-toggle .seg").forEach((x) => x.classList.remove("on"));
         s.classList.add("on");
-        renderTimeseries();
+        redrawSeries();
       };
     });
     document.querySelectorAll("#ts-option-toggle .seg[data-ts-side]").forEach((s) => {
@@ -143,16 +160,70 @@
         state.side = s.dataset.tsSide;
         document.querySelectorAll("#ts-option-toggle .seg[data-ts-side]").forEach((x) => x.classList.remove("on"));
         s.classList.add("on");
-        renderTimeseries();
+        // S4-fix：live 模式点方别=只看该方，需关掉"双方对比"开关，否则点击看似无反应
+        if (LIVE_BUF && state.both) {
+          state.both = false;
+          const pSeg = document.querySelector("#ts-option-toggle .seg[data-ts-plan]");
+          if (pSeg) { pSeg.classList.remove("on"); pSeg.textContent = "仅单方"; }
+        }
+        redrawSeries();
       };
     });
     const planSeg = document.querySelector("#ts-option-toggle .seg[data-ts-plan]");
-    planSeg.onclick = () => {
+    if (planSeg) planSeg.onclick = () => {
       state.both = !state.both;
       planSeg.classList.toggle("on", state.both);
-      planSeg.textContent = state.both ? "knee+基线" : "仅 knee";
-      renderTimeseries();
+      if (LIVE_BUF) planSeg.textContent = state.both ? "红蓝对比" : "仅单方";
+      else planSeg.textContent = state.both ? "knee+基线" : "仅 knee";
+      redrawSeries();
     };
+  }
+
+  // S4-fix：live 曲线绘制独立成闭包函数，供 updateLive 与按钮切换共用
+  function renderLive(logBuf) {
+    if (!logBuf || !logBuf.length) return;
+    LIVE_BUF = logBuf;  // 缓存，按钮切换时重绘
+    const svg = $("ts-svg"), tip = $("ts-tip");
+    const t0 = logBuf[0].tick;
+    const xs = logBuf.map((e) => e.tick - t0);
+    const field = LIVE_FIELD[state.metric];
+    const mLabel = LIVE_LABEL[state.metric];
+    const isFailure = state.metric === "failure_rate";
+    const sideName = state.side === "red" ? "红方" : "蓝方";
+
+    // 逐 tick 取值：优先用后端四率字段；旧数据缺字段时按 alive/total 兜底（仅完好/战损）
+    const pick = (e, who) => {
+      const v = e[`${field}_${who}`];
+      if (typeof v === "number") return v;
+      const total = e[`total_${who}`] || 0, aliveN = e[`alive_${who}`] || 0;
+      if (state.metric === "availability") return total > 0 ? aliveN / total : 0;
+      if (state.metric === "attrition") return total > 0 ? 1 - aliveN / total : 0;
+      return 0;
+    };
+    const series = [];
+    if (state.side === "red" || state.both) {
+      series.push({ label: `红方${mLabel}`, color: "#f26f68", values: logBuf.map((e) => pick(e, "red")), width: 2.2 });
+    }
+    if (state.side === "blue" || state.both) {
+      series.push({ label: `蓝方${mLabel}`, color: "#6896f2", values: logBuf.map((e) => pick(e, "blue")), width: 2.2 });
+    }
+    charts.lineChart(svg, tip, {
+      x: xs,
+      series,
+      yDomain: isFailure ? null : [0, 1],
+      yFmt: isFailure ? (v) => v.toFixed(1) : (v) => (v * 100).toFixed(0) + "%",
+      xFmt: (v) => "T+" + Math.round(v),
+      xLabel: "推演 tick",
+      tipHtml: (i) => {
+        const r = logBuf[i];
+        let s = `<b>${sideName}${mLabel} · tick ${r.tick}</b>`;
+        series.forEach((se) => {
+          const v = se.values[i];
+          s += `<br>${se.label} ${isFailure ? v.toFixed(1) + ' 次/百时' : (v * 100).toFixed(1) + '%'}`;
+        });
+        return s;
+      },
+    });
   }
 
   window.DASH.views.rates = {
@@ -166,37 +237,20 @@
     // ---- S4：实时推演增量重绘 ----
     initEmpty() {
       TS = null;
+      LIVE_BUF = null;
+      state.metric = "availability";  // 复位为完好率（与按钮 on 态一致）
+      state.side = "red";
+      state.both = true;
+      wire();  // S4-fix：live 模式此前漏调 wire，导致四率按钮点击无反应
+      // S4-fix：live 语义下第三个按钮是"红蓝对比"而非静态的"knee+基线"
+      const pSeg = document.querySelector("#ts-option-toggle .seg[data-ts-plan]");
+      if (pSeg) { pSeg.classList.add("on"); pSeg.textContent = "红蓝对比"; }
       const svg = $("ts-svg");
       if (svg) svg.innerHTML = '<text x="50%" y="50%" text-anchor="middle" fill="#556" font-size="13">等待推演数据</text>';
       const dist = $("dist-svg");
       if (dist) dist.innerHTML = '<text x="50%" y="50%" text-anchor="middle" fill="#556" font-size="13">离线分析中…</text>';
     },
 
-    updateLive(logBuf, totalTicks) {
-      if (!logBuf || !logBuf.length) return;
-      const svg = $("ts-svg"), tip = $("ts-tip");
-      const t0 = logBuf[0].tick;
-      const xs = logBuf.map((e) => e.tick - t0);
-      const yReadyRed = logBuf.map((e) => e.total_red > 0 ? e.alive_red / e.total_red : 0);
-      const yReadyBlue = logBuf.map((e) => e.total_blue > 0 ? e.alive_blue / e.total_blue : 0);
-
-      charts.lineChart(svg, tip, {
-        x: xs,
-        series: [
-          { label: "红方完好率", color: "#f26f68", values: yReadyRed, width: 2.2 },
-          { label: "蓝方完好率", color: "#6896f2", values: yReadyBlue, width: 2.2 },
-        ],
-        yDomain: [0, 1],
-        yFmt: (v) => (v * 100).toFixed(0) + "%",
-        xFmt: (v) => "T+" + Math.round(v),
-        xLabel: "推演 tick",
-        tipHtml: (i) => {
-          const r = logBuf[i];
-          const rr = r.total_red > 0 ? (r.alive_red / r.total_red * 100).toFixed(1) : 0;
-          const bb = r.total_blue > 0 ? (r.alive_blue / r.total_blue * 100).toFixed(1) : 0;
-          return `<b>tick ${r.tick}</b><br>红 ${r.alive_red}/${r.total_red} (${rr}%)<br>蓝 ${r.alive_blue}/${r.total_blue} (${bb}%)`;
-        },
-      });
-    },
+    updateLive(logBuf, totalTicks) { renderLive(logBuf); },
   };
 })();

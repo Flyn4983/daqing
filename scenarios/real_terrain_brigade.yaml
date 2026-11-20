@@ -1,0 +1,450 @@
+# 真实数据验证想定：太行山中段真实 DEM（SRTM 30m）+ ERA5 真实气象
+# 红方重型合成旅加强攻击群：2 个合成营突击 + 炮兵群/防空群/预警侦察电抗群/
+# 保障战斗实体 + 无人机/巡飞弹/武直空中架次（约 106 个地面实体）；
+# 蓝方合成化防御群：既设阵地 + 障碍带 + 伪装假目标 + 炮兵/防空/电抗/空中架次（约 57 个）。
+# 任务：占领进攻出发阵地 → 突破河障前沿（须工兵破障、发烟车遮蔽）→ 夺占纵深要点。
+# 编制/平台参数沿用 example_brigade（原型占位）；地形与气象为真实采集数据。
+name: real_terrain_brigade
+
+mission:
+  duration_ticks: 96       # 96 * 30s ≈ 48 分钟（开进—破障—突破纵深完整时序，v4 延长收尾段）
+  dt_seconds: 30
+  objective: [9000, 5000]
+  success_radius_m: 500
+  phases:
+    - {name: "占领进攻出发阵地", objective: [2800, 5000], success_radius_m: 400}
+    - {name: "强渡峡谷突破前沿", objective: [6000, 5000], success_radius_m: 500}
+    - {name: "夺占纵深要点", objective: [9000, 5000], success_radius_m: 500}
+
+terrain:
+  source: geotiff
+  geotiff_path: terrain/dem_real_taihang.tif
+  passability_path: terrain/pass_real_taihang.tif
+  size_m: [10000, 10000]
+  grid_n: 65
+  water_level: 780.0   # 真实 DEM 最低约 879m；780 使河谷低地成水体，山脊露出
+
+environment:
+  weather: overcast            # ERA5 真实：2024-07-10 太行山区阴天（WMO code 3）
+  illumination: day
+  visibility_factor: 0.70      # ERA5 映射真实能见度因子
+  wind_speed_mps: 3.5          # ERA5 真实风速 12.7 km/h ≈ 3.5 m/s
+  wind_dir_deg: 270
+
+# 方别不对称：蓝方既设防御火力加成
+side_modifiers:
+  blue: {pk_scale: 1.000}
+
+platform_types:
+  # ============ 突击力量 ============
+  tank:
+    sensor_range_m: 2500
+    weapon_range_m: 2000
+    pk: 0.35
+    speed_m_per_tick: 184
+    sensor_kind: ir          # 坦克热像，夜间仍有战力
+    meta: {source: example, version: "0.5", confidence: 0.4}
+  ifv:
+    sensor_range_m: 1800
+    weapon_range_m: 1200
+    pk: 0.22
+    speed_m_per_tick: 217
+    sensor_kind: optical
+    meta: {source: example, version: "0.5", confidence: 0.4}
+  atgm_team:
+    sensor_range_m: 2200
+    weapon_range_m: 2000
+    pk: 0.45
+    speed_m_per_tick: 100
+    sensor_kind: optical
+    meta: {source: example, version: "0.5", confidence: 0.4}
+
+  # ============ 火力打击群（间瞄/超视距） ============
+  mortar:                    # 营属 120 自行迫击炮
+    role: artillery
+    fire_mode: indirect
+    sensor_range_m: 900
+    weapon_range_m: 6000
+    pk: 0.15
+    speed_m_per_tick: 70
+    reload_ticks: 3
+    splash_radius_m: 200
+    call_fire_delay_ticks: 1
+    emplace_ticks: 1
+    ammo_basic_load: 8
+    sensor_kind: optical
+  howitzer:                  # PLZ-07 122 自行榴弹炮
+    role: artillery
+    fire_mode: indirect
+    sensor_range_m: 600
+    weapon_range_m: 8000
+    pk: 0.18
+    speed_m_per_tick: 0
+    reload_ticks: 3
+    splash_radius_m: 300
+    call_fire_delay_ticks: 3
+    emplace_ticks: 2
+    ammo_basic_load: 12
+    sensor_kind: optical
+  rocket:                    # PHL-11 122 火箭炮（大面积、少量齐射）
+    role: artillery
+    fire_mode: indirect
+    sensor_range_m: 500
+    weapon_range_m: 9000
+    pk: 0.22
+    speed_m_per_tick: 0
+    reload_ticks: 6
+    splash_radius_m: 550
+    call_fire_delay_ticks: 3
+    emplace_ticks: 2
+    ammo_basic_load: 4   # v4：反炮兵/纵深压制弹药加强（基数由 a2 弹药车波次补弹）
+    sensor_kind: optical
+  hj10:                      # 红箭-10 超视距导弹车（需目标指示链）
+    role: missile
+    fire_mode: blos
+    sensor_range_m: 1200
+    weapon_range_m: 10000
+    pk: 0.70
+    speed_m_per_tick: 0
+    reload_ticks: 2
+    call_fire_delay_ticks: 1
+    emplace_ticks: 1
+    ammo_basic_load: 8
+    sensor_kind: ir
+
+  # ============ 防空群 ============
+  hq17:                      # 红旗-17 近程防空导弹
+    role: air_defense
+    fire_mode: air_defense
+    sensor_range_m: 1500
+    weapon_range_m: 5500
+    coverage_radius_m: 5500
+    pk: 0.7
+    speed_m_per_tick: 0
+    reload_ticks: 2
+    emplace_ticks: 1
+    ammo_basic_load: 6
+    sensor_kind: radar
+  pgz09:                     # 双35 自行高炮（末端反无人）
+    role: air_defense
+    fire_mode: air_defense
+    sensor_range_m: 1200
+    weapon_range_m: 2500
+    coverage_radius_m: 2500
+    pk: 0.6
+    speed_m_per_tick: 0
+    reload_ticks: 1
+    emplace_ticks: 1
+    ammo_basic_load: 30
+    sensor_kind: radar
+
+  # ============ 预警侦察与电磁对抗群 ============
+  radar_air:                 # 对空警戒雷达
+    role: radar_air
+    sensor_range_m: 500
+    weapon_range_m: 0
+    coverage_radius_m: 12000
+    emission_duty: 0.7
+    emplace_ticks: 1
+    pk: 0.0
+    speed_m_per_tick: 0
+    sensor_kind: radar
+  radar_cb:                  # 反炮兵定位雷达
+    role: radar_cb
+    sensor_range_m: 300
+    weapon_range_m: 0
+    coverage_radius_m: 12000   # v4：闭合"敌方开炮→定位→BLOS/火箭压制"杀伤链
+    emission_duty: 0.8
+    emplace_ticks: 1
+    pk: 0.0
+    speed_m_per_tick: 0
+    sensor_kind: radar
+  recon_veh:                 # 装甲侦察车（雷达+光电融合）
+    role: recon
+    sensor_range_m: 3200
+    weapon_range_m: 1200
+    pk: 0.15
+    speed_m_per_tick: 200
+    reload_ticks: 3
+    sensor_kind: fused
+  ew_radar:                  # 雷达对抗车
+    role: ew
+    jam_mode: radar
+    sensor_range_m: 400
+    weapon_range_m: 0
+    coverage_radius_m: 6000
+    jam_strength: 0.8
+    emplace_ticks: 1
+    pk: 0.0
+    speed_m_per_tick: 0
+  ew_comms:                  # 通信对抗车
+    role: ew
+    jam_mode: comms
+    sensor_range_m: 400
+    weapon_range_m: 0
+    coverage_radius_m: 5000
+    jam_strength: 0.8
+    emplace_ticks: 1
+    pk: 0.0
+    speed_m_per_tick: 0
+  ew_gen:                    # 旅通用电抗车
+    role: ew
+    jam_mode: both
+    sensor_range_m: 400
+    weapon_range_m: 0
+    coverage_radius_m: 3500
+    jam_strength: 0.5
+    pk: 0.0
+    speed_m_per_tick: 60
+  c2_veh:                    # 指挥通信车
+    role: c2
+    sensor_range_m: 800
+    weapon_range_m: 0
+    coverage_radius_m: 2600
+    aura_bonus: 0.12
+    pk: 0.0
+    speed_m_per_tick: 100
+
+  # ============ 工程防化与保障车辆 ============
+  eng_veh:                   # 综合扫雷破障车
+    role: engineer
+    sensor_range_m: 400
+    weapon_range_m: 0
+    pk: 0.0
+    speed_m_per_tick: 130
+  smoke_veh:                 # 发烟车
+    role: support
+    sensor_range_m: 300
+    weapon_range_m: 0
+    pk: 0.0
+    speed_m_per_tick: 110
+  arv:                       # 装甲抢救车
+    role: support
+    sensor_range_m: 300
+    weapon_range_m: 0
+    pk: 0.0
+    speed_m_per_tick: 150
+  repair_veh:                # 装甲抢修车（营中继修理点）
+    role: support
+    sensor_range_m: 300
+    weapon_range_m: 0
+    pk: 0.0
+    speed_m_per_tick: 60
+  supply_veh:                # 器材补给车
+    role: support
+    sensor_range_m: 300
+    weapon_range_m: 0
+    pk: 0.0
+    speed_m_per_tick: 90
+  ammo_veh:                  # 弹药补给车
+    role: support
+    sensor_range_m: 300
+    weapon_range_m: 0
+    pk: 0.0
+    speed_m_per_tick: 90
+  dummy_arty:                # 假火炮/假阵地（伪装欺骗，消耗精确弹药）
+    role: artillery
+    fire_mode: support
+    sensor_range_m: 100
+    weapon_range_m: 0
+    pk: 0.0
+    speed_m_per_tick: 0
+
+sustainment:
+  repair_teams: {red: 6, blue: 4}
+  repair_delay_ticks: 0
+  # C7-a1：分部件备件目录基数（部件目录见 param_catalog S11；非空即启用战损分级/处置分流）
+  part_stock:
+    red: {mobility: 6, powerpack: 5, fire_control: 6, weapon: 8}
+    blue: {mobility: 4, powerpack: 3, fire_control: 4, weapon: 6}
+  tow_delay_ticks: 4          # M 级失动待拖救时延（a2 起拖救车实体化）
+  worn_mtbf_scale: 0.6        # 带病参战装备 MTBF 折减
+  spare_stock: {red: 12, blue: 8}   # 旧池模式口径（part_stock 启用后被部件容器取代，保留供对照）
+  resupply_interval_ticks: 20
+  resupply_qty: 8
+  repair_station: {red: [1500, 5000], blue: [9500, 5100]}
+  # C7-a2：器材三档 + 保障实体化（仅红方声明旅库即启用；蓝方沿用 a1 时间抽象）
+  # 携行档=上方 part_stock（随队现地换件）；运行档=下方 operating_stock（营抢修点常备）；
+  # 后留档=旅器材库 depot，每 20 tick 产出一个波次，器材补给车实体前送、途中可被击毁。
+  support_echelon:
+    depot: {red: [200, 5000]}            # 旅器材库（后留档接入点，不做物理长途运输）
+    wave_interval_ticks: 20              # 前送波次节拍（t20/40/60 共 3 波）
+    wave_qty: 2                          # 每波每部件件数（4 部件共 8 件）
+    carry_share: 0.5                     # 运量均分携行/运行两档
+    operating_stock:                     # 营中继抢修点常备基数
+      red: {mobility: 4, powerpack: 3, fire_control: 4, weapon: 5}
+    tow_speed_scale: 0.5                 # 挂钩拖救车速折减
+    ammo_wave_qty: 6                     # 弹药车每波为每车补 6 发（至初始基数封顶）
+    ammo_dist_radius_m: 3000             # 营弹药所分发半径
+
+# ---- 蓝方障碍带：掩护河障接近地的雷场/三角锥/反坦克壕，须工兵破障 ----
+battlefield:
+  obstacles:
+    - {kind: dragons_teeth, center: [5750, 5000], size: [220, 280], breach_ticks: 6}
+    - {kind: minefield, center: [5800, 4250], size: [200, 420], breach_ticks: 6}
+    - {kind: minefield, center: [5800, 5750], size: [200, 420], breach_ticks: 6}
+    - {kind: anti_tank_ditch, center: [5900, 2600], size: [200, 600], breach_ticks: 8}
+  smoke_orders:
+    # 双车在突破走廊南北各设一道屏烟，遮蔽一线反坦克导弹班与装甲发射点
+    - {unit_id: rsm01, at: [5400, 4350], radius_m: 750, start_tick: 6, duration_ticks: 16}
+    - {unit_id: rsm02, at: [5400, 5650], radius_m: 750, start_tick: 6, duration_ticks: 16}
+
+# ---- 空中架次：UAV 开视野/校射，巡飞弹打节点，武直近距支援 ----
+air_packages:
+  # 红方
+  - {side: red, kind: uav, launch_tick: 4, altitude_m: 1500, loiter_ticks: 16,
+     waypoints: [[3500, 3000], [5400, 3200]], sensor_range_m: 3000, sensor_kind: fused,
+     label: "红·侦察校射无人机1"}
+  - {side: red, kind: uav, launch_tick: 8, altitude_m: 1500, loiter_ticks: 16,
+     waypoints: [[3500, 7000], [5400, 6800]], sensor_range_m: 3000, sensor_kind: fused,
+     label: "红·侦察校射无人机2"}
+  - {side: red, kind: loitering, launch_tick: 14, altitude_m: 900, loiter_ticks: 4,
+     waypoints: [[4000, 4200], [7600, 4200]], seek_radius_m: 1900,
+     weapon_pk: 0.75, weapon_count: 1, label: "红·巡飞弹1（反辐射/节点猎杀）"}
+  - {side: red, kind: loitering, launch_tick: 20, altitude_m: 900, loiter_ticks: 4,
+     waypoints: [[4000, 6000], [7600, 6200]], seek_radius_m: 1900,
+     weapon_pk: 0.75, weapon_count: 1, label: "红·巡飞弹2"}
+  - {side: red, kind: helo, launch_tick: 24, altitude_m: 400, loiter_ticks: 6,
+     waypoints: [[3000, 1800], [6600, 2800]], seek_radius_m: 2100,
+     weapon_pk: 0.35, weapon_count: 4, label: "红·直-10 近距支援"}
+  # 蓝方
+  - {side: blue, kind: uav, launch_tick: 3, altitude_m: 1500, loiter_ticks: 16,
+     waypoints: [[6500, 2600], [3600, 2400]], sensor_range_m: 2800, sensor_kind: fused,
+     label: "蓝·侦察无人机1"}
+  - {side: blue, kind: uav, launch_tick: 9, altitude_m: 1500, loiter_ticks: 16,
+     waypoints: [[6500, 7400], [3600, 7600]], sensor_range_m: 2800, sensor_kind: fused,
+     label: "蓝·侦察无人机2"}
+  - {side: blue, kind: loitering, launch_tick: 12, altitude_m: 900, loiter_ticks: 4,
+     waypoints: [[7000, 1500], [900, 1400]], seek_radius_m: 2100,
+     weapon_pk: 0.8, weapon_count: 1, label: "蓝·反辐射巡飞弹1（猎杀雷达）"}
+  - {side: blue, kind: loitering, launch_tick: 18, altitude_m: 900, loiter_ticks: 4,
+     waypoints: [[7000, 5000], [700, 5000]], seek_radius_m: 2200,
+     weapon_pk: 0.8, weapon_count: 1, label: "蓝·巡飞弹2（猎杀指挥/炮兵）"}
+  - {side: blue, kind: helo, launch_tick: 26, altitude_m: 400, loiter_ticks: 6,
+     waypoints: [[7000, 8200], [3400, 5200]], seek_radius_m: 2200,
+     weapon_pk: 0.4, weapon_count: 5, label: "蓝·武装直升机"}
+
+force_templates:
+  red:
+    # ---- 合成1营（坦克2连+装步2连+反坦克排，28 台）----
+    - {type: tank, count: 8, layout: wedge, anchor: [1700, 2400], heading_deg: 90,
+       spacing_along: 300, spacing_lateral: 350, org: "合成1营·坦克1连（一梯队）", id_prefix: r1t,
+       worn_count: 2}   # C7-a1：首车/末车带病参战（MTBF×worn_mtbf_scale）
+    - {type: tank, count: 8, layout: wedge, anchor: [1700, 5000], heading_deg: 90,
+       spacing_along: 300, spacing_lateral: 350, org: "合成1营·坦克2连（一梯队）", id_prefix: r2t}
+    - {type: ifv, count: 8, layout: line, anchor: [100, 3700], heading_deg: 90,
+       spacing_lateral: 260, org: "合成1营·装步1连", id_prefix: r1i}
+    - {type: ifv, count: 8, layout: line, anchor: [100, 6300], heading_deg: 90,
+       spacing_lateral: 260, org: "合成1营·装步2连", id_prefix: r2i}
+    - {type: atgm_team, count: 4, layout: line, anchor: [300, 8000], heading_deg: 90,
+       spacing_lateral: 300, org: "合成1营·火力连反坦克排", id_prefix: r1a}
+    # ---- 合成2营（28 台）----
+    - {type: tank, count: 8, layout: wedge, anchor: [1100, 2400], heading_deg: 90,
+       spacing_along: 300, spacing_lateral: 350, org: "合成2营·坦克3连（二梯队）", id_prefix: r3t}
+    - {type: tank, count: 8, layout: wedge, anchor: [1100, 5000], heading_deg: 90,
+       spacing_along: 300, spacing_lateral: 350, org: "合成2营·坦克4连（二梯队）", id_prefix: r4t}
+    - {type: ifv, count: 8, layout: line, anchor: [50, 3700], heading_deg: 90,
+       spacing_lateral: 260, org: "合成2营·装步3连", id_prefix: r3i}
+    - {type: ifv, count: 8, layout: line, anchor: [50, 6300], heading_deg: 90,
+       spacing_lateral: 260, org: "合成2营·装步4连", id_prefix: r4i}
+    - {type: atgm_team, count: 4, layout: line, anchor: [100, 8000], heading_deg: 90,
+       spacing_lateral: 300, org: "合成2营·火力连反坦克排", id_prefix: r2a}
+    # ---- 火力打击群 ----
+    - {type: mortar, count: 4, layout: line, anchor: [1000, 4300], heading_deg: 90,
+       spacing_lateral: 350, org: "合成1营·营属迫击炮排", id_prefix: rmor}
+    - {type: hj10, count: 4, layout: line, anchor: [1600, 1900], heading_deg: 90,
+       spacing_lateral: 400, org: "旅火力营·红箭10导弹排", id_prefix: rhj}
+    - {type: howitzer, count: 6, layout: line, anchor: [700, 950], heading_deg: 90,
+       spacing_lateral: 320, org: "旅火力营·122榴炮连", id_prefix: rart}
+    - {type: rocket, count: 4, layout: line, anchor: [600, 9050], heading_deg: 90,
+       spacing_lateral: 350, org: "旅火力营·火箭炮排", id_prefix: rrkt}
+    # ---- 防空群 ----
+    - {type: hq17, count: 2, layout: line, anchor: [1200, 8400], heading_deg: 90,
+       spacing_lateral: 700, org: "旅防空营·红旗17排", id_prefix: rhq}
+    - {type: pgz09, count: 2, layout: line, anchor: [900, 350], heading_deg: 90,
+       spacing_lateral: 600, org: "旅防空营·双35高炮排", id_prefix: rpg}
+    # ---- 预警侦察与电磁对抗群 ----
+    - {type: radar_air, count: 1, layout: line, anchor: [400, 200], heading_deg: 90,
+       org: "旅情报营·对空警戒雷达", id_prefix: rra}
+    - {type: radar_cb, count: 1, layout: line, anchor: [400, 9700], heading_deg: 90,
+       org: "旅情报营·反炮兵雷达", id_prefix: rrc}
+    - {type: recon_veh, count: 4, layout: line, anchor: [1500, 8800], heading_deg: 90,
+       spacing_lateral: 350, org: "旅侦察连·装甲侦察排", id_prefix: rrec}
+    - {type: ew_radar, count: 1, layout: line, anchor: [300, 1800], heading_deg: 90,
+       org: "旅电抗营·雷达对抗车", id_prefix: rew1}
+    - {type: ew_comms, count: 1, layout: line, anchor: [300, 8200], heading_deg: 90,
+       org: "旅电抗营·通信对抗车", id_prefix: rew2}
+    - {type: ew_gen, count: 1, layout: line, anchor: [500, 5000], heading_deg: 90,
+       org: "旅电抗营·通用电抗车", id_prefix: rew3}
+    - {type: c2_veh, count: 3, layout: line, anchor: [350, 5000], heading_deg: 90,
+       spacing_lateral: 1300, org: "旅/营指挥通信组", id_prefix: rc2}
+    # ---- 工程防化与保障车辆 ----
+    - {type: eng_veh, count: 2, layout: line, anchor: [1300, 5000], heading_deg: 90,
+       spacing_lateral: 700, org: "旅工化连·破障车组（随冲击梯队跟进，抵近破障）", id_prefix: reng}
+    - {type: smoke_veh, count: 2, layout: line, anchor: [1800, 5000], heading_deg: 90,
+       spacing_lateral: 900, org: "旅工化连·发烟车（随一梯队开进，突破前沿前双车齐射屏烟）", id_prefix: rsm}
+    - {type: arv, count: 4, layout: line, anchor: [900, 3300], heading_deg: 90,
+       spacing_lateral: 900, org: "合成营·伴随抢救排", id_prefix: rarv}
+    - {type: repair_veh, count: 2, layout: line, anchor: [750, 4600], heading_deg: 90,
+       spacing_lateral: 800, org: "旅修理连·靠前抢修车组", id_prefix: rrep}
+    - {type: supply_veh, count: 2, layout: line, anchor: [200, 4200], heading_deg: 90,
+       spacing_lateral: 1600, org: "旅器材库·前送补给车组", id_prefix: rsup}
+    - {type: ammo_veh, count: 1, layout: line, anchor: [200, 4800], heading_deg: 90,
+       org: "旅弹药队·紧急补弹车（驻旅器材库，波次前出补弹）", id_prefix: ramo}
+
+  blue:
+    # ---- 一线防御（9 台反坦克组 + 6 坦克 + 2 翼步战，全部既设掩体）----
+    # v4 粗标定：防御密度由 a0 的 41 个直瞄单位裁到 31（加强营合理量级，
+    # 原密度达两个装甲营，进攻方 36 分钟内无建制突破可能）；掘壕单位固守不出阵。
+    - {type: atgm_team, count: 3, layout: line, anchor: [6000, 3500], heading_deg: 270,
+       spacing_lateral: 700, org: "蓝1营·前沿反坦克1组", id_prefix: ba, dug_in: true}
+    - {type: atgm_team, count: 3, layout: line, anchor: [6000, 5000], heading_deg: 270,
+       spacing_lateral: 700, org: "蓝1营·前沿反坦克2组", id_prefix: bb, dug_in: true}
+    - {type: atgm_team, count: 3, layout: line, anchor: [6000, 6500], heading_deg: 270,
+       spacing_lateral: 700, org: "蓝1营·前沿反坦克3组", id_prefix: bc, dug_in: true}
+    - {type: tank, count: 3, layout: line, anchor: [7800, 4000], heading_deg: 270,
+       spacing_lateral: 500, org: "蓝1营·坦克1排（欠1车）", id_prefix: bt, dug_in: true,
+       worn_count: 1}   # C7-a1：既设防御也有带病装备
+    - {type: tank, count: 3, layout: line, anchor: [7800, 6200], heading_deg: 270,
+       spacing_lateral: 500, org: "蓝1营·坦克2排（欠1车）", id_prefix: bu, dug_in: true}
+    - {type: ifv, count: 1, layout: line, anchor: [8400, 2500], heading_deg: 270,
+       spacing_lateral: 400, org: "蓝1营·北翼翼步战", id_prefix: bi, dug_in: true}
+    - {type: ifv, count: 1, layout: line, anchor: [8400, 7700], heading_deg: 270,
+       spacing_lateral: 400, org: "蓝1营·南翼翼步战", id_prefix: bj, dug_in: true}
+    # ---- 纵深防御（6 反坦克组 + 6 坦克 + 2 步战）----
+    - {type: atgm_team, count: 2, layout: line, anchor: [8600, 3500], heading_deg: 270,
+       spacing_lateral: 700, org: "蓝2连·纵深反坦克1组", id_prefix: bl1, dug_in: true}
+    - {type: atgm_team, count: 2, layout: line, anchor: [8600, 6500], heading_deg: 270,
+       spacing_lateral: 700, org: "蓝2连·纵深反坦克2组", id_prefix: bl2, dug_in: true}
+    - {type: atgm_team, count: 2, layout: line, anchor: [8900, 7500], heading_deg: 270,
+       spacing_lateral: 500, org: "蓝2连·纵深反坦克3组", id_prefix: bl3, dug_in: true}
+    - {type: tank, count: 2, layout: line, anchor: [9300, 4200], heading_deg: 270,
+       spacing_lateral: 500, org: "蓝2连·坦克3排（欠2车）", id_prefix: bx, dug_in: true}
+    - {type: tank, count: 2, layout: line, anchor: [9300, 6000], heading_deg: 270,
+       spacing_lateral: 500, org: "蓝2连·坦克4排（欠2车）", id_prefix: by, dug_in: true}
+    - {type: ifv, count: 2, layout: line, anchor: [9000, 2200], heading_deg: 270,
+       spacing_lateral: 400, org: "蓝2连·北翼纵深步战", id_prefix: bm, dug_in: true}
+    # ---- 炮兵群 ----
+    - {type: howitzer, count: 4, layout: line, anchor: [9500, 3000], heading_deg: 270,
+       spacing_lateral: 450, org: "蓝炮兵连·122榴弹炮阵地", id_prefix: bh}
+    # ---- 防空 ----
+    - {type: hq17, count: 1, layout: line, anchor: [9450, 800], heading_deg: 270,
+       org: "蓝防空排·红旗17（北）", id_prefix: bha1}
+    - {type: hq17, count: 1, layout: line, anchor: [9450, 9200], heading_deg: 270,
+       org: "蓝防空排·红旗17（南）", id_prefix: bha2}
+    - {type: pgz09, count: 2, layout: line, anchor: [8800, 4600], heading_deg: 270,
+       spacing_lateral: 800, org: "蓝防空排·自行高炮", id_prefix: bpg}
+    # ---- 预警/电抗/指挥 ----
+    - {type: radar_air, count: 1, layout: line, anchor: [9600, 5000], heading_deg: 270,
+       org: "蓝·对空警戒雷达", id_prefix: bra}
+    - {type: radar_cb, count: 1, layout: line, anchor: [9600, 8000], heading_deg: 270,
+       org: "蓝·反炮兵雷达", id_prefix: brc}
+    - {type: ew_radar, count: 1, layout: line, anchor: [9300, 7000], heading_deg: 270,
+       org: "蓝·雷达对抗车", id_prefix: bew1}
+    - {type: ew_comms, count: 1, layout: line, anchor: [9300, 3000], heading_deg: 270,
+       org: "蓝·通信对抗车", id_prefix: bew2}
+    - {type: c2_veh, count: 1, layout: line, anchor: [9650, 5100], heading_deg: 270,
+       org: "蓝·营指挥车", id_prefix: bc2}
+    # ---- 伪装假目标（假火炮，诱导精确弹药）----
+    - {type: dummy_arty, count: 3, layout: line, anchor: [9550, 3000], heading_deg: 270,
+       spacing_lateral: 2600, org: "蓝·假火炮阵地", id_prefix: bdu, dug_in: true, decoy: true}

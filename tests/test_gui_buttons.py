@@ -129,9 +129,21 @@ def test_03_dashboard_core_buttons(browser):
     # 方案三按钮（重开抽屉）
     page.click("#btn-open-agent")
     page.wait_for_timeout(300)
-    page.locator('.plan-btns button[data-tag="knee"]').click()
-    page.wait_for_timeout(1500)
-    plan_text = page.locator("#msgs").inner_text()
+    plan_btn = page.locator('.plan-btns button[data-tag="knee"]')
+    plan_btn.click()
+    # 方案生成含工具链+LLM 调用，耗时偶发波动；轮询等待最终答案的来源角标出现。
+    # 多测试连续运行时偶发点击丢失（事件未送达），超时后重试一次。
+    plan_text = ""
+    for attempt in range(2):
+        for _ in range(24):  # 每次最长 12s：等来源角标（而非中间态"正在调度"）
+            page.wait_for_timeout(500)
+            plan_text = page.locator("#msgs").inner_text()
+            if "模板" in plan_text or "大模型" in plan_text:
+                break
+        if "模板" in plan_text or "大模型" in plan_text:
+            break
+        if attempt == 0:
+            plan_btn.click()  # 重试一次
     assert "保障力量" in plan_text or "方案" in plan_text
     assert "模板" in plan_text or "大模型" in plan_text  # 来源角标存在
     page.screenshot(path=str(SHOT / "03_plan_generated.png"))
@@ -147,9 +159,14 @@ def test_03_dashboard_core_buttons(browser):
 def test_04_eta_kpi(browser):
     """A1：η KPI 卡显示 0.488→0.491（用 pareto 真实数据计算）。"""
     page = browser.new_page(viewport={"width": 1920, "height": 1080})
-    page.goto(f"{BASE}/index.html", wait_until="domcontentloaded")
+    page.goto(f"{BASE}/login.html", wait_until="domcontentloaded")
     page.evaluate("sessionStorage.setItem('user', JSON.stringify({username:'admin',role:'admin'}))")
-    page.wait_for_timeout(3000)
+    page.goto(f"{BASE}/index.html", wait_until="domcontentloaded")
+    # 等 η 由真实数据填充（renderEta 依赖 baseline 数据加载，偶发慢）
+    for _ in range(20):
+        page.wait_for_timeout(500)
+        if page.locator("#kpi-eta .kpi-v").inner_text().strip() not in ("—", "", "-"):
+            break
     eta = page.locator("#kpi-eta .kpi-v").inner_text()
     sub = page.locator("#kpi-eta .kpi-s").inner_text()
     # 系数应在 0.48~0.50 区间

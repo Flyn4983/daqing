@@ -58,7 +58,9 @@ def test_service_status_fields_and_recording():
     svc = LocalLLMService(simulate_delay=False)
     s0 = svc.status()
     assert s0["state"] == "运行中"
-    assert s0["vram_used_gb"] < s0["vram_total_gb"] == 4.0
+    # vram_total_gb 是部署形态常量（service.TOTAL_VRAM_GB=96.0：A6000/L40S·96GB
+    # 上跑 BF16 Qwen3-32B 的模拟口径），非硬件读取——断言钉住该常量。
+    assert s0["vram_used_gb"] < s0["vram_total_gb"] == 96.0
     assert s0["requests_total"] == 0
 
     svc.record("chat", prompt_tokens=100, completion_tokens=200, latency_ms=12.5,
@@ -234,7 +236,9 @@ def test_web_server_api(toolkit):
     )
     url = server.start()
     try:
-        with urllib.request.urlopen(url + "/", timeout=5) as resp:
+        # 注意："/" 现被登录门 302 到 login.html（用户登录功能），
+        # 大屏内容断言走 /index.html（与 test_c6_dashboard 一致）。
+        with urllib.request.urlopen(url + "/index.html", timeout=5) as resp:
             html = resp.read().decode("utf-8")
             assert resp.status == 200 and "本地大模型" in html
 

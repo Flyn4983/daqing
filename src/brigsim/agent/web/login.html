@@ -1,0 +1,452 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>智演先知 · 保障先行 — 登录</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath d='M16 2l12 4v9c0 8-5.5 13-12 15C9.5 28 4 23 4 15V6z' fill='%231d6fae'/%3E%3Cpath d='M11 16l4 4 7-8' fill='none' stroke='%237ff0d2' stroke-width='2.5'/%3E%3C/svg%3E">
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { height: 100%; font-family: "Microsoft YaHei", "Segoe UI", sans-serif; overflow: hidden; }
+
+/* ============ 背景层叠 ============ */
+body {
+  background:
+    radial-gradient(ellipse at 25% 18%, rgba(30, 130, 200, 0.45), transparent 55%),
+    radial-gradient(ellipse at 78% 85%, rgba(60, 200, 220, 0.30), transparent 50%),
+    linear-gradient(135deg, #060e1c 0%, #0a1830 40%, #051326 100%);
+  position: relative;
+}
+
+/* 战术网格 */
+.grid-layer {
+  position: fixed; inset: 0;
+  background-image:
+    linear-gradient(rgba(54, 182, 245, 0.06) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(54, 182, 245, 0.06) 1px, transparent 1px);
+  background-size: 64px 64px;
+  pointer-events: none;
+  z-index: 0;
+}
+.grid-layer::after {
+  content: ""; position: absolute; inset: 0;
+  background-image:
+    linear-gradient(rgba(127, 240, 210, 0.10) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(127, 240, 210, 0.10) 1px, transparent 1px);
+  background-size: 320px 320px;
+}
+
+/* 战场剪影 + 等高线 + 雷达同心圆 */
+.battle-layer {
+  position: fixed; inset: 0; pointer-events: none; z-index: 1;
+}
+.battle-layer svg { width: 100%; height: 100%; }
+
+/* 扫描动画 */
+@keyframes sweep {
+  0% { transform: translateX(-100%); opacity: 0.0; }
+  15% { opacity: 0.6; }
+  85% { opacity: 0.6; }
+  100% { transform: translateX(100%); opacity: 0.0; }
+}
+.sweep-line {
+  position: fixed; top: 0; bottom: 0;
+  width: 2px; z-index: 2; pointer-events: none;
+  background: linear-gradient(180deg, transparent, rgba(54, 182, 245, 0.8), rgba(127, 240, 210, 0.6), rgba(54, 182, 245, 0.8), transparent);
+  box-shadow: 0 0 30px rgba(54, 182, 245, 0.6), 0 0 60px rgba(127, 240, 210, 0.3);
+  animation: sweep 8s linear infinite;
+}
+
+/* 雷达脉冲 */
+@keyframes radar-pulse {
+  0% { r: 20; opacity: 0.6; }
+  100% { r: 280; opacity: 0; }
+}
+.radar-pulse { animation: radar-pulse 4s ease-out infinite; }
+.radar-pulse.delay { animation-delay: 2s; }
+
+/* ============ 登录卡片 ============ */
+.login-wrap {
+  position: relative; z-index: 10;
+  height: 100%;
+  display: grid;
+  grid-template-columns: 1fr 480px 1fr;
+  align-items: center;
+}
+
+/* 左侧装饰面板 */
+.deco-left, .deco-right {
+  display: flex; flex-direction: column; gap: 20px;
+  padding: 0 40px;
+}
+.deco-right { align-items: flex-end; }
+.deco-panel {
+  background: rgba(12, 26, 48, 0.55);
+  backdrop-filter: blur(12px);
+  border: 1px solid rgba(54, 182, 245, 0.25);
+  border-radius: 10px;
+  padding: 14px 18px;
+  max-width: 320px;
+}
+.deco-panel h4 {
+  font-size: 11px; letter-spacing: 2px;
+  color: #36b6f5; text-transform: uppercase;
+  margin-bottom: 10px;
+  padding-bottom: 6px;
+  border-bottom: 1px dashed rgba(54, 182, 245, 0.3);
+}
+.deco-panel .val-row {
+  display: flex; justify-content: space-between;
+  font-size: 12px; padding: 3px 0;
+}
+.deco-panel .val-row .k { color: #6d8bb0; }
+.deco-panel .val-row .v { color: #bfe9ff; font-family: Consolas, monospace; }
+.deco-panel .val-row .v.ok { color: #7ff0d2; }
+.deco-panel .val-row .v.warn { color: #ffc860; }
+
+/* 登录卡片本体 */
+.login-card {
+  justify-self: center;
+  width: 420px; padding: 52px 44px 40px;
+  background: linear-gradient(160deg, rgba(12, 26, 48, 0.85) 0%, rgba(8, 18, 35, 0.88) 100%);
+  backdrop-filter: blur(22px) saturate(1.4);
+  -webkit-backdrop-filter: blur(22px) saturate(1.4);
+  border: 1px solid rgba(54, 182, 245, 0.40);
+  border-radius: 18px;
+  box-shadow:
+    0 25px 80px rgba(0, 0, 0, 0.6),
+    0 0 0 1px rgba(54, 182, 245, 0.10) inset,
+    inset 0 1px 0 rgba(127, 240, 210, 0.20);
+  position: relative;
+}
+/* 发光顶线 */
+.login-card::before {
+  content: ""; position: absolute; top: -1px; left: 50px; right: 50px; height: 2px;
+  background: linear-gradient(90deg, transparent, #36b6f5, #7ff0d2, #36b6f5, transparent);
+  border-radius: 2px;
+}
+/* 四角装饰 */
+.login-card::after {
+  content: ""; position: absolute; inset: -1px;
+  border: 1px solid rgba(127, 240, 210, 0.08);
+  border-radius: 18px;
+  pointer-events: none;
+}
+.corner {
+  position: absolute; width: 14px; height: 14px;
+  border-color: #7ff0d2;
+  pointer-events: none;
+}
+.corner.tl { top: -5px; left: -5px; border-top: 2px solid; border-left: 2px solid; border-top-left-radius: 18px; }
+.corner.tr { top: -5px; right: -5px; border-top: 2px solid; border-right: 2px solid; border-top-right-radius: 18px; }
+.corner.bl { bottom: -5px; left: -5px; border-bottom: 2px solid; border-left: 2px solid; border-bottom-left-radius: 18px; }
+.corner.br { bottom: -5px; right: -5px; border-bottom: 2px solid; border-right: 2px solid; border-bottom-right-radius: 18px; }
+
+/* 品牌 */
+.brand { text-align: center; margin-bottom: 40px; position: relative; }
+.brand .logo {
+  width: 64px; height: 64px; margin: 0 auto 16px;
+  background: linear-gradient(135deg, #0d5fa5, #36b6f5);
+  border-radius: 16px; display: flex; align-items: center; justify-content: center;
+  border: 2px solid rgba(127, 240, 210, 0.5);
+  box-shadow: 0 0 20px rgba(54, 182, 245, 0.4), inset 0 0 15px rgba(127, 240, 210, 0.2);
+  position: relative;
+}
+.brand .logo::after {
+  content: ""; position: absolute; inset: -6px;
+  border-radius: 20px;
+  border: 1px solid rgba(54, 182, 245, 0.3);
+}
+.brand .logo svg { width: 32px; height: 32px; filter: drop-shadow(0 0 3px rgba(127, 240, 210, 0.6)); }
+.brand h1 {
+  font-size: 22px; font-weight: 800;
+  background: linear-gradient(90deg, #bfe9ff, #7ff0d2, #bfe9ff);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+  letter-spacing: 4px;
+  text-shadow: 0 0 30px rgba(127, 240, 210, 0.3);
+}
+.brand .sub {
+  font-size: 11px; color: #4e6d90;
+  margin-top: 10px; letter-spacing: 3px;
+  text-transform: uppercase;
+}
+
+/* 输入表单 */
+.form-group { margin-bottom: 22px; position: relative; }
+.form-group label {
+  display: block; font-size: 11px; color: #6d8bb0;
+  margin-bottom: 8px; letter-spacing: 2px; text-transform: uppercase;
+}
+.form-group input {
+  width: 100%; padding: 13px 16px;
+  background: rgba(5, 13, 27, 0.70);
+  border: 1px solid rgba(54, 182, 245, 0.30);
+  border-radius: 10px;
+  color: #e8f1ff; font-size: 14px;
+  transition: border-color 0.2s, box-shadow 0.2s;
+  font-family: inherit;
+  letter-spacing: 1px;
+}
+.form-group input:focus {
+  outline: none;
+  border-color: #36b6f5;
+  box-shadow: 0 0 0 3px rgba(54, 182, 245, 0.18), inset 0 0 8px rgba(54, 182, 245, 0.08);
+}
+.form-group input::placeholder { color: #3e5a7a; letter-spacing: 1px; }
+
+.btn-login {
+  width: 100%; padding: 14px; margin-top: 6px;
+  background: linear-gradient(135deg, #0d5fa5 0%, #36b6f5 50%, #7ff0d2 100%);
+  background-size: 200% 200%;
+  border: none; border-radius: 10px;
+  color: #fff; font-size: 15px; font-weight: 700;
+  letter-spacing: 6px; cursor: pointer;
+  transition: all 0.25s;
+  box-shadow: 0 4px 20px rgba(54, 182, 245, 0.4);
+}
+.btn-login:hover {
+  background-position: 100% 0;
+  transform: translateY(-2px);
+  box-shadow: 0 10px 30px rgba(54, 182, 245, 0.5), 0 0 40px rgba(127, 240, 210, 0.3);
+}
+.btn-login:active { transform: translateY(0); }
+.btn-login:disabled { opacity: 0.6; cursor: not-allowed; transform: none; box-shadow: none; }
+
+.error-msg {
+  display: none; margin-top: 14px; padding: 10px 14px;
+  background: rgba(255, 80, 80, 0.12);
+  border: 1px solid rgba(255, 80, 80, 0.35);
+  border-radius: 8px;
+  color: #ff8a8a; font-size: 12px;
+  letter-spacing: 1px;
+}
+.error-msg.show { display: block; }
+
+.hint {
+  margin-top: 24px; padding-top: 18px;
+  border-top: 1px solid rgba(54, 182, 245, 0.18);
+  font-size: 11px; color: #4e6d90; text-align: center;
+  letter-spacing: 1px;
+}
+.hint code {
+  background: rgba(54, 182, 245, 0.12);
+  color: #7ff0d2; padding: 3px 8px; border-radius: 4px;
+  font-family: "Consolas", monospace;
+  margin: 0 2px;
+}
+
+/* 底部版本 */
+.version-bar {
+  position: fixed; bottom: 0; left: 0; right: 0; z-index: 5;
+  padding: 8px 24px;
+  display: flex; justify-content: space-between; align-items: center;
+  font-size: 10px; color: #3e5a7a; letter-spacing: 1px;
+  border-top: 1px solid rgba(54, 182, 245, 0.10);
+  background: rgba(5, 13, 27, 0.5);
+  backdrop-filter: blur(6px);
+}
+.version-bar .sep { color: #2a4060; margin: 0 10px; }
+
+@media (max-width: 1100px) {
+  .login-wrap { grid-template-columns: 1fr; }
+  .deco-left, .deco-right { display: none; }
+}
+</style>
+</head>
+<body>
+
+<div class="grid-layer"></div>
+<div class="battle-layer">
+<!-- 内嵌 SVG 战场背景：等高线 + 雷达同心圆 + 战术箭头 + 装备剪影 -->
+<svg viewBox="0 0 1920 1080" preserveAspectRatio="xMidYMid slice" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="terrainFade" x1="0" y1="1" x2="0" y2="0">
+      <stop offset="0" stop-color="#051326" stop-opacity="1"/>
+      <stop offset="0.6" stop-color="#081a32" stop-opacity="0.7"/>
+      <stop offset="1" stop-color="#081a32" stop-opacity="0"/>
+    </linearGradient>
+    <radialGradient id="radarGrad" cx="50%" cy="50%" r="50%">
+      <stop offset="0" stop-color="#36b6f5" stop-opacity="0.2"/>
+      <stop offset="1" stop-color="#36b6f5" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="glow1" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#36b6f5" stop-opacity="0.6"/>
+      <stop offset="1" stop-color="#7ff0d2" stop-opacity="0"/>
+    </linearGradient>
+  </defs>
+
+  <!-- 等高线山脉剪影（底部） -->
+  <path d="M0 880 C150 820 300 860 480 830 C620 806 780 850 950 820 C1120 792 1280 840 1460 810 C1620 782 1780 830 1920 800 L1920 1080 L0 1080 Z" fill="url(#terrainFade)"/>
+
+  <!-- 细等高线 -->
+  <path d="M0 900 C200 870 400 890 600 870 C800 850 1000 880 1200 860 C1400 840 1600 870 1920 850" fill="none" stroke="rgba(54,182,245,0.15)" stroke-width="0.7"/>
+  <path d="M0 930 C250 910 500 930 750 915 C1000 900 1250 925 1500 910 C1700 898 1850 915 1920 905" fill="none" stroke="rgba(54,182,245,0.12)" stroke-width="0.6"/>
+  <path d="M0 960 C300 945 600 960 900 950 C1200 940 1500 955 1920 945" fill="none" stroke="rgba(54,182,245,0.08)" stroke-width="0.5"/>
+
+  <!-- 左侧雷达同心圆 -->
+  <circle cx="260" cy="380" r="30" fill="none" stroke="rgba(127,240,210,0.25)" stroke-width="1"/>
+  <circle cx="260" cy="380" r="80" fill="none" stroke="rgba(54,182,245,0.18)" stroke-width="0.8"/>
+  <circle cx="260" cy="380" r="150" fill="none" stroke="rgba(54,182,245,0.12)" stroke-width="0.6"/>
+  <circle cx="260" cy="380" r="240" fill="none" stroke="rgba(54,182,245,0.07)" stroke-width="0.5"/>
+  <circle cx="260" cy="380" r="20" fill="rgba(127,240,210,0.3)"/>
+  <circle cx="260" cy="380" r="5" fill="#7ff0d2"/>
+  <!-- 雷达扫描扇区 -->
+  <path d="M260 380 L260 140 A240 240 0 0 1 470 270 Z" fill="rgba(127,240,210,0.05)"/>
+
+  <!-- 右侧雷达同心圆 -->
+  <circle cx="1660" cy="480" r="30" fill="none" stroke="rgba(255,100,80,0.25)" stroke-width="1"/>
+  <circle cx="1660" cy="480" r="90" fill="none" stroke="rgba(255,100,80,0.15)" stroke-width="0.8"/>
+  <circle cx="1660" cy="480" r="180" fill="none" stroke="rgba(255,100,80,0.08)" stroke-width="0.6"/>
+  <circle cx="1660" cy="480" r="6" fill="#ff6450"/>
+
+  <!-- 战术箭头（中间方向指示） -->
+  <g opacity="0.35" fill="none" stroke="#36b6f5" stroke-width="1.2" stroke-linecap="round">
+    <path d="M820 300 L1000 300"/>
+    <path d="M970 285 L1000 300 L970 315"/>
+    <path d="M820 340 L1000 340"/>
+    <path d="M970 325 L1000 340 L970 355"/>
+    <path d="M820 380 L1000 380"/>
+    <path d="M970 365 L1000 380 L970 395"/>
+  </g>
+
+  <!-- 装备剪影（坦克编队简化形状） -->
+  <g opacity="0.18" fill="#7ff0d2">
+    <rect x="120" y="840" width="28" height="12" rx="2"/>
+    <rect x="126" y="834" width="16" height="8" rx="1"/>
+    <rect x="130" y="830" width="3" height="8"/>
+    <rect x="170" y="848" width="28" height="12" rx="2"/>
+    <rect x="176" y="842" width="16" height="8" rx="1"/>
+    <rect x="180" y="838" width="3" height="8"/>
+    <rect x="220" y="856" width="28" height="12" rx="2"/>
+    <rect x="226" y="850" width="16" height="8" rx="1"/>
+    <rect x="230" y="846" width="3" height="8"/>
+  </g>
+  <!-- 敌方装备剪影 -->
+  <g opacity="0.15" fill="#ff6450">
+    <rect x="1580" y="845" width="26" height="11" rx="2"/>
+    <rect x="1585" y="839" width="16" height="7" rx="1"/>
+    <rect x="1625" y="853" width="26" height="11" rx="2"/>
+    <rect x="1630" y="847" width="16" height="7" rx="1"/>
+  </g>
+
+  <!-- 坐标十字 -->
+  <line x1="960" y1="0" x2="960" y2="1080" stroke="rgba(54,182,245,0.06)" stroke-width="0.5"/>
+  <line x1="0" y1="540" x2="1920" y2="540" stroke="rgba(54,182,245,0.06)" stroke-width="0.5"/>
+</svg>
+</div>
+
+<div class="sweep-line"></div>
+
+<div class="login-wrap">
+  <!-- 左侧系统状态面板 -->
+  <aside class="deco-left">
+    <div class="deco-panel">
+      <h4>系统状态 · SYSTEM</h4>
+      <div class="val-row"><span class="k">后端引擎</span><span class="v ok">● ONLINE</span></div>
+      <div class="val-row"><span class="k">Mesa 内核</span><span class="v ok">● LOADED</span></div>
+      <div class="val-row"><span class="k">代理模型</span><span class="v">idle</span></div>
+      <div class="val-row"><span class="k">当前想定</span><span class="v">medium_brigade</span></div>
+    </div>
+    <div class="deco-panel">
+      <h4>算力资源 · RESOURCE</h4>
+      <div class="val-row"><span class="k">CPU 负载</span><span class="v">18%</span></div>
+      <div class="val-row"><span class="k">内存占用</span><span class="v">1.2 GB</span></div>
+      <div class="val-row"><span class="k">推演速度</span><span class="v ok">1.2×</span></div>
+    </div>
+  </aside>
+
+  <!-- 登录卡片 -->
+  <main class="login-card">
+    <span class="corner tl"></span><span class="corner tr"></span>
+    <span class="corner bl"></span><span class="corner br"></span>
+
+    <div class="brand">
+      <div class="logo">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M12 2l8 3v7c0 6-3.5 10-8 12-4.5-2-8-6-8-12V5z"/>
+          <path d="M9 12l2.5 2.5L15 11"/>
+        </svg>
+      </div>
+      <h1>智演先知 · 保障先行</h1>
+      <div class="sub">Brigade Intelligent War-gaming System</div>
+    </div>
+
+    <form id="login-form" autocomplete="off">
+      <div class="form-group">
+        <label for="username">用户名 USERNAME</label>
+        <input type="text" id="username" placeholder="请输入用户名" required>
+      </div>
+      <div class="form-group">
+        <label for="password">密　码 PASSWORD</label>
+        <input type="password" id="password" placeholder="请输入密码" required>
+      </div>
+      <button type="submit" class="btn-login" id="btn-login">登 录 SYSTEM LOGIN</button>
+      <div class="error-msg" id="error-msg"></div>
+    </form>
+
+    <div class="hint">演示账号 <code>admin</code> / <code>123456</code></div>
+  </main>
+
+  <!-- 右侧快速说明面板 -->
+  <aside class="deco-right">
+    <div class="deco-panel">
+      <h4>两大模式 · MODES</h4>
+      <div class="val-row"><span class="k">实时推演</span><span class="v ok">LIVE SIM</span></div>
+      <div class="val-row"><span class="k">历史回放</span><span class="v">REPLAY</span></div>
+    </div>
+    <div class="deco-panel">
+      <h4>能力矩阵 · CAPABILITY</h4>
+      <div class="val-row"><span class="k">装备四率</span><span class="v ok">●</span></div>
+      <div class="val-row"><span class="k">蒙特卡洛</span><span class="v ok">●</span></div>
+      <div class="val-row"><span class="k">Sobol 灵敏度</span><span class="v">○</span></div>
+      <div class="val-row"><span class="k">Pareto 优化</span><span class="v">○</span></div>
+    </div>
+  </aside>
+</div>
+
+<div class="version-bar">
+  <span>智演先知 v2.0 · Brigade Simulation Engine</span>
+  <span>BUILD 20261018<span class="sep">|</span>© 保障工程实验室</span>
+</div>
+
+<script>
+// 已登录 → 直接跳模式选择
+if (sessionStorage.getItem("user")) {
+  window.location.href = "/mode_select.html";
+}
+
+document.getElementById("login-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const btn = document.getElementById("btn-login");
+  const errEl = document.getElementById("error-msg");
+  const username = document.getElementById("username").value.trim();
+  const password = document.getElementById("password").value;
+
+  btn.disabled = true; btn.textContent = "验证中 AUTHENTICATING…"; errEl.classList.remove("show");
+
+  try {
+    const r = await fetch("/api/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username, password }),
+    });
+    const j = await r.json();
+    if (j.ok) {
+      sessionStorage.setItem("user", JSON.stringify({ username: j.username, role: j.role }));
+      window.location.href = "/mode_select.html";
+    } else {
+      errEl.textContent = j.error || "用户名或密码错误";
+      errEl.classList.add("show");
+      btn.disabled = false; btn.textContent = "登 录 SYSTEM LOGIN";
+    }
+  } catch (_) {
+    errEl.textContent = "无法连接服务器";
+    errEl.classList.add("show");
+    btn.disabled = false; btn.textContent = "登 录 SYSTEM LOGIN";
+  }
+});
+</script>
+</body>
+</html>

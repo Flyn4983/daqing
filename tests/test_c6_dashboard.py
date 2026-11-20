@@ -11,7 +11,7 @@ import pytest
 
 from brigsim.agent import AgentEngine, LocalLLMService
 from brigsim.agent import server as server_mod
-from brigsim.agent.server import AgentWebServer, _safe_join
+from brigsim.agent.server import AgentWebServer, RunSession, _safe_join
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -99,7 +99,9 @@ def test_static_and_data_routes(web_server):
 
 
 def test_index_route_and_viewer_status(web_server):
-    status, _, body = _get(web_server + "/")
+    # S1 登录门：根路径 302 跳 /login.html；大屏页面由 /index.html 直接 serve
+    # （fixture 的临时 web_root 未放 login.html，故直接断言 /index.html）
+    status, _, body = _get(web_server + "/index.html")
     assert status == 200 and "大屏" in body.decode("utf-8")
 
     status, _, body = _get(web_server + "/api/viewer")
@@ -555,3 +557,91 @@ def test_cli_dash_build_smoke(tmp_path):
     from brigsim.dashboard.build import DEFAULT_RRD
 
     assert d["replay"]["ready"] is DEFAULT_RRD.is_file()
+
+
+# ---------------------------------------------------------------------------
+# C7-e：replay 构建/切换一律走静态 rrd 文件直载，不再 relog 进 sink
+# ---------------------------------------------------------------------------
+
+
+class TestSceneBuildRaceGuard:
+    """C7-e：replay 构建/切换一律走静态 rrd 文件直载，不再 relog 进 sink。
+
+    根因（C7-d 实测）：sink 累积全部历史（每次 replay relog +6~8MB），新 viewer
+    连接需重下全部数据（60MB≈300s 超时传不完）→ 表现为"下拉切换无反应"；
+    且构建完成时晚到的 relog importer 流式灌数会覆盖正在进行的 live 推演。
+    修复：_scene_build_worker 只构建+标记 ready；前端 scene-status 轮询到
+    ready 后把 iframe 切到 /rerun-file/<rrd> 静态装载。
+    """
+
+    @pytest.fixture(autouse=True)
+    def _clean_runs(self):
+        with server_mod._RUNS_LOCK:
+            server_mod._RUNS.clear()
+        server_mod._SCENE_BUILD.clear()
+        yield
+        with server_mod._RUNS_LOCK:
+            server_mod._RUNS.clear()
+        server_mod._SCENE_BUILD.clear()
+
+    def test_has_active_runs_empty_and_done(self):
+        assert server_mod._has_active_runs() is False
+        s = RunSession("medium_brigade", 7, 0)
+        with server_mod._RUNS_LOCK:
+            server_mod._RUNS[s.run_id] = s
+        assert server_mod._has_active_runs() is True
+        s.done_event.set()
+        assert server_mod._has_active_runs() is False
+
+    def _fake_build(self, tmp_path, monkeypatch, rrd_name="replay_medium_brigade.rrd"):
+        """让 _scene_build_worker 的子进程构建立即成功并产出假 rrd。"""
+        out = tmp_path / rrd_name
+        out.write_bytes(b"fake-rrd")
+        monkeypatch.setattr(server_mod, "_scene_rrd_path", lambda scenario: out)
+
+        class _Proc:
+            returncode = 0
+            stderr = ""
+            stdout = ""
+
+        monkeypatch.setattr("subprocess.run", lambda *a, **k: _Proc())
+        return out
+
+    def test_build_worker_never_relogs_during_run(self, tmp_path, monkeypatch):
+        """推演进行中构建完成：只标记 ready，不得 relog（防累积+防污染推演画面）。"""
+        out = self._fake_build(tmp_path, monkeypatch)
+        relogged: list[object] = []
+        monkeypatch.setattr(server_mod, "_relog_rrd", lambda rrd: relogged.append(rrd))
+        s = RunSession("medium_brigade", 7, 0)  # done_event 未置位 = 推演进行中
+        with server_mod._RUNS_LOCK:
+            server_mod._RUNS[s.run_id] = s
+
+        server_mod._scene_build_worker("medium_brigade")
+
+        assert relogged == []
+        assert server_mod._SCENE_BUILD["medium_brigade"]["status"] == "ready"
+        assert server_mod._SCENE_BUILD["medium_brigade"]["rrd"] == str(out)
+
+    def test_build_worker_ready_when_idle(self, tmp_path, monkeypatch):
+        """空闲时同样只标记 ready（前端切静态文件），不灌 sink。"""
+        out = self._fake_build(tmp_path, monkeypatch)
+        relogged: list[object] = []
+        monkeypatch.setattr(server_mod, "_relog_rrd", lambda rrd: relogged.append(rrd))
+
+        server_mod._scene_build_worker("medium_brigade")
+
+        assert relogged == []
+        assert server_mod._SCENE_BUILD["medium_brigade"]["status"] == "ready"
+
+    def test_scene_status_includes_file_name(self, tmp_path, monkeypatch):
+        """scene-status 就绪时附带 rrd 文件名（前端据此拼 /rerun-file/ URL）。"""
+        out = self._fake_build(tmp_path, monkeypatch)
+        with server_mod._SCENE_LOCK:
+            server_mod._SCENE_BUILD["medium_brigade"] = {
+                "status": "ready", "rrd": str(out), "error": None,
+            }
+        with server_mod._SCENE_LOCK:
+            st = dict(server_mod._SCENE_BUILD["medium_brigade"])
+        rrd = st.get("rrd")
+        assert rrd
+        assert Path(rrd).name == "replay_medium_brigade.rrd"
