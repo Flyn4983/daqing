@@ -421,10 +421,11 @@ def _preview_scenario(scenario: str) -> dict:
             rr.set_time("tick", sequence=0)
             rerun_view._log_units_primitives(cur, zs0, info)
             rerun_view._log_markers(cur=cur, zs=zs0, info=info)
-            rerun_view._log_fans(cur, zs0, info, outline=True, geo=geo)
+            rerun_view._log_fans(cur, zs0, info, outline=True, geo=geo, los_terrain=hf)
             # C7-e：体系作用包络（雷达/防空/电抗/C2 圈）——此前 live/预览路径
             # 完全缺失，用户反馈"作用范围圈看不见"
-            rerun_view._log_coverages(0, cur, zs0, info, thin=True, geo=geo)
+            # C7-h：传真实地形 hf 做 LOS 遮挡（山体背后不画），与内核通视一致
+            rerun_view._log_coverages(0, cur, zs0, info, thin=True, geo=geo, los_terrain=hf)
         except Exception as exc:
             print(f"[scene-preview] 静态单位/扇面写入失败：{exc}", flush=True)
         # C7-d：气象按 24 tick 预播——修复此前 _log_weather(0,...) 未 set_time、
@@ -716,6 +717,7 @@ def _run_worker(sess: RunSession) -> None:
             def _live_tick(
                 _tick=tick, _pos_red=pos_red, _pos_blue=pos_blue,
                 _geo=_geo_hf, _cur=tick_cur, _sc=sc, _info=live_info,
+                _los_hf=_terrain_hf,  # C7-h：真实地形，供作用范围 LOS 遮挡
             ) -> None:
                 try:
                     import rerun as rr
@@ -741,11 +743,14 @@ def _run_worker(sess: RunSession) -> None:
                         zs_all = _geo.height_at(_cur["x"].to_numpy(), _cur["y"].to_numpy())
                         rerun_view._log_weather(_tick, _sc, _geo)
                         rerun_view._log_markers(cur=_cur, zs=zs_all, info=_info)
-                        rerun_view._log_fans(_cur, zs_all, _info, outline=True, geo=_geo)
+                        rerun_view._log_fans(_cur, zs_all, _info, outline=True, geo=_geo,
+                                             los_terrain=_los_hf)
                         # C7-e：体系作用包络环（此前 live 逐 tick 路径缺失，
                         # 用户反馈"两种模式下作用范围圈都看不见"）
+                        # C7-h：真实地形做 LOS 遮挡，山体背后不画
                         rerun_view._log_coverages(
-                            _tick, _cur, zs_all, _info, thin=True, geo=_geo
+                            _tick, _cur, zs_all, _info, thin=True, geo=_geo,
+                            los_terrain=_los_hf
                         )
                 except Exception:
                     pass

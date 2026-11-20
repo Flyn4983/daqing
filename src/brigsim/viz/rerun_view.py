@@ -255,8 +255,8 @@ def visualize(
             _log_units_primitives(cur, zs, info)
 
         _log_markers(cur=cur, zs=zs, info=info, decoy_ids=decoy_ids)
-        _log_fans(cur, zs, info, outline=embed, geo=geo)
-        _log_coverages(tick, cur, zs, info, thin=embed, geo=geo)
+        _log_fans(cur, zs, info, outline=embed, geo=geo, los_terrain=terrain)
+        _log_coverages(tick, cur, zs, info, thin=embed, geo=geo, los_terrain=terrain)
         _log_smoke(tick, cur, zs)
         _log_weather(tick, scenario, geo)
         _log_engagements(tick, engagements, pos_table, geo, info)
@@ -971,15 +971,29 @@ def _log_markers(*, cur, zs, info, decoy_ids: set[str] | None = None) -> None:
         )
 
 
-def _log_fans(cur, zs, info, *, outline: bool = False, geo=None) -> None:
+def _log_fans(cur, zs, info, *, outline: bool = False, geo=None, los_terrain=None) -> None:
     """存活单位射界扇面（半角粗取 ±10°）。
 
     桌面版用半透明三角网格填充；C6 大屏嵌入版（outline=True）改用低透明度
     填充扇面 + 亮弧线轮廓（C7-d：纯细线轮廓用户看不见）。
     C7-e：geo 传入时弧点逐点贴地（垂直夸张后扁平弧会被地形埋没）。
+
+    C7-h：los_terrain 传入（真实未缩放地形）时，逐弧点做通视判定：
+    被山体遮挡的射界方向不再画填充/亮弧——与内核 mesa_kernel.has_los 的
+    直瞄射击口径一致（此前渲染画满圆扇面、内核却因地形遮挡打不到，画面与
+    行为脱节）。遮挡三角形跳过，可见扇区照常高亮。
     """
     half = np.deg2rad(10)
     arc = np.linspace(-half, half, 11)
+
+    def _visible(ox, oy, ax, ay):
+        """弧点是否通视（无 los_terrain 时恒可见，保持旧行为）。"""
+        if los_terrain is None:
+            return True
+        try:
+            return bool(los_terrain.has_los(ox, oy, float(ax), float(ay), 3.0))
+        except Exception:
+            return True
 
     if outline:
         # C7-d：用户反馈大屏里"装备作用范围不可见"——由纯细线轮廓改为
@@ -988,6 +1002,7 @@ def _log_fans(cur, zs, info, *, outline: bool = False, geo=None) -> None:
         fill_v: list = []
         fill_c: list = []
         strips, strip_colors = [], []
+        _vis_masks: list = []  # C7-h：每个扇面的逐弧点可见掩码
         seg = len(arc) + 1
         for k, uid in enumerate(cur.index):
             if not bool(cur.at[uid, "alive"]):
@@ -1008,23 +1023,47 @@ def _log_fans(cur, zs, info, *, outline: bool = False, geo=None) -> None:
                 [float(a_), float(b_), float(c_)]
                 for a_, b_, c_ in zip(ax, ay, az)
             ]
+            # C7-h：逐弧点通视——被山体遮挡的方向不画填充/亮弧
+            vis = [_visible(ox, oy, a_, b_) for a_, b_ in zip(ax, ay)]
             fill_v.append([ox, oy, oz])
             fill_v += arc_pts
             fill_c += [SIDE_COLOR[side] + (36,)] * seg
             c_edge = SIDE_COLOR[side] + (150,)
-            strips += [[arc_pts[0], [ox, oy, oz]], arc_pts,
-                       [arc_pts[-1], [ox, oy, oz]]]
-            strip_colors += [c_edge, c_edge, c_edge]
+            # 只在弧点可见处画亮弧线（连续可见段成条）
+            run = []
+            for idx, ok in enumerate(vis):
+                if ok:
+                    run.append(arc_pts[idx])
+                else:
+                    if len(run) >= 2:
+                        strips.append(run); strip_colors.append(c_edge)
+                    run = []
+            if len(run) >= 2:
+                strips.append(run); strip_colors.append(c_edge)
+            # 两侧边界线：仅当端点可见
+            if vis[0]:
+                strips.append([arc_pts[0], [ox, oy, oz]]); strip_colors.append(c_edge)
+            if vis[-1]:
+                strips.append([arc_pts[-1], [ox, oy, oz]]); strip_colors.append(c_edge)
+            # 记录每个扇面的可见掩码，供三角形裁剪
+            _vis_masks.append(vis)
         if fill_v:
             indices = []
+            seg_i = 0
             for base in range(0, len(fill_v), seg):
+                mask = _vis_masks[seg_i] if seg_i < len(_vis_masks) else [True] * seg
+                seg_i += 1
                 for j in range(seg - 2):
-                    indices.append([base, base + j + 1, base + j + 2])
+                    # 三角形 (base, base+j+1, base+j+2) 中 base+j+1 / base+j+2
+                    # 分别是弧点 j / j+1（base 是原点）；mask 索引即弧点序 j/j+1。
+                    # 两端点均可见才画（任一端被地形遮挡即视为该方向被遮蔽）
+                    if j < len(mask) and j + 1 < len(mask) and mask[j] and mask[j + 1]:
+                        indices.append([base, base + j + 1, base + j + 2])
             rr.log(
                 "world/fans",
                 rr.Mesh3D(
                     vertex_positions=np.asarray(fill_v, dtype=np.float64),
-                    triangle_indices=np.asarray(indices),
+                    triangle_indices=np.asarray(indices, dtype=np.int32).reshape((-1, 3)),
                     vertex_colors=np.asarray(fill_c, dtype=np.uint8),
                 ),
             )
@@ -1040,6 +1079,7 @@ def _log_fans(cur, zs, info, *, outline: bool = False, geo=None) -> None:
         return
 
     verts, colors = [], []
+    _vis_masks: list = []  # C7-h：逐弧点可见掩码
     for k, uid in enumerate(cur.index):
         if not bool(cur.at[uid, "alive"]):
             continue
@@ -1059,14 +1099,17 @@ def _log_fans(cur, zs, info, *, outline: bool = False, geo=None) -> None:
             verts.append([float(a_), float(b_), float(c_)])
         c = SIDE_COLOR_A[side]
         colors += [c] * (len(arc) + 1)
+        _vis_masks.append([_visible(ox, oy, a_, b_) for a_, b_ in zip(ax, ay)])
     if not verts:
         rr.log("world/fans", rr.Clear(recursive=False))
         return
-    # 每个扇面独立三角形索引
+    # 每个扇面独立三角形索引（C7-h：跳过被地形遮挡的方向）
     indices, seg = [], 12
-    for base in range(0, len(verts), seg):
+    for si, base in enumerate(range(0, len(verts), seg)):
+        mask = _vis_masks[si] if si < len(_vis_masks) else [True] * seg
         for j in range(seg - 2):
-            indices.append([base, base + j + 1, base + j + 2])
+            if j < len(mask) and j + 1 < len(mask) and mask[j] and mask[j + 1]:
+                indices.append([base, base + j + 1, base + j + 2])
     rr.log(
         "world/fans",
         rr.Mesh3D(
@@ -1096,9 +1139,15 @@ def _ring_pts_tf(cx, cy, radius, geo, lift, n=48):
     return [[float(a), float(b), float(c)] for a, b, c in zip(px, py, pz)]
 
 
-def _log_coverages(tick: int, cur, zs, info, *, thin: bool = False, geo=None) -> None:
+def _log_coverages(tick: int, cur, zs, info, *, thin: bool = False, geo=None,
+                   los_terrain=None) -> None:
     """体系作用包络（每 tick 跟随单位）：雷达探测圈+扫描线、防空杀伤圈、
-    电抗压制区、C2 指挥光环。geo 传入时圆环/扫描线逐点贴地（C7-e）。"""
+    电抗压制区、C2 指挥光环。geo 传入时圆环/扫描线逐点贴地（C7-e）。
+
+    C7-h：los_terrain 传入（真实未缩放地形）时，圆环逐点做通视判定：
+    被山体遮挡的方向不打亮该段——与内核直瞄/雷达口径一致，避免"雷达圈画满
+    全向但实际探测被地形遮蔽"的脱节。
+    """
     rings: list[list] = []
     ring_colors: list = []
     sweeps: list[list] = []
@@ -1106,10 +1155,40 @@ def _log_coverages(tick: int, cur, zs, info, *, thin: bool = False, geo=None) ->
     line_r = 3.5 if thin else 5.0
     lift = 8.0
 
-    def _ring(cx, cy, base_z, radius, n):
+    def _visible(ox, oy, px, py):
+        if los_terrain is None:
+            return True
+        try:
+            return bool(los_terrain.has_los(ox, oy, float(px), float(py), 3.0))
+        except Exception:
+            return True
+
+    def _visible_arcs(cx, cy, base_z, radius, n):
+        """返回可见圆弧段列表（每段是点列，被地形遮挡处断开）。"""
         if geo is not None:
-            return _ring_pts_tf(cx, cy, radius, geo, lift, n)
-        return _ring_pts(cx, cy, base_z, radius, n)
+            pts = _ring_pts_tf(cx, cy, radius, geo, lift, n)
+        else:
+            pts = _ring_pts(cx, cy, base_z, radius, n)
+        mask = [_visible(cx, cy, p[0], p[1]) for p in pts]
+        arcs, run = [], []
+        for p, ok in zip(pts, mask):
+            if ok:
+                run.append(p)
+            else:
+                if len(run) >= 2:
+                    arcs.append(run)
+                run = []
+        if len(run) >= 2:
+            arcs.append(run)
+        # 闭合：首尾均可见时把末段与首段接上
+        if mask[0] and mask[-1] and arcs:
+            arcs[-1] = arcs[-1] + arcs[0][:1]
+        return arcs
+
+    def _emit(cx, cy, base_z, radius, n, color):
+        for arc in _visible_arcs(cx, cy, base_z, radius, n):
+            rings.append(arc)
+            ring_colors.append(color)
 
     for k, uid in enumerate(cur.index):
         if not bool(cur.at[uid, "alive"]):
@@ -1121,24 +1200,21 @@ def _log_coverages(tick: int, cur, zs, info, *, thin: bool = False, geo=None) ->
         ox, oy, oz = float(cur.at[uid, "x"]), float(cur.at[uid, "y"]), float(zs[k]) + lift
         if role in ("radar_air", "radar_cb"):
             color = RADAR_C
-            rings.append(_ring(ox, oy, oz, cov, 56))
-            ring_colors.append(color)
-            # 旋转扫描线（相位按 uid 散列，多部雷达不同步）
+            _emit(ox, oy, oz, cov, 56, color)
+            # 旋转扫描线（相位按 uid 散列）；终点被地形遮挡时该方向不打扫描线
             phase = (hash(uid) % 360) * math.pi / 180.0
             a = tick * 0.32 + phase
             ex, ey = ox + cov * math.cos(a), oy + cov * math.sin(a)
-            ez = (float(geo.height_at(ex, ey)) + lift) if geo is not None else oz
-            sweeps.append([[ox, oy, oz], [ex, ey, ez]])
-            sweep_colors.append(color)
+            if _visible(ox, oy, ex, ey):
+                ez = (float(geo.height_at(ex, ey)) + lift) if geo is not None else oz
+                sweeps.append([[ox, oy, oz], [ex, ey, ez]])
+                sweep_colors.append(color)
         elif role == "air_defense":
-            rings.append(_ring(ox, oy, oz, cov, 48))
-            ring_colors.append(SIDE_COLOR[info[uid][1]])
+            _emit(ox, oy, oz, cov, 48, SIDE_COLOR[info[uid][1]])
         elif role == "ew":
-            rings.append(_ring(ox, oy, oz, cov, 64))
-            ring_colors.append(EW_C)
+            _emit(ox, oy, oz, cov, 64, EW_C)
         elif role == "c2":
-            rings.append(_ring(ox, oy, oz, cov, 48))
-            ring_colors.append(AURA_C)
+            _emit(ox, oy, oz, cov, 48, AURA_C)
     if rings:
         rr.log("world/coverages/rings",
                rr.LineStrips3D(rings, colors=ring_colors, radii=line_r))

@@ -372,7 +372,8 @@
       </div>
       <div class="r-card" style="margin-top:14px"><h4>四个成品想定（表2 / 图12）${badge("text")}</h4>
         <table class="r-table"><thead><tr><th>想定</th><th>关键设定</th><th>推演结果</th></tr></thead><tbody>${scen}</tbody></table>
-        <div class="r-note">大屏顶栏「工况下拉」可切换对应想定：example_brigade（中型旅快攻）、brigade_canyon_clear（深切峡谷）、brigade_plain_fog（平原浓雾）、brigade_rolling_fortified（丘陵防御），切换后 3D 回放和数据面板同步更新。</div>
+        <div class="r-note">大屏顶栏「工况下拉」可切换对应想定：medium_brigade（中型旅快攻）、brigade_canyon_clear（深切峡谷）、brigade_plain_fog（平原浓雾）、brigade_rolling_fortified（丘陵防御），切换后 3D 回放和数据面板同步更新。</div>
+        <div class="r-note warn">口径说明：四个想定的地形「类型」与报告一致（丘陵/峡谷/平原/丘陵），其中两个丘陵想定为同一地形族的不同空间相位（起伏与通行性统计特征相同），便于视觉区分；表内战果为原型标定值、非单一地形相位的必然结果，以实时推演为准。装备作用范围圈/射界按地形通视（LOS）渲染——山体遮蔽方向不显示，与内核直瞄判定一致。</div>
       </div>
       <div class="r-card" style="margin-top:14px"><h4>指标达成度（图19 / 图20）${badge("text")}</h4>
         <div class="r-grid c3">

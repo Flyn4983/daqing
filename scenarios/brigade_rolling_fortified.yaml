@@ -10,6 +10,10 @@ mission:
 
 terrain:
   preset_family: rolling
+  # C7-h：与 medium_brigade 同为丘陵(rolling)地形族——地形类型/起伏/通行性
+  # 统计特征一致（符合报告"丘陵山脊"输入条件），仅空间相位不同以便视觉区分；
+  # 战果为原型标定值，不以单一地形相位为准。
+  noise_seed: 137
   size_m: [10000, 10000]
   grid_n: 65
 
