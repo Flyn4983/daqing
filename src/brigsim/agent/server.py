@@ -398,6 +398,15 @@ def _preview_scenario(scenario: str) -> dict:
         rerun_view._log_obstacles(sc, geo)
         rerun_view._log_decoys(sc, geo)
         rerun_view._log_weather_header(sc)
+        # C7-k：无预构建 rrd 时的 sink 兜底预览也预载真实空中模型（地面仍为轻量盒体）
+        try:
+            air_pairs_pre = [
+                (f"{p.side[:1]}{p.kind[:2]}{i:02d}", p.kind)
+                for i, p in enumerate(getattr(sc, "air_packages", []) or [])
+            ]
+            preloaded = rerun_view._preload_air_models(air_pairs_pre)
+        except Exception:
+            preloaded = set()
         # C7-d：静态战术快照——tick-0 单位图元 + 射界扇面 + 标签。
         # live 模式不跑仿真也能看到编成/部署/装备作用范围（用户反馈"没有明显效果"）
         try:
@@ -428,6 +437,26 @@ def _preview_scenario(scenario: str) -> dict:
             # 完全缺失，用户反馈"作用范围圈看不见"
             # C7-h：传真实地形 hf 做 LOS 遮挡（山体背后不画），与内核通视一致
             rerun_view._log_coverages(0, cur, zs0, info, thin=True, geo=geo, los_terrain=hf)
+            # C7-k：预览也展示空中装备（tick-0 起飞架次），不是圆球
+            air0_rows = []
+            for i, p in enumerate(getattr(sc, "air_packages", []) or []):
+                if int(p.launch_tick) != 0:
+                    continue
+                aid = f"{p.side[:1]}{p.kind[:2]}{i:02d}"
+                xy = p.waypoints[0] if p.waypoints else (sc.terrain.size_w / 2, sc.terrain.size_h / 2)
+                air0_rows.append({
+                    "tick": 0, "asset_id": aid, "side": 0 if p.side == "red" else 1,
+                    "kind": p.kind, "x": float(xy[0]), "y": float(xy[1]),
+                    "alt": float(p.altitude_m), "state": "active",
+                })
+            if air0_rows:
+                import pandas as pd
+                rerun_view._log_air(
+                    0, pd.DataFrame(air0_rows), {}, set(),
+                    use_models=rerun_view.AIR_USE_REAL_MODELS,
+                    model_logged=set(preloaded),
+                    ground_max=float(geo.heights.max()),
+                )
         except Exception as exc:
             print(f"[scene-preview] 静态单位/扇面写入失败：{exc}", flush=True)
         # C7-d：气象按 24 tick 预播——修复此前 _log_weather(0,...) 未 set_time、
@@ -628,13 +657,29 @@ def _run_worker(sess: RunSession) -> None:
         live_info = None
         live_uids: list[str] = []
         live_sides: list[int] = []
+        air_trails: dict[str, list] = {}
+        air_done: set[str] = set()
+        air_model_logged: set[str] = set()
+        # C7-k：ID 规则与 combat/systems.py 一致（side 首字母 + kind 前两字母 + 两位序号）
+        air_pairs = [
+            (f"{p.side[:1]}{p.kind[:2]}{i:02d}", p.kind)
+            for i, p in enumerate(getattr(sc, "air_packages", []) or [])
+        ]
         try:
             from ..viz import rerun_view
 
             live_info = rerun_view._unit_info(sc)
             live_uids = side_vectors[0] + side_vectors[1]
             live_sides = [0] * len(side_vectors[0]) + [1] * len(side_vectors[1])
-        except Exception:
+            # 静态空中资源必须在首个 set_time 之前发出；_live_reset 之后由独立 sink 任务写入。
+            # 地面单位沿用轻量盒体（真实 GLB 每车一份会让 Web viewer 内存爆掉），
+            # 空中无人机/巡飞弹/武直仍用真实模型（3 型共 ~14KB）。
+            def _live_static_models() -> None:
+                air_model_logged.update(rerun_view._preload_air_models(air_pairs))
+
+            _sink_submit(_live_static_models)
+        except Exception as exc:
+            print(f"[live] 装备模型预载失败：{exc}", flush=True)
             live_info = None
 
         for step_i in range(duration):
@@ -718,33 +763,22 @@ def _run_worker(sess: RunSession) -> None:
                 except Exception:
                     tick_cur = None
 
+            air_all = kernel.log.air_frame()  # C7-k：逐 tick 空中架次（含真实模型轨迹）
+
             def _live_tick(
                 _tick=tick, _pos_red=pos_red, _pos_blue=pos_blue,
                 _geo=_geo_hf, _cur=tick_cur, _sc=sc, _info=live_info,
                 _los_hf=_terrain_hf,  # C7-h：真实地形，供作用范围 LOS 遮挡
+                _air=air_all, _air_trails=air_trails, _air_done=air_done,
+                _air_logged=air_model_logged,
             ) -> None:
                 try:
                     import rerun as rr
 
                     rr.set_time("tick", sequence=_tick)
-                    rr.log(
-                        "live/red",
-                        rr.Points3D(
-                            [[p["x"], p["y"], _geo.height_at(p["x"], p["y"])] for p in _pos_red],
-                            colors=[[255, 90, 80]] * len(_pos_red),
-                            radii=[80.0] * len(_pos_red),
-                        ),
-                    )
-                    rr.log(
-                        "live/blue",
-                        rr.Points3D(
-                            [[p["x"], p["y"], _geo.height_at(p["x"], p["y"])] for p in _pos_blue],
-                            colors=[[54, 182, 245]] * len(_pos_blue),
-                            radii=[80.0] * len(_pos_blue),
-                        ),
-                    )
                     if _cur is not None and _info is not None:
                         zs_all = _geo.height_at(_cur["x"].to_numpy(), _cur["y"].to_numpy())
+                        rerun_view._log_units_primitives(_cur, zs_all, _info)
                         rerun_view._log_weather(_tick, _sc, _geo)
                         rerun_view._log_markers(cur=_cur, zs=zs_all, info=_info)
                         rerun_view._log_fans(_cur, zs_all, _info, outline=True, geo=_geo,
@@ -756,8 +790,33 @@ def _run_worker(sess: RunSession) -> None:
                             _tick, _cur, zs_all, _info, thin=True, geo=_geo,
                             los_terrain=_los_hf
                         )
-                except Exception:
-                    pass
+                        if _air is not None and not _air.empty:
+                            rerun_view._log_air(
+                                _tick, _air, _air_trails, _air_done,
+                                use_models=rerun_view.AIR_USE_REAL_MODELS,
+                                model_logged=_air_logged,
+                                ground_max=float(_geo.heights.max()),
+                            )
+                    else:
+                        # 无单位表时的兜底（正常想定不会走到）：保留红蓝圆点
+                        rr.log(
+                            "live/red",
+                            rr.Points3D(
+                                [[p["x"], p["y"], _geo.height_at(p["x"], p["y"])] for p in _pos_red],
+                                colors=[[255, 90, 80]] * len(_pos_red),
+                                radii=[80.0] * len(_pos_red),
+                            ),
+                        )
+                        rr.log(
+                            "live/blue",
+                            rr.Points3D(
+                                [[p["x"], p["y"], _geo.height_at(p["x"], p["y"])] for p in _pos_blue],
+                                colors=[[54, 182, 245]] * len(_pos_blue),
+                                radii=[80.0] * len(_pos_blue),
+                            ),
+                        )
+                except Exception as exc:
+                    print(f"[live] tick {_tick} 3D 写入失败：{exc}", flush=True)
 
             try:
                 _sink_submit(_live_tick)

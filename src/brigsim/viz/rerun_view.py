@@ -155,6 +155,7 @@ def visualize(
     effects: pd.DataFrame | None = None,
     app_id: str = "brigsim",
     use_models: bool = True,
+    tint_models: bool | None = None,
     tick_stride: int = 1,
     embed: bool = False,
 ) -> None:
@@ -166,7 +167,12 @@ def visualize(
     静态要素照常、最后一帧始终记录。
     embed=True 时写入大屏 iframe 专用极简蓝图（3D 视口独占，面板全收起）；
     默认 False 保持 ``brigsim replay`` 桌面蓝图（侧栏时序/交战日志 + 时间轴）。
+    tint_models=False 时不重发带 albedo_factor 的 Asset3D（每个 state 变化都会
+    重复嵌入整份 GLB，164 单位旅级 rrd 会膨胀到 268MB）；web 回放靠标签/烟柱
+    表达战损状态，模型保持原色。
     """
+    if tint_models is None:
+        tint_models = use_models
     # C7-i：可视化地形统一为太行山真实 DEM（仅渲染与 LOS 判定用，仿真数据不变）
     terrain = _visual_terrain(terrain)
 
@@ -216,14 +222,9 @@ def visualize(
     # 会把 static 数据绑到当前 tick，回放跳帧后模型消失（只剩标签）。地面单位的
     # _log_static_units 同样在循环前调用，遵循同一约定。
     if air is not None and AIR_USE_REAL_MODELS:
-        for aid, kind in air[["asset_id", "kind"]].drop_duplicates().itertuples(False, name=None):
-            key = f"{aid}:{kind}"
-            try:
-                rr.log(f"world/air/{aid}/model",
-                       rr.Asset3D(path=str(ensure_model(str(kind)))), static=True)
-                air_model_logged.add(key)
-            except Exception:
-                pass
+        air_model_logged |= _preload_air_models(
+            air[["asset_id", "kind"]].drop_duplicates().itertuples(False, name=None)
+        )
 
     pos_table = {
         (int(t), uid): (float(x), float(y))
@@ -267,42 +268,9 @@ def visualize(
         zs = geo.height_at(xs, ys)  # C7-d：单位 z 随渲染夸张同步缩放，贴合成像地面
         alive_idx, dead_idx = [], []
         if use_models:
+            _update_unit_models(cur, zs, info, z_off, model_state, tint=tint_models)
             for k, uid in enumerate(cur.index):
-                ent = f"world/units/{uid}"
-                alive, damaged = bool(cur.at[uid, "alive"]), bool(cur.at[uid, "damaged"])
-                rr.log(
-                    ent,
-                    rr.Transform3D(
-                        # 按模型实际包围盒接地
-                        translation=[
-                            float(xs[k]),
-                            float(ys[k]),
-                            float(zs[k]) + z_off[info[uid][0]],
-                        ],
-                        rotation=rr.RotationAxisAngle(
-                            axis=[0, 0, 1], radians=float(cur.at[uid, "heading"])
-                        ),
-                    ),
-                )
-                has_g = "damage_grade" in cur.columns and "disposition" in cur.columns
-                if not alive:
-                    # C7-a1：K 战毁（grade=3）棕黑，与普通伤亡深灰区分
-                    state = "wreck_k" if (
-                        has_g and int(cur.at[uid, "damage_grade"]) == 3
-                    ) else "dead"
-                elif damaged and has_g:
-                    if int(cur.at[uid, "disposition"]) == 4:
-                        state = "rear"       # 重损后送（深红）
-                    elif int(cur.at[uid, "damage_grade"]) == 1:
-                        state = "m_kill"     # M 失动（深蓝）
-                    else:
-                        state = "damaged"    # F 火力受损（琥珀）
-                else:
-                    state = "damaged" if damaged else "ok"
-                if model_state.get(uid) != state:
-                    _tint_model(ent, info[uid][0], state)
-                    model_state[uid] = state
-                (dead_idx if not alive else alive_idx).append(k)
+                (dead_idx if not bool(cur.at[uid, "alive"]) else alive_idx).append(k)
         else:
             for k, uid in enumerate(cur.index):
                 alive = bool(cur.at[uid, "alive"])
@@ -745,6 +713,64 @@ def _log_static_units(info, terrain: HeightField, use_models: bool = True) -> No
     for uid, (typ, *_rest) in info.items():
         glb = ensure_model(typ)
         rr.log(f"world/units/{uid}/model", rr.Asset3D(path=str(glb)), static=True)
+
+
+def _update_unit_models(cur, zs, info, z_off: dict[str, float], model_state: dict[str, str],
+                        *, tint: bool = True) -> None:
+    """每 tick 更新地面装备真实 GLB 的位姿/状态色（回放与 live 共用）。
+
+    C7-k：此前只有回放 rrd 的 use_models=True 分支有这段逻辑，live 逐帧只画
+    红蓝圆点；抽成公共函数后，live 推演也能看到同一套坦克/步战/雷达模型。
+    """
+    for k, uid in enumerate(cur.index):
+        ent = f"world/units/{uid}"
+        alive, damaged = bool(cur.at[uid, "alive"]), bool(cur.at[uid, "damaged"])
+        rr.log(
+            ent,
+            rr.Transform3D(
+                translation=[float(cur.at[uid, "x"]), float(cur.at[uid, "y"]),
+                             float(zs[k]) + z_off.get(info[uid][0], 0.0)],
+                rotation=rr.RotationAxisAngle(axis=[0, 0, 1],
+                                              radians=float(cur.at[uid, "heading"])),
+            ),
+        )
+        if not tint:
+            continue
+        has_g = "damage_grade" in cur.columns and "disposition" in cur.columns
+        if not alive:
+            state = "wreck_k" if (has_g and int(cur.at[uid, "damage_grade"]) == 3) else "dead"
+        elif damaged and has_g:
+            if int(cur.at[uid, "disposition"]) == 4:
+                state = "rear"
+            elif int(cur.at[uid, "damage_grade"]) == 1:
+                state = "m_kill"
+            else:
+                state = "damaged"
+        else:
+            state = "damaged" if damaged else "ok"
+        if model_state.get(uid) != state:
+            _tint_model(ent, info[uid][0], state)
+            model_state[uid] = state
+
+
+def _preload_air_models(pairs) -> set[str]:
+    """C7-k：静态预载每个空中架次的 GLB（须在首个 set_time 之前调用）。
+
+    pairs: [(asset_id, kind), ...]。返回 "aid:kind" 键集合，供 _log_air 判定
+    是否还需补发（型号变化时重发）。
+    """
+    loaded: set[str] = set()
+    if not AIR_USE_REAL_MODELS:
+        return loaded
+    for aid, kind in pairs:
+        key = f"{aid}:{kind}"
+        try:
+            rr.log(f"world/air/{aid}/model",
+                   rr.Asset3D(path=str(ensure_model(str(kind)))), static=True)
+            loaded.add(key)
+        except Exception:
+            pass
+    return loaded
 
 
 def _log_units_primitives(cur: pd.DataFrame, zs: np.ndarray, info) -> None:

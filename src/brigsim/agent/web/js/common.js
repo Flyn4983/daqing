@@ -144,7 +144,9 @@
   // 表现为"下拉切换无反应"）。文件经 /rerun-file/ 同源提供（直连模式下跨域，
   // 服务端已对该路由开 CORS）。
   function viewerFileTargetUrl(st, file) {
-    const fileUrl = window.location.origin + "/rerun-file/" + file;
+    // C7-k：rrd 重建后文件名不变，浏览器/代理缓存会继续吐旧文件（表现为
+    // "只有某个工况的地形和装备是对的"）。加时间戳强制每次工况切换拉新文件。
+    const fileUrl = window.location.origin + "/rerun-file/" + file + "?v=" + Date.now();
     const base = (getViewerMode() === "direct" && st.direct_base)
       ? st.direct_base
       : (st.embed_base || "/rerun-viewer/");

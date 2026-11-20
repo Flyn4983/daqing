@@ -729,8 +729,9 @@ def build_replay(
     kernel: str = "mesa",
     device: str = "cuda:0",
     tick_stride: int = 2,
+    use_models: bool = False,
 ) -> Path:
-    """跑一次 knee 方案复制并录制轻量图元 rrd（不嵌 GLB，隔帧；供 web viewer 回放）。"""
+    """跑一次 knee 方案复制并录制轻量 rrd（地面盒体；空中始终真实 GLB）。"""
     from ..experiment.runner import run_once
     from ..surrogate.design import apply_features
     from ..viz.rerun_view import visualize
@@ -752,7 +753,7 @@ def build_replay(
         air=kernel_obj.log.air_frame(),
         effects=kernel_obj.log.effect_frame(),
         app_id="brigsim-dashboard",
-        use_models=False,
+        use_models=use_models,
         tick_stride=tick_stride,
         embed=True,
     )
