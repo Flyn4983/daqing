@@ -3,14 +3,21 @@
   "_框架示例": {
     "vLLM": "http://127.0.0.1:8000/v1",
     "Ollama": "http://127.0.0.1:11434/v1",
-    "LM Studio": "http://127.0.0.1:1234/v1"
+    "LM Studio": "http://127.0.0.1:1234/v1",
+    "llama.cpp server": "http://127.0.0.1:8080/v1"
+  },
+  "_目标部署": {
+    "硬件": "Ubuntu ARM 工作站 / 128GB 统一内存 / 无独立 CUDA GPU",
+    "模型": "qwen3.8-27B（以实际部署的模型 ID 为准，修改下方 model 字段）",
+    "性能": "27B 在 ARM CPU 单请求约 20~60s；方案生成已拆为 4 段、每段≤900 tokens；模型未就绪自动降级为模板叙述，不阻断推演与清单",
+    "超时": "ARM 上建议 timeout≥180 秒（见下方 timeout）"
   },
   "base_url": "http://127.0.0.1:8000/v1",
-  "model": "Qwen3-32B",
+  "model": "Qwen3.8-27B",
   "api_key": "EMPTY",
-  "timeout": 60,
+  "timeout": 180,
   "mode": "auto",
-  "_mode说明": "real=强制真实调用；mock=强制模板兜底；auto=探测到模型则用真实、否则自动降级模板（现场演示推荐 auto）",
+  "_mode说明": "real=强制真实调用；mock=强制模板兜底；auto=探测到模型则用真实、否则自动降级模板（ARM 现场演示推荐 auto）",
   "temperature": 0.3,
   "max_tokens": 1024
 }

@@ -7,6 +7,7 @@
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath d='M16 2l12 4v9c0 8-5.5 13-12 15C9.5 28 4 23 4 15V6z' fill='%231d6fae'/%3E%3Cpath d='M11 16l4 4 7-8' fill='none' stroke='%237ff0d2' stroke-width='2.5'/%3E%3C/svg%3E">
 <link rel="stylesheet" href="/static/css/base.css?v=c8d4">
 <link rel="stylesheet" href="/static/css/dash.css?v=c930">
+<link rel="stylesheet" href="/static/css/support_flow.css?v=p2a">
 </head>
 <body>
 
@@ -35,8 +36,10 @@
       <span id="top-vram">显存 —</span>
       <span id="top-lat">延迟 —</span>
     </div>
+    <button class="btn-ghost" id="btn-support-flow" title="作战保障全过程：任务录入 → 多次推演 → 战损清单 → 指标派生 → 保障方案 → 导出">保障全过程</button>
     <button class="btn-ghost" id="btn-func-map" title="对照最终提交文档：5 个模块 / 4 域 9 功能 ↔ 界面位置">功能对照</button>
     <button class="btn-ghost" id="btn-research" title="报告第3节：四个模型 / 方案设计 / 检验验证的细节与真实数据">研究细节</button>
+    <button class="btn-ghost" id="btn-data-dict" title="P2-4：战损清单字段 / 指标口径 / 方案槽位字典">数据字典</button>
     <button class="btn-agent" id="btn-open-agent"><span class="lbo-badge sm white" title="LLM Prior · 大模型先验：FM-90 条令解析 + 工具函数调度">L</span>智能参谋</button>
   </div>
 </header>
@@ -232,6 +235,143 @@
     </section>
   </div>
 </main>
+
+<!-- ================= 作战保障全过程全屏抽屉 ================= -->
+<div class="sf-drawer" id="sf-drawer" aria-hidden="true">
+  <div class="sf-head">
+    <div class="sf-title-wrap">
+      <div class="sf-title">作战保障全过程 <span class="sf-en">SUPPORT OPERATION FLOW</span></div>
+      <div class="sf-sub">任务资源录入 → 编成校验 → 多次对抗推演 → 逐件战损清单 → 指标派生与对账 → 模板化保障方案 → 数字复核 → 导出</div>
+    </div>
+    <div class="sf-head-actions">
+      <span class="sf-llm-badge" id="sf-llm-badge">LLM 状态：—</span>
+      <button class="btn-ghost" id="sf-close">收起 ×</button>
+    </div>
+  </div>
+
+  <!-- 8 节点流程条（节点状态由数据驱动，点击跳到对应面板） -->
+  <div class="sf-pipeline" id="sf-pipeline"></div>
+  <!-- P2-7：环节级回退重算（复用已有数据，不重跑前段仿真） -->
+  <div class="sf-recompute-bar">
+    <span>环节回退重算</span>
+    <button class="sf-btn mini" data-recompute="rates" title="从战损清单重派生四率，不重跑仿真">⑤ 重算指标</button>
+    <button class="sf-btn mini" data-recompute="plan" title="从当前任务/清单重新生成方案（数字槽位确定性重填）">⑥ 重生成方案</button>
+    <button class="sf-btn mini" data-recompute="review" title="重新执行数字一致性复核与溯源">⑦ 重跑复核</button>
+    <span class="sf-recompute-hint">前三环节（录入/校验/推演）需重新推演，请用「开始多次推演」</span>
+  </div>
+
+  <div class="sf-body">
+    <!-- 左栏：任务与资源录入 -->
+    <section class="sf-col sf-col-input" id="sf-col-input">
+      <div class="sf-col-head"><b>① 任务与资源录入</b><span class="sf-hint">可直接修改数量，保存后生成推演配置</span></div>
+      <div class="sf-scroll" id="sf-form"></div>
+      <div class="sf-col-foot">
+        <button class="sf-btn primary" id="sf-save">保存录入并校验</button>
+        <button class="sf-btn" id="sf-load">读取上次录入</button>
+      </div>
+    </section>
+
+    <!-- 中栏：推演 + 战损清单 -->
+    <section class="sf-col sf-col-loss" id="sf-col-loss">
+      <div class="sf-col-head"><b>②③④⑤ 多次推演 · 战损清单 · 指标派生</b><span class="sf-hint" id="sf-job-hint">尚未推演</span></div>
+      <div class="sf-run-bar">
+        <label>推演次数 <input type="number" id="sf-nruns" value="8" min="1" max="60" class="sf-num"></label>
+        <label title="P1-6：留空则用录入中的种子；显式设置可精确复现">随机种子 <input type="number" id="sf-seed" value="" min="0" class="sf-num" placeholder="默认"></label>
+        <label>本地大模型 <input type="checkbox" id="sf-use-llm" checked></label>
+        <button class="sf-btn primary" id="sf-deduce">▶ 开始多次推演</button>
+        <button class="sf-btn" id="sf-export-loss" title="导出 CSV">↓ 清单</button>
+      </div>
+      <div class="sf-llm-adv" id="sf-llm-adv">
+        <span class="sf-adv-toggle" id="sf-adv-toggle">⚙ LLM 高级参数（27B CPU 调优）▾</span>
+        <div class="sf-adv-body" id="sf-adv-body" hidden></div>
+      </div>
+      <div class="sf-progress" id="sf-progress"><div class="sf-progress-bar" id="sf-progress-bar"></div></div>
+      <div class="sf-metrics" id="sf-metrics"></div>
+      <div class="sf-subtabs" id="sf-loss-tabs">
+        <span class="sftab on" data-tab="items">逐件清单</span>
+        <span class="sftab" data-tab="summary">多维汇总</span>
+        <span class="sftab" data-tab="ci">复制明细/CI</span>
+        <span class="sftab" data-tab="timeline">环节时间线</span>
+      </div>
+      <div class="sf-scroll sf-tab-panel" id="sf-panel-items">
+        <div class="sf-filter-bar" id="sf-filter-bar"></div>
+        <div class="sf-table-wrap" id="sf-loss-table">
+          <div class="sf-empty">保存录入后点击「开始多次推演」，这里将显示逐件战损清单。</div>
+        </div>
+        <div class="sf-pager" id="sf-pager"></div>
+      </div>
+      <div class="sf-scroll sf-tab-panel" id="sf-panel-summary" hidden></div>
+      <div class="sf-scroll sf-tab-panel" id="sf-panel-ci" hidden></div>
+      <div class="sf-scroll sf-tab-panel" id="sf-panel-timeline" hidden></div>
+    </section>
+
+    <!-- 右栏：保障方案 -->
+    <section class="sf-col sf-col-plan" id="sf-col-plan">
+      <div class="sf-col-head"><b>⑥⑦⑧ 保障方案 · 数字复核 · 导出</b><span class="sf-hint" id="sf-plan-hint">尚未生成</span></div>
+      <div class="sf-run-bar">
+        <select id="sf-template" class="sf-select"></select>
+        <button class="sf-btn primary" id="sf-gen-plan">生成保障方案</button>
+        <button class="sf-btn" id="sf-export-plan" title="导出 Markdown">↓ MD</button>
+        <button class="sf-btn" id="sf-export-docx" title="导出公文式 Word">↓ Word</button>
+      </div>
+      <div class="sf-check" id="sf-check"></div>
+      <div class="sf-recon-detail" id="sf-recon-detail" hidden></div>
+      <!-- P2-3：方案签批工作流状态机 -->
+      <div class="sf-review-bar" id="sf-review-bar" hidden></div>
+      <div class="sf-plan-tools">
+        <button class="sf-btn mini" id="sf-edit-narrative" title="P1-2：人工覆写叙述并锁定（数字不可改）">✎ 覆写叙述</button>
+        <button class="sf-btn mini" id="sf-template-map" title="P1-1：查看模板槽位映射">槽位映射</button>
+        <button class="sf-btn mini" id="sf-archive" title="P1-8：作业档案列表">档案</button>
+        <button class="sf-btn mini" id="sf-plan-compare" title="P2-2：多方案版本对比（槽位差异+正文diff）">版本对比</button>
+        <button class="sf-btn mini" id="sf-deploy-view" title="P2-6：保障力量编组与部署示意图">部署示意</button>
+        <button class="sf-btn mini" id="sf-data-dict" title="P2-4：字段/指标口径/槽位字典">数据字典</button>
+      </div>
+      <div class="sf-narr-editor" id="sf-narr-editor" hidden></div>
+      <div class="sf-prov-tip">点方案中带虚线的数字可查看数据溯源（来源/定义/取值）</div>
+      <div class="sf-prov-pop" id="sf-prov-pop" hidden></div>
+      <div class="sf-scroll sf-plan-doc" id="sf-plan-doc">
+        <div class="sf-empty">战损清单生成后，按模板槽位填充数字、由本地大模型补写叙述，形成完整保障方案。</div>
+      </div>
+    </section>
+  </div>
+
+  <!-- P1 浮层面板：模板管理/槽位映射、作业档案、单位定位 -->
+  <div class="sf-modal" id="sf-modal-template" hidden>
+    <div class="sf-modal-box">
+      <div class="sf-modal-head"><b>模板管理与槽位映射（P1-1）</b><button class="sf-modal-x" data-modal="sf-modal-template">×</button></div>
+      <div class="sf-modal-body" id="sf-modal-template-body"></div>
+    </div>
+  </div>
+  <div class="sf-modal" id="sf-modal-archive" hidden>
+    <div class="sf-modal-box">
+      <div class="sf-modal-head"><b>作业档案（P1-8）· 批量工况对比（P2-1）</b>
+        <button class="sf-btn mini" id="sf-arch-compare" title="P2-1：跨工况战损率并列对比（来自归档，不重跑推演）">📊 批量工况对比</button>
+        <button class="sf-modal-x" data-modal="sf-modal-archive">×</button></div>
+      <div class="sf-modal-body" id="sf-modal-archive-body"></div>
+      <div class="sf-modal-body" id="sf-modal-compare-body" hidden></div>
+    </div>
+  </div>
+  <!-- P2 子模态：方案版本对比 / 数据字典 / 力量编组部署示意 -->
+  <div class="sf-modal" id="sf-modal-plancompare" hidden>
+    <div class="sf-modal-box">
+      <div class="sf-modal-head"><b>方案版本对比（P2-2）</b><button class="sf-modal-x" data-modal="sf-modal-plancompare">×</button></div>
+      <div class="sf-modal-body" id="sf-modal-plancompare-body"></div>
+    </div>
+  </div>
+  <div class="sf-modal" id="sf-modal-dict" hidden>
+    <div class="sf-modal-box">
+      <div class="sf-modal-head"><b>数据字典（P2-4）：字段 / 指标口径 / 方案槽位</b><button class="sf-modal-x" data-modal="sf-modal-dict">×</button></div>
+      <div class="sf-modal-body" id="sf-modal-dict-body"></div>
+    </div>
+  </div>
+  <div class="sf-modal" id="sf-modal-deploy" hidden>
+    <div class="sf-modal-box">
+      <div class="sf-modal-head"><b>保障力量编组与部署示意（P2-6）</b><button class="sf-modal-x" data-modal="sf-modal-deploy">×</button></div>
+      <div class="sf-modal-body" id="sf-modal-deploy-body"></div>
+    </div>
+  </div>
+  <div class="sf-focus-card" id="sf-focus-card" hidden></div>
+</div>
 
 <!-- ================= 智能参谋全屏抽屉（C5 三栏原样） ================= -->
 <div class="agent-drawer" id="agent-drawer">
@@ -627,5 +767,6 @@
 <script src="/static/js/research.js?v=c926"></script>
 <script src="/static/js/insight.js?v=c922"></script>
 <script src="/static/js/main.js?v=c930"></script>
+<script src="/static/js/support_flow.js?v=p2a"></script>
 </body>
 </html>

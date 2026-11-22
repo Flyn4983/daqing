@@ -34,6 +34,7 @@ from urllib.parse import parse_qs, urlparse
 from .engine import AgentEngine
 from .service import LocalLLMService
 from .tools import PLAN_TAGS
+from ..support import api as support_api
 
 _WEB_ROOT = Path(__file__).parent / "web"
 _DATA_ROOT = _WEB_ROOT / "data"
@@ -1306,6 +1307,29 @@ def _make_handler(engine: AgentEngine, viewer_status: dict | None = None):
             elif path == "/api/scenarios":
                 # C7-c：快速返回 7 工况元数据，不完整加载（preset/HF 昂贵）
                 self._send_json({"scenarios": _list_scenarios()})
+            elif path == "/api/support/catalog":
+                self._send_json(support_api.catalog())
+            elif path == "/api/support/forces":
+                self._send_json(support_api.forces_default((qs.get("scenario") or [None])[0]))
+            elif path == "/api/support/mission":
+                self._send_json(support_api.mission_get((qs.get("mission_id") or [None])[0]))
+            elif path == "/api/support/deduce":
+                self._send_json(support_api.deduce_status((qs.get("job_id") or [""])[0]))
+            elif path == "/api/support/jobs":
+                self._send_json(support_api.deduce_list())
+            elif path == "/api/support/loss":
+                self._send_json(support_api.loss_get(
+                    (qs.get("loss_id") or [None])[0], (qs.get("job_id") or [None])[0]))
+            elif path == "/api/support/plan":
+                self._send_json(support_api.plan_get((qs.get("plan_id") or [None])[0]))
+            elif path == "/api/support/templates":
+                self._send_json(support_api.templates())
+            elif path == "/api/support/archive":
+                self._send_json(support_api.archive_list())
+            elif path == "/api/support/template-detail":
+                self._send_json(support_api.template_detail((qs.get("name") or [None])[0]))
+            elif path == "/api/support/compare":
+                self._send_json(support_api.compare_scenarios())
             elif path == "/api/scene-status":
                 # C6.1：工况切换的回放 rrd 构建状态（前端轮询）
                 scenario = (qs.get("scenario") or [None])[0]
@@ -1408,6 +1432,24 @@ def _make_handler(engine: AgentEngine, viewer_status: dict | None = None):
                         self._send_json({"error": f"tag 必须是 {sorted(PLAN_TAGS)}"}, code=400)
                         return
                     self._send_json(engine.plan(tag).as_dict())
+                elif path == "/api/support/mission":
+                    self._send_json(support_api.mission_upsert(payload))
+                elif path == "/api/support/deduce":
+                    self._send_json(support_api.deduce_start(payload))
+                elif path == "/api/support/plan":
+                    self._send_json(support_api.plan_generate(payload))
+                elif path == "/api/support/plan/override":
+                    self._send_json(support_api.plan_override(payload))
+                elif path == "/api/support/template":
+                    self._send_json(support_api.template_upsert(payload))
+                elif path == "/api/support/export":
+                    self._send_json(support_api.export(payload))
+                elif path == "/api/support/plan/compare":
+                    self._send_json(support_api.plan_compare(payload))
+                elif path == "/api/support/plan/review":
+                    self._send_json(support_api.plan_review(payload))
+                elif path == "/api/support/recompute":
+                    self._send_json(support_api.recompute_from(payload))
                 elif path == "/api/scene-switch":
                     # C6.1：工况切换驱动 3D 场景重建（live=预览 / replay=重建回放 rrd）
                     params = dict(payload or {})

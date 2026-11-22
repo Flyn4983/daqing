@@ -9,12 +9,14 @@
 
 【配置优先级】环境变量 > 项目根 llm_config.json > 默认值
     BRIGSIM_LLM_BASE_URL   默认 http://127.0.0.1:8000/v1
-    BRIGSIM_LLM_MODEL      默认 Qwen3-32B
-    BRIGSIM_LLM_API_KEY    默认 EMPTY（vLLM/Ollama 本地无需）
-    BRIGSIM_LLM_TIMEOUT    默认 60 秒
+    BRIGSIM_LLM_MODEL      默认 Qwen3.8-27B（Ubuntu ARM 部署目标；以实际模型 ID 为准）
+    BRIGSIM_LLM_API_KEY    默认 EMPTY（vLLM/Ollama/llama.cpp 本地无需）
+    BRIGSIM_LLM_TIMEOUT    默认 180 秒（ARM CPU 上 27B 推理慢，60 秒容易超时）
     BRIGSIM_LLM_MODE       real | mock | auto（默认 auto）
 
-仅用标准库 urllib，无第三方依赖 —— 迁移到新电脑无需 pip 安装额外包。
+仅用标准库 urllib，无第三方依赖 —— 迁移到 ARM 工作站无需 pip 安装额外包。
+27B CPU 推理适配：方案叙述由 support/plan.py 拆为 4 段（每段≤900 tokens）分别请求，
+单段失败只降级该段为模板文字；auto 模式下模型未就绪不影响战损清单等确定性环节。
 """
 
 from __future__ import annotations
@@ -34,9 +36,9 @@ def _repo_root() -> Path:
 
 DEFAULT_CONFIG = {
     "base_url": "http://127.0.0.1:8000/v1",
-    "model": "Qwen3-32B",
+    "model": "Qwen3.8-27B",
     "api_key": "EMPTY",
-    "timeout": 60,
+    "timeout": 180,
     "mode": "auto",
     "temperature": 0.3,
     "max_tokens": 1024,
