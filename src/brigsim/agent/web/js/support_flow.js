@@ -1221,6 +1221,9 @@
            (r.n_candidates != null ? r.n_candidates : '—') + '</b> 个' +
            '<div class="sf-pareto-caveat">' + esc(r.constraint_note || '') + '</div></div>';
     }
+    // 二维可行域图入口（只读派生）
+    h += '<div class="sf-region-entry"><button class="sf-btn mini" id="sf-open-region">◎ 查看二维可行域投影（74方案×约束边界）</button>' +
+         '<span class="sf-ccheck-hint">在任意两维间投影，看哪些方案被你的资源/成本约束剔除</span></div>';
 
     // 锚点对照
     var anchors = r.anchors || {};
@@ -1271,6 +1274,9 @@
         renderParetoModal(rr);
       });
     });
+    // 事件：二维可行域图
+    var openRegion = $('sf-open-region');
+    if (openRegion) openRegion.addEventListener('click', function () { openRegionView(); });
     // 事件：采用方案
     Array.prototype.forEach.call(body.querySelectorAll('.sf-pareto-adopt'), function (btn) {
       btn.addEventListener('click', function () {
@@ -1291,6 +1297,162 @@
         });
       });
     });
+  }
+
+  /* ---- 二维可行域投影（只读派生：74 离散方案 × GUI 约束边界）---- */
+  var REGION = null;          // 最近一次可行域数据
+  var REGION_AX = { x: 'red_repair_teams', y: 'cost' };  // 当前 X/Y 轴
+
+  function openRegionView() {
+    var box = $('sf-modal-region');
+    box.hidden = false;
+    var body = $('sf-modal-region-body');
+    body.innerHTML = '<div class="sf-empty">正在读取 74 方案并按当前录入约束标注可行性…</div>';
+    var q = paretoQuery();
+    api('/api/support/pareto/region?' + new URLSearchParams({
+      mission_id: q.mission_id || '', scenario: q.scenario || ''
+    })).then(function (r) {
+      if (r.error) { body.innerHTML = '<div class="sf-empty bad">' + esc(r.error) + '</div>'; return; }
+      REGION = r;
+      // 默认轴优先选受约束的决策维度作 X，便于看到边界
+      var decs = (r.axes && r.axes.decision) || [];
+      if (decs.length && !decs.some(function (a) { return a.field === REGION_AX.x; })) {
+        REGION_AX.x = decs[0].field;
+      }
+      renderRegion(body);
+    });
+  }
+
+  function axisOptions(list, selected) {
+    return list.map(function (a) {
+      return '<option value="' + esc(a.field) + '"' + (a.field === selected ? ' selected' : '') + '>' +
+             esc(a.label) + (a.unit ? '(' + esc(a.unit) + ')' : '') + '</option>';
+    }).join('');
+  }
+
+  function renderRegion(body) {
+    var r = REGION;
+    var axes = r.axes || { decision: [], metric: [] };
+    var all = axes.decision.concat(axes.metric);
+    var axisBy = {}; all.forEach(function (a) { axisBy[a.field] = a; });
+    var xa = axisBy[REGION_AX.x] || all[0];
+    var ya = axisBy[REGION_AX.y] || all[1] || all[0];
+
+    var h = '<div class="sf-region-lead">' +
+            '当前 <b>' + r.n_total + '</b> 个前沿方案：可行 <b class="ok">' + r.n_feasible +
+            '</b> 个 · 被约束剔除 <b class="bad">' + r.n_filtered + '</b> 个。' +
+            '绿点=可行，红点=超约束剔除，<span class="knee-key">◆</span>=权威 knee 折中方案。' +
+            '虚线=GUI 约束派生的硬边界，阴影=越界不可行区。</div>';
+
+    h += '<div class="sf-region-ctrl"><label>X 轴 <select id="sf-region-x">' +
+         '<optgroup label="决策旋钮">' + axisOptions(axes.decision, REGION_AX.x) + '</optgroup>' +
+         '<optgroup label="结果指标">' + axisOptions(axes.metric, REGION_AX.x) + '</optgroup></select></label>' +
+         '<label>Y 轴 <select id="sf-region-y">' +
+         '<optgroup label="结果指标">' + axisOptions(axes.metric, REGION_AX.y) + '</optgroup>' +
+         '<optgroup label="决策旋钮">' + axisOptions(axes.decision, REGION_AX.y) + '</optgroup></select></label></div>';
+
+    // 计算坐标范围
+    function val(pt, axis) {
+      var v = (axis.kind === 'metric' ? (pt.m || {}) : (pt.d || {}))[axis.field];
+      return (v == null || isNaN(Number(v))) ? null : Number(v);
+    }
+    var xs = [], ys = [];
+    (r.points || []).forEach(function (pt) {
+      var vx = val(pt, xa), vy = val(pt, ya);
+      if (vx != null) xs.push(vx);
+      if (vy != null) ys.push(vy);
+    });
+    function extent(arr) {
+      if (!arr.length) return [0, 1];
+      var lo = Math.min.apply(null, arr), hi = Math.max.apply(null, arr);
+      if (hi - lo < 1e-12) { lo -= 0.5; hi += 0.5; }
+      return [lo, hi];
+    }
+    var xr = extent(xs), yr = extent(ys);
+
+    // SVG 画布
+    var W = 760, H = 440, L = 70, R = 24, T = 24, B = 58;
+    var pw = W - L - R, ph = H - T - B;
+    function sx(v) { return L + (v - xr[0]) / (xr[1] - xr[0]) * pw; }
+    function sy(v) { return T + ph - (v - yr[0]) / (yr[1] - yr[0]) * ph; }
+    var svg = '<svg viewBox="0 0 ' + W + ' ' + H + '" class="sf-region-svg" xmlns="http://www.w3.org/2000/svg">';
+    svg += '<rect x="0" y="0" width="' + W + '" height="' + H + '" fill="var(--sf-bg2,#0f1622)"/>';
+    // 网格 + 刻度
+    function ticks(lo, hi) {
+      var out = [], n = 5;
+      for (var i = 0; i <= n; i++) {
+        var v = lo + (hi - lo) * i / n;
+        out.push(Math.abs(v) >= 100 ? Math.round(v) : Math.round(v * 1000) / 1000);
+      }
+      return out;
+    }
+    ticks(xr[0], xr[1]).forEach(function (t) {
+      var x = sx(t);
+      svg += '<line x1="' + x + '" y1="' + T + '" x2="' + x + '" y2="' + (T + ph) + '" stroke="rgba(148,163,184,.12)"/>';
+      svg += '<text x="' + x + '" y="' + (T + ph + 18) + '" fill="#94a3b8" font-size="11" text-anchor="middle">' + esc(t) + '</text>';
+    });
+    ticks(yr[0], yr[1]).forEach(function (t) {
+      var y = sy(t);
+      svg += '<line x1="' + L + '" y1="' + y + '" x2="' + (L + pw) + '" y2="' + y + '" stroke="rgba(148,163,184,.12)"/>';
+      svg += '<text x="' + (L - 8) + '" y="' + (y + 4) + '" fill="#94a3b8" font-size="11" text-anchor="end">' + esc(t) + '</text>';
+    });
+    svg += '<line x1="' + L + '" y1="' + (T + ph) + '" x2="' + (L + pw) + '" y2="' + (T + ph) + '" stroke="rgba(148,163,184,.4)"/>';
+    svg += '<line x1="' + L + '" y1="' + T + '" x2="' + L + '" y2="' + (T + ph) + '" stroke="rgba(148,163,184,.4)"/>';
+    // 约束硬边界：X 轴若受旋钮上界约束
+    var bounds = r.bounds || {};
+    if (xa.kind === 'decision' && bounds[xa.field] != null) {
+      var cap = Number(bounds[xa.field]);
+      if (cap <= xr[1]) {
+        var bx = sx(cap);
+        svg += '<rect x="' + bx + '" y="' + T + '" width="' + Math.max(0, L + pw - bx) + '" height="' + ph + '" fill="rgba(239,68,68,.08)"/>';
+        svg += '<line x1="' + bx + '" y1="' + T + '" x2="' + bx + '" y2="' + (T + ph) + '" stroke="#f87171" stroke-width="1.5" stroke-dasharray="5,4"/>';
+        svg += '<text x="' + (bx + 5) + '" y="' + (T + 14) + '" fill="#fca5a5" font-size="11">上限 ' + cap + '</text>';
+      }
+    }
+    if (ya.field === 'cost' && r.cost_ceiling != null) {
+      var cy = sy(Number(r.cost_ceiling));
+      if (cy >= T) {
+        svg += '<rect x="' + L + '" y="' + T + '" width="' + pw + '" height="' + Math.max(0, cy - T) + '" fill="rgba(239,68,68,.07)"/>';
+        svg += '<line x1="' + L + '" y1="' + cy + '" x2="' + (L + pw) + '" y2="' + cy + '" stroke="#f87171" stroke-width="1.5" stroke-dasharray="5,4"/>';
+        svg += '<text x="' + (L + pw - 4) + '" y="' + (cy - 5) + '" fill="#fca5a5" font-size="11" text-anchor="end">成本上限 ' + r.cost_ceiling + '</text>';
+      }
+    }
+    // 散点
+    (r.points || []).forEach(function (pt) {
+      var vx = val(pt, xa), vy = val(pt, ya);
+      if (vx == null || vy == null) return;
+      var cx = sx(vx), cy = sy(vy);
+      var fill = pt.feasible ? '#34d399' : '#f87171';
+      var op = pt.feasible ? 0.85 : 0.7;
+      var tip = '方案 #' + pt.idx + (pt.rank_tag ? ' ' + pt.rank_tag : '') +
+                ' · ' + xa.label + '=' + vx + ' · ' + ya.label + '=' + vy +
+                (pt.feasible ? ' · 可行' : ' · 超约束: ' + (pt.violations || []).map(function (v) {
+                  return esc(axisBy[v.axis] ? axisBy[v.axis].label : v.axis) + '>' + v.limit;
+                }).join('/'));
+      if (pt.is_knee) {
+        svg += '<polygon points="' + cx + ',' + (cy - 8) + ' ' + (cx + 7) + ',' + cy + ' ' + cx + ',' + (cy + 8) + ' ' + (cx - 7) + ',' + cy +
+               '" fill="#fbbf24" stroke="#f59e0b" stroke-width="1"><title>' + esc(tip) + ' · 权威knee</title></polygon>';
+      } else {
+        svg += '<circle cx="' + cx + '" cy="' + cy + '" r="4.5" fill="' + fill + '" fill-opacity="' + op +
+               '" stroke="' + (pt.feasible ? '#065f46' : '#7f1d1d') + '" stroke-width="0.8"><title>' + esc(tip) + '</title></circle>';
+      }
+    });
+    // 轴标题
+    svg += '<text x="' + (L + pw / 2) + '" y="' + (H - 12) + '" fill="#cbd5e1" font-size="12" text-anchor="middle">' + esc(xa.label) + (xa.unit ? ' (' + esc(xa.unit) + ')' : '') + '</text>';
+    svg += '<text transform="translate(16,' + (T + ph / 2) + ') rotate(-90)" fill="#cbd5e1" font-size="12" text-anchor="middle">' + esc(ya.label) + (ya.unit ? ' (' + esc(ya.unit) + ')' : '') + '</text>';
+    svg += '</svg>';
+
+    h += svg;
+    h += '<div class="sf-pareto-caveat sf-region-note">' + esc(r.note || '') + '</div>';
+    body.innerHTML = h;
+
+    function reRender() {
+      REGION_AX.x = $('sf-region-x').value;
+      REGION_AX.y = $('sf-region-y').value;
+      renderRegion(body);
+    }
+    $('sf-region-x').addEventListener('change', reRender);
+    $('sf-region-y').addEventListener('change', reRender);
   }
 
   function openDeployView() {

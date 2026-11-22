@@ -706,6 +706,30 @@ def pareto_recommend(payload: dict) -> dict:
                                      scenario=scenario, top_n=top_n, constraints=cons)
 
 
+def pareto_region(payload: dict) -> dict:
+    """二维可行域投影数据：导出 74 方案原维度 + GUI 约束可行性（只读派生）。
+
+    约束来源与 pareto_recommend 一致：优先 payload.constraints，其次最近录入且
+    constraints_configured 的 mission。缺省无约束 → 全部可行（零漂移）。
+    """
+    payload = payload or {}
+    scenario = str(payload.get("scenario") or "").strip() or None
+    mid = str(payload.get("mission_id") or "").strip()
+    mission = mission_input.load(mid) if mid else mission_input.latest()
+    cons = None
+    if mission and mission.get("constraints_configured"):
+        cons = mission.get("constraints")
+    if payload.get("constraints") is not None:
+        cons = payload.get("constraints")
+    try:
+        ceiling = payload.get("cost_ceiling")
+        ceiling = None if ceiling in (None, "") else float(ceiling)
+    except (TypeError, ValueError):
+        ceiling = None
+    return optimize_pareto.feasible_region(scenario=scenario, constraints=cons,
+                                           cost_ceiling=ceiling)
+
+
 def pareto_apply(payload: dict) -> dict:
     """一键采用选优方案：把 Pareto 推荐参数写入新方案的附节字段（另存，不覆盖原稿）。
 

@@ -42,8 +42,11 @@ def main() -> None:
             page.wait_for_timeout(300)
         cfields = form.locator('[data-group="constraints"]')
         results["field_count"] = cfields.count()
+        # 四源标题位于 details 折叠体内，inner_text 只返回可见文本会假阴性；
+        # 改用 text_content 抓完整 DOM 文本，与展开状态无关。
+        cgroup_text = cgroup.text_content() if cgroup.count() else ""
         results["has_four_sources"] = all(
-            s in (cgroup.inner_text() if cgroup.count() else "")
+            s in cgroup_text
             for s in ("资源现实源", "指挥权威源", "战损物理源", "软约束"))
         results["has_hard_soft_badges"] = (form.locator(".sf-hard").count() > 0 and
                                            form.locator(".sf-soft").count() > 0)

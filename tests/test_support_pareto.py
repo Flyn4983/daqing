@@ -108,3 +108,78 @@ def test_apply_creates_new_plan_without_touching_slots():
     assert len(ps["decision"]) == 7
     # 附节字段独立，不含数值槽位/权威指标键
     assert "slots" not in ps and "readiness" not in ps
+
+
+# ---------- 二维可行域投影（只读派生） ----------
+
+def test_region_no_constraints_all_feasible():
+    """缺省无约束 → 74 方案全部可行（零漂移）。"""
+    r = optimize_pareto.feasible_region()
+    assert r["n_total"] == 74
+    assert r["n_feasible"] == 74
+    assert r["n_filtered"] == 0
+    assert all(pt["feasible"] for pt in r["points"])
+
+
+def test_region_axes_complete():
+    r = optimize_pareto.feasible_region()
+    dec = {a["field"] for a in r["axes"]["decision"]}
+    met = {a["field"] for a in r["axes"]["metric"]}
+    assert {"red_repair_teams", "red_arv", "carry_level", "wave_qty"} <= dec
+    assert {"cost", "attrition_red", "readiness_red"} <= met
+
+
+def test_region_axis_meta_shape():
+    r = optimize_pareto.feasible_region()
+    for a in r["axes"]["decision"] + r["axes"]["metric"]:
+        assert set(("field", "label", "unit", "kind")) <= set(a.keys())
+
+
+def test_region_constraint_filters_and_flags():
+    caps = {"repair_veh_cap": 2, "arv_cap": 6, "supply_veh_cap": 4}
+    r = optimize_pareto.feasible_region(constraints=caps)
+    assert r["bounds"]["red_repair_teams"] == 2
+    assert 0 < r["n_filtered"] < 74
+    assert r["n_feasible"] + r["n_filtered"] == 74
+    flagged = [pt for pt in r["points"] if not pt["feasible"]]
+    assert flagged
+    assert all(any(v["axis"] == "red_repair_teams" for v in pt["violations"]) for pt in flagged)
+
+
+def test_region_cost_ceiling():
+    r = optimize_pareto.feasible_region(cost_ceiling=0.3)
+    assert r["cost_ceiling"] == 0.3
+    assert r["n_filtered"] > 0
+    assert all(float(pt["m"]["cost"]) <= 0.3 + 1e-12
+               for pt in r["points"] if pt["feasible"])
+
+
+def test_region_knee_marked():
+    r = optimize_pareto.feasible_region()
+    knees = [pt for pt in r["points"] if pt["is_knee"]]
+    assert len(knees) == 1
+    assert knees[0]["idx"] == 27  # 权威 tags.knee
+
+
+def test_region_point_has_both_dimensions():
+    r = optimize_pareto.feasible_region()
+    pt = r["points"][0]
+    assert len(pt["d"]) == 7 and len(pt["m"]) == 6
+    assert "rank_tag" in pt and "violations" in pt
+
+
+def test_region_api_reads_mission_constraints(monkeypatch):
+    mission = {"constraints_configured": True,
+               "constraints": {"repair_veh_cap": 2, "arv_cap": 6, "supply_veh_cap": 4}}
+    monkeypatch.setattr(api.mission_input, "latest", lambda: mission)
+    monkeypatch.setattr(api.mission_input, "load", lambda mid: None)
+    r = api.pareto_region({})
+    assert r["bounds"]["red_repair_teams"] == 2
+    assert r["n_filtered"] > 0
+
+
+def test_region_pareto_json_untouched():
+    before = _h()
+    optimize_pareto.feasible_region(constraints={"repair_veh_cap": 2})
+    optimize_pareto.feasible_region(cost_ceiling=0.3)
+    assert _h() == before

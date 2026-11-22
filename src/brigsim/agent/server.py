@@ -1343,6 +1343,12 @@ def _make_handler(engine: AgentEngine, viewer_status: dict | None = None):
                     "cost_ceiling": (qs.get("cost_ceiling") or [None])[0],
                     "top_n": (qs.get("top_n") or [5])[0],
                 }))
+            elif path == "/api/support/pareto/region":
+                self._send_json(support_api.pareto_region({
+                    "mission_id": (qs.get("mission_id") or [None])[0],
+                    "scenario": (qs.get("scenario") or [None])[0],
+                    "cost_ceiling": (qs.get("cost_ceiling") or [None])[0],
+                }))
             elif path == "/api/support/loss/template":
                 self._send_json(support_api.loss_template_docx())
             elif path == "/api/scene-status":

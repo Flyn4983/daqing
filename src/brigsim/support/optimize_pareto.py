@@ -218,3 +218,90 @@ def recommend(weights: dict[str, float] | None = None, *, cost_ceiling: float | 
             if constraints is not None else "未启用 GUI 约束筛选（与旧版行为一致）。"
         ),
     }
+
+
+# ---- 二维可行域投影（只读派生层）----
+# 说明：这是"既有 74 个 Pareto 离散方案在两维上的投影 + GUI 约束派生的硬边界"，
+#      不是连续可行域的精确边界（那需要重跑内核寻优，会改权威数字）。
+#      文本类约束（上级命令/优先规则/时限）在方案层校核，不形成数值轴。
+REGION_DECISION_AXES: list[dict] = [
+    {"field": "red_repair_teams", "label": "前沿抢修组", "unit": "组", "kind": "decision"},
+    {"field": "red_arv", "label": "装甲抢救车", "unit": "辆", "kind": "decision"},
+    {"field": "red_supply_veh", "label": "器材补给车", "unit": "辆", "kind": "decision"},
+    {"field": "carry_level", "label": "携行档基数", "unit": "档", "kind": "decision"},
+    {"field": "operating_level", "label": "运行档基数", "unit": "档", "kind": "decision"},
+    {"field": "wave_interval_ticks", "label": "前送波次间隔", "unit": "tick", "kind": "decision"},
+    {"field": "wave_qty", "label": "每波每部件", "unit": "件", "kind": "decision"},
+]
+REGION_METRIC_AXES: list[dict] = [
+    {"field": "cost", "label": "归一化成本", "unit": "", "kind": "metric"},
+    {"field": "attrition_red", "label": "红方战损率", "unit": "", "kind": "metric"},
+    {"field": "readiness_red", "label": "红方完好率", "unit": "", "kind": "metric"},
+    {"field": "repair_rate_red", "label": "红方修复率", "unit": "", "kind": "metric"},
+    {"field": "attrition_blue", "label": "蓝方战损率", "unit": "", "kind": "metric"},
+    {"field": "failure_rate_100h_red", "label": "红方故障率/100h", "unit": "", "kind": "metric"},
+]
+
+
+def feasible_region(scenario: str | None = None, constraints: dict | None = None,
+                    cost_ceiling: float | None = None) -> dict:
+    """导出 74 方案的原始维度 + GUI 约束可行性，供前端画二维可行域投影。
+
+    **只读派生**：不写回 pareto.json、不重跑仿真/优化、不改权威数字。
+    前端据此在任意两个轴间投影：可行点（绿）/被剔除点（红），并叠加约束硬边界。
+    这与报告"可行域 X（式3）"是同一约束体系的可视化，但注意边界是**离散方案投影**
+    而非连续可行域精确边界；后者需内核重新寻优，会推翻 74/knee/四率权威数字。
+    """
+    path = _pareto_path(scenario)
+    doc = json.loads(path.read_text(encoding="utf-8"))
+    plans = doc.get("plans") or []
+    if not plans:
+        return {"error": "pareto 方案集为空", "source": str(path.relative_to(_REPO))}
+
+    from .constraints import effective_bounds
+    c_bounds = effective_bounds(constraints) if constraints is not None else {}
+    ce = None
+    if cost_ceiling is not None:
+        try:
+            ce = float(cost_ceiling)
+        except (TypeError, ValueError):
+            ce = None
+        if ce is not None and (ce <= 0 or ce > 1):
+            ce = None
+
+    points: list[dict] = []
+    for i, p in enumerate(plans):
+        violations: list[dict] = []
+        for k, hi in c_bounds.items():
+            v = p.get(k)
+            if v is not None and float(v) > hi + 1e-9:
+                violations.append({"axis": k, "value": v, "limit": hi})
+        if ce is not None and p.get("cost") is not None and float(p["cost"]) > ce + 1e-12:
+            violations.append({"axis": "cost", "value": p["cost"], "limit": ce})
+        points.append({
+            "idx": i,
+            "rank_tag": p.get("rank_tag") or "",
+            "is_knee": (doc.get("tags") or {}).get("knee") == i,
+            "d": {a["field"]: p.get(a["field"]) for a in REGION_DECISION_AXES},
+            "m": {a["field"]: p.get(a["field"]) for a in REGION_METRIC_AXES},
+            "feasible": not violations,
+            "violations": violations,
+        })
+
+    n_feasible = sum(1 for pt in points if pt["feasible"])
+    return {
+        "axes": {"decision": REGION_DECISION_AXES, "metric": REGION_METRIC_AXES},
+        "points": points,
+        "bounds": c_bounds,
+        "cost_ceiling": ce,
+        "n_total": len(plans),
+        "n_feasible": n_feasible,
+        "n_filtered": len(plans) - n_feasible,
+        "source": str(path.relative_to(_REPO)).replace("\\", "/"),
+        "note": (
+            "二维图为既有 74 个 Pareto 离散方案在所选两维上的投影，叠加 GUI 真实约束派生的硬边界；"
+            "绿点=可行、红点=被约束剔除，金色=权威 knee 折中方案。"
+            "这不是连续可行域的精确边界（那需重新寻优、会推翻 74/knee/四率权威数字），"
+            "文本类约束（上级命令/优先规则/抢修时限）在方案层校核，不形成数值轴。只读展示，不改任何权威数字。"
+        ),
+    }

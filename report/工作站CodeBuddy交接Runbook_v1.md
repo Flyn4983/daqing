@@ -77,11 +77,11 @@ cd daqing
 # 已 clone 过
 # cd ~/daqing && git pull origin main
 
-git log --oneline -3    # 验收：首行应为 e55ea15 或更新（含"人工Word战损清单导入"）
+git log --oneline -3    # 验收：首行应为 de006fa 或更新（含"人工Word战损清单导入"+P3真实约束录入）
 git status -sb          # 验收：应为 main...origin/main，无 ahead（若有 ahead，说明本地有未推送改动，先与本机确认）
 ```
 
-**验收标准**：`git log` 能看到 `e55ea15 feat: 人工Word战损清单导入 + 抢修方案生成 ...`；工作区干净（未跟踪文件忽略即可）。
+**验收标准**：`git log` 能看到 `de006fa`（其下依次为 `1db66b8` P3 真实约束、`e55ea15` 抢修方案链路）；工作区干净（未跟踪文件忽略即可）。
 
 ### 步骤 2：创建 Python 环境
 
@@ -198,6 +198,7 @@ curl -s -o /dev/null -w "loss/template: %{http_code}\n" http://127.0.0.1:8848/ap
 | GET/POST | `/api/support/loss`、`/api/support/plan` | 读取清单/方案（既有） |
 | GET | `/api/support/pareto/recommend` | 成本约束 Pareto 选优（只读 74 方案；GUI 显式录入约束时自动按资源上限硬筛选） |
 | GET/POST | `/api/support/constraints/check` | P3 真实业务约束校核（三源/硬阻断软告警；纯派生不进内核） |
+| GET | `/api/support/pareto/region` | P4 二维可行域投影数据（74 方案原维度 + GUI 约束可行性；只读派生，前端画 SVG） |
 
 ---
 

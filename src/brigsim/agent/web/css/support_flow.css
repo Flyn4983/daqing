@@ -526,3 +526,18 @@
   color: #bfdbfe; background: rgba(59,130,246,.12); border: 1px solid rgba(96,165,250,.3);
 }
 .sf-pareto-constraint b { color: #93c5fd; }
+
+/* ===== P4：二维可行域投影（只读派生） ===== */
+.sf-region-entry { display: flex; align-items: center; gap: 10px; margin: 10px 0; flex-wrap: wrap; }
+.sf-region-lead { font-size: 12px; color: #cbd5e1; line-height: 1.7; margin-bottom: 10px; }
+.sf-region-lead b.ok { color: #6ee7b7; }
+.sf-region-lead b.bad { color: #fca5a5; }
+.sf-region-lead .knee-key { color: #fbbf24; font-size: 14px; }
+.sf-region-ctrl { display: flex; align-items: center; gap: 18px; margin-bottom: 12px; flex-wrap: wrap; }
+.sf-region-ctrl label { display: flex; align-items: center; gap: 6px; font-size: 11px; color: #93c5fd; }
+.sf-region-ctrl select {
+  background: rgba(15,23,42,.85); color: #e2e8f0; border: 1px solid rgba(148,163,184,.35);
+  border-radius: 4px; padding: 5px 8px; font-size: 11px; min-width: 150px;
+}
+.sf-region-svg { width: 100%; height: auto; border: 1px solid rgba(148,163,184,.2); border-radius: 6px; }
+.sf-region-note { margin-top: 10px; line-height: 1.6; }
