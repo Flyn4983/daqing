@@ -207,6 +207,12 @@ SLOT_DICT: dict[str, dict] = {
     "table_org": {"source": "mission", "label": "附表3 力量编成表"},
     "map_deploy": {"source": "template", "label": "附表4 部署图"},
     "table_schedule": {"source": "llm", "label": "附表5 时序表", "section": "十、附表"},
+    # ---- P3：真实业务约束（三源）——全部确定性，来自 GUI 录入/校核，LLM 不得改写 ----
+    "constraint_summary": {"source": "mission", "label": "资源与能力约束（GUI录入）"},
+    "constraint_deadline": {"source": "mission", "label": "上级时限与可修等级（GUI录入）"},
+    "constraint_order": {"source": "mission", "label": "上级命令原文（GUI录入）"},
+    "constraint_priority": {"source": "mission", "label": "抢修优先规则（GUI录入）"},
+    "constraint_feasibility": {"source": "decision", "label": "约束可行性校核结论"},
 }
 
 # ---- P1-7：指标口径字典（tooltip 单一数据源，纯展示，不改内核计算）----

@@ -1313,6 +1313,12 @@ def _make_handler(engine: AgentEngine, viewer_status: dict | None = None):
                 self._send_json(support_api.forces_default((qs.get("scenario") or [None])[0]))
             elif path == "/api/support/mission":
                 self._send_json(support_api.mission_get((qs.get("mission_id") or [None])[0]))
+            elif path == "/api/support/constraints/check":
+                self._send_json(support_api.constraints_check({
+                    "mission_id": (qs.get("mission_id") or [None])[0],
+                    "loss_id": (qs.get("loss_id") or [None])[0],
+                    "with_loss": (qs.get("with_loss") or ["0"])[0] in ("1", "true", "True"),
+                }))
             elif path == "/api/support/deduce":
                 self._send_json(support_api.deduce_status((qs.get("job_id") or [""])[0]))
             elif path == "/api/support/jobs":
@@ -1443,6 +1449,8 @@ def _make_handler(engine: AgentEngine, viewer_status: dict | None = None):
                     self._send_json(engine.plan(tag).as_dict())
                 elif path == "/api/support/mission":
                     self._send_json(support_api.mission_upsert(payload))
+                elif path == "/api/support/constraints/check":
+                    self._send_json(support_api.constraints_check(payload))
                 elif path == "/api/support/deduce":
                     self._send_json(support_api.deduce_start(payload))
                 elif path == "/api/support/plan":

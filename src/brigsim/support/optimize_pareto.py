@@ -62,7 +62,8 @@ def _norm(v: float, lo: float, hi: float, direction: str) -> float:
 
 
 def recommend(weights: dict[str, float] | None = None, *, cost_ceiling: float | None = None,
-              scenario: str | None = None, top_n: int = 5) -> dict:
+              scenario: str | None = None, top_n: int = 5,
+              constraints: dict | None = None) -> dict:
     """按三维权重对 74 方案评分排序，返回 Top-N 与锚点对照。
 
     Args:
@@ -70,11 +71,15 @@ def recommend(weights: dict[str, float] | None = None, *, cost_ceiling: float | 
         cost_ceiling: 归一化成本上限 [0,1]，与方案 cost 同量纲；None/<=0 表示不设限。
         scenario: 工况名，指定时读该工况 pareto.json，否则读全局权威 pareto.json。
         top_n: 返回前 N 个方案。
+        constraints: P3 真实业务约束录入；非 None 时派生 7 旋钮有效上界做硬筛选。
+                     **缺省 None → 不筛选，行为与旧版完全一致（零漂移）**。
 
     Returns:
         dict：ranked(Top-N，含 score/三维分/7维决策/9指标)、anchors(锚点对照)、
               n_candidates/n_filtered/n_plans、effective_weights、cost_ceiling、
-              formula 说明、budget_limit 量纲提示、source(读自哪个文件)。
+              formula 说明、budget_limit 量纲提示、source(读自哪个文件)；
+              传 constraints 时额外含 constraint_bounds / n_constraint_filtered /
+              constraint_note（明确"在既有前沿内按 GUI 约束筛选，非新权威数字"）。
     """
     w = dict(weights or {})
     raw = {k: max(0.0, float(w.get(k, 1.0 / 3))) for k in DIMENSIONS}
@@ -105,6 +110,33 @@ def recommend(weights: dict[str, float] | None = None, *, cost_ceiling: float | 
 
     candidates = [p for p in plans if ce is None or float(p.get("cost", 1)) <= ce + 1e-12]
 
+    # P3 真实约束硬筛选：把 GUI 录入的资源上限派生为 7 旋钮有效上界，逐方案核对。
+    # 只读筛选，不新增/不改写 pareto.json 任何方案；缺省 None 时完全不触发。
+    c_bounds: dict[str, int] = {}
+    n_constraint_filtered = 0
+    constraint_detail: dict[str, int] = {}
+    if constraints is not None:
+        from .constraints import effective_bounds
+        c_bounds = effective_bounds(constraints)
+        if c_bounds:
+            def _ok(p: dict) -> bool:
+                for k, hi in c_bounds.items():
+                    try:
+                        if float(p.get(k, 0)) > hi + 1e-9:
+                            return False
+                    except (TypeError, ValueError):
+                        return False
+                return True
+            before = len(candidates)
+            candidates = [p for p in candidates if _ok(p)]
+            n_constraint_filtered = before - len(candidates)
+            # 各旋钮剔除数（用于前端解释"为什么这些方案被排除"）
+            for k, hi in c_bounds.items():
+                constraint_detail[k] = sum(
+                    1 for p in plans
+                    if p.get(k) is not None and float(p.get(k, 0)) > hi + 1e-9
+                )
+
     scored: list[dict] = []
     for p in candidates:
         parts = {}
@@ -120,6 +152,15 @@ def recommend(weights: dict[str, float] | None = None, *, cost_ceiling: float | 
 
     scored.sort(key=lambda r: (-r["_score"], float(r.get("cost", 1))))
     top = scored[:max(1, min(int(top_n), len(scored)))]
+    if not top:
+        return {
+            "error": "当前 GUI 约束下无可行方案（全部被剔除）",
+            "source": str(path.relative_to(_REPO)).replace("\\", "/"),
+            "n_plans": len(plans), "n_candidates": 0,
+            "n_constraint_filtered": n_constraint_filtered,
+            "constraint_bounds": c_bounds, "constraint_detail": constraint_detail,
+            "constraint_note": "请放宽资源上限/档位约束后重试；或确认上级命令是否允许超编配置。权威 74 方案未改动。",
+        }
 
     # 锚点对照：从原始 plans 中按 rank_tag/tags 找到 knee/baseline 等，计算其在该权重下的得分
     tags = doc.get("tags") or {}
@@ -168,4 +209,12 @@ def recommend(weights: dict[str, float] | None = None, *, cost_ceiling: float | 
         "budget_limit_note": "budget_limit(万元)与方案归一化成本(0-1)量纲不同，不直接参与筛选；如需按金额约束须先人工换算为归一化成本上限(cost_ceiling)",
         "source": str(path.relative_to(_REPO)).replace("\\", "/"),
         "note": "结论为既有 Pareto 前沿(74方案)内按录入偏好的加权排序，非新权威结论；不改任何权威数字，不重跑仿真。",
+        "constraint_bounds": c_bounds,
+        "n_constraint_filtered": n_constraint_filtered,
+        "constraint_detail": constraint_detail,
+        "constraint_note": (
+            f"已按 GUI 录入的真实约束（资源上限→7旋钮有效上界）硬筛选：剔除 {n_constraint_filtered} 个超编方案，"
+            f"在剩余 {len(candidates)} 个前沿方案内按偏好排序。筛选只读，不改 pareto.json / knee / 四率权威数字。"
+            if constraints is not None else "未启用 GUI 约束筛选（与旧版行为一致）。"
+        ),
     }

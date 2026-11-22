@@ -26,7 +26,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from . import battle_loss, force_config, loss_import, mission_input, optimize_pareto, plan as plan_mod, repair_plan
+from . import battle_loss, force_config, loss_import, mission_input, optimize_pareto, plan as plan_mod, repair_plan, constraints
 from .catalog import (CATALOG, PROCESS_NODES, SLOT_DICT, METRIC_GLOSSARY, LLM_PARAM_SPEC,
                       LOSS_FIELD_DICT, COST_WEIGHT_SPEC, REVIEW_STATES, REVIEW_ACTIONS)
 
@@ -57,6 +57,8 @@ def catalog() -> dict:
         "cost_weight_spec": COST_WEIGHT_SPEC,  # P2-5 成本权重规格
         "review_states": REVIEW_STATES,        # P2-3 方案签批状态机
         "review_actions": REVIEW_ACTIONS,
+        "constraint_spec": constraints.CONSTRAINT_SPEC,  # P3 真实业务约束规格（三源）
+        "constraint_sources": constraints.SOURCE_NAMES,
         "templates": plan_mod.list_templates(),
         "support_dir": str(_SUPPORT_DIR.relative_to(_REPO)).replace("\\", "/"),
         "force_config": {
@@ -101,11 +103,40 @@ def mission_get(mission_id: str | None = None) -> dict:
 
 
 def mission_upsert(payload: dict) -> dict:
-    p, warnings = mission_input.validate(payload)
+    try:
+        p, warnings = mission_input.validate(payload)
+    except ValueError as exc:
+        # 硬约束违反等校验失败：结构化返回（HTTP 200 + error 字段），前端可清晰展示
+        msg = str(exc)
+        return {"error": msg, "error_type": "validation",
+                "constraint_violation": "硬约束" in msg,
+                "hint": "请按提示调整录入值后重试；硬约束来自上级命令与资源现实。"}
     mid = mission_input.save(p)
     p["mission_id"] = mid
     return {"mission": p, "warnings": warnings,
             "run_config": mission_input.to_run_config(p), "mission_id": mid}
+
+
+# ---------------- P3：真实业务约束校核 ----------------
+
+def constraints_check(payload: dict | None = None) -> dict:
+    """按当前录入（或指定 mission/loss）校核三源约束，返回逐条 pass/warn/fail。
+
+    纯派生、毫秒级；不修改内核/权威数字。前端在录入页实时调用展示红黄绿。
+    """
+    payload = payload or {}
+    mid = str(payload.get("mission_id") or "").strip()
+    mission = mission_input.load(mid) if mid else mission_input.latest()
+    if mission is None:
+        mission = {}
+    lid = str(payload.get("loss_id") or "").strip()
+    loss = battle_loss.load(lid) if lid else battle_loss.latest()
+    if not payload.get("with_loss"):
+        loss = None  # 默认只做录入侧校核；显式 with_loss 才纳入战损清单
+    result = constraints.check_feasibility(
+        mission, mission.get("constraints") or payload.get("constraints"), loss=loss)
+    result["constraints_configured"] = bool(mission.get("constraints_configured"))
+    return result
 
 
 # ---------------- 多次推演 → 战损清单 ----------------
@@ -297,6 +328,13 @@ def plan_generate(payload: dict) -> dict:
     loss = battle_loss.load(lid) if lid else battle_loss.latest()
     if mission is None or loss is None:
         return {"error": "需要已录入的任务与战损清单"}
+    # P3 硬阻断：仅当 GUI 显式录入约束时，硬约束违反即拒绝生成方案
+    if mission.get("constraints_configured"):
+        _cc = constraints.check_feasibility(mission, mission.get("constraints"), loss=loss)
+        if _cc["n_fail"]:
+            return {"error": "硬约束校核未通过，方案生成已阻断",
+                    "constraint_check": _cc,
+                    "blocking": _cc["blocking"]}
     use_llm = bool(payload.get("use_llm", True))
     template = str(payload.get("template") or plan_mod.DEFAULT_TEMPLATE)
     llm_params = payload.get("llm_params") or {}  # P1-3
@@ -644,9 +682,9 @@ def pareto_recommend(payload: dict) -> dict:
     payload = payload or {}
     weights = payload.get("weights")
     scenario = str(payload.get("scenario") or "").strip() or None
+    mid = str(payload.get("mission_id") or "").strip()
+    mission = mission_input.load(mid) if mid else mission_input.latest()
     if not weights:
-        mid = str(payload.get("mission_id") or "").strip()
-        mission = mission_input.load(mid) if mid else mission_input.latest()
         if mission and mission.get("cost_weights"):
             weights = mission["cost_weights"]
     try:
@@ -658,8 +696,14 @@ def pareto_recommend(payload: dict) -> dict:
         top_n = int(payload.get("top_n", 5))
     except (TypeError, ValueError):
         top_n = 5
+    # P3：仅当 GUI 显式录入约束时才启用硬筛选（缺省零漂移）
+    cons = None
+    if mission and mission.get("constraints_configured"):
+        cons = mission.get("constraints")
+    if payload.get("constraints") is not None:
+        cons = payload.get("constraints")
     return optimize_pareto.recommend(weights, cost_ceiling=ceiling,
-                                     scenario=scenario, top_n=top_n)
+                                     scenario=scenario, top_n=top_n, constraints=cons)
 
 
 def pareto_apply(payload: dict) -> dict:

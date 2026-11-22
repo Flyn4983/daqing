@@ -245,7 +245,7 @@
           <div class="r-kv"><span class="k">B 权威源</span><span class="v">维修时限、备件储备</span></div>
           <div class="r-kv"><span class="k">C 资源源</span><span class="v">人力/工具/工位/预算</span></div>
           <div class="r-kv"><span class="k">D 逻辑随机</span><span class="v">机会约束 P(·)≥1−α</span></div>
-          <div class="r-note warn">说明：三源分类是报告的设计方法；软件将资源/编制来源落到成本权重与档位边界，随机约束落到 200 次终审守卫（见模型四）。界面第三栏「功能对照」可查落点。</div>`, "text")}
+          <div class="r-note warn">落点：三源约束已在「保障全过程 → 录入」中做成 GUI 可设定的真实输入——资源现实源（抢修车/抢救车/器材车上限、维修人员上限、单组修理能力）、指挥权威源（抢修时限、后送时限、重点装备完好下限、上级命令原文、抢修优先规则）、战损物理源（本级最高可修等级）与软约束（风险预算）。硬约束违反阻断保存与方案生成，软约束仅告警；并派生为 Pareto 选优的资源硬筛选。寻优内核仍按 FEATURES 权威边界，权威 74 方案与四率数字不变。随机约束落到 200 次终审守卫（见模型四）。</div>`, "text")}
         ${card("74 解逐维约束校验", `
           <div class="r-big">${m.feasibility.violations} <span style="font-size:16px">项越界</span></div>
           <div class="r-kv"><span class="k">前沿解</span><span class="v">${m.feasibility.n_plans} 个</span></div>

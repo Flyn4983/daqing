@@ -46,6 +46,9 @@ _TEMPLATE_TEXT = """**编号：{{plan_id}}　　{{plan_name}}**
 （一）保障任务：确保任务期间装备完好率不低于 {{target_readiness}}，任务完成率不低于 {{target_success}}，战损装备抢救抢修及时率不低于 {{target_repair_timeliness}}。
 （二）保障原则：模块化编组、分级保障、靠前抢修、精准补给、留有余地。
 （三）保障企图：以 {{repair_teams}} 个抢修组、{{arv_count}} 台抢救车、{{supply_veh}} 台器材车编成保障群，配置于 {{support_area}}，对 M 级现地抢修、F 级拖救后送、K 级报废补充。
+（四）上级命令与约束：{{constraint_order}}。抢修优先规则：{{constraint_priority}}。
+（五）资源与能力约束：{{constraint_summary}}。{{constraint_deadline}}。
+（六）约束可行性校核：{{constraint_feasibility}}。
 
 **三、战损预计与保障需求测算**
 （一）战损预计：依据 {{n_runs}} 次蒙特卡洛推演，预计我方战毁 {{pred_k}} 台（战损率 {{pred_attrition}}）、机动受损 {{pred_m}} 台、火力受损 {{pred_f}} 台；战斗损伤率 {{pred_damage_rate}}，任务完成率 {{pred_success}}，完好率 {{pred_readiness}}。
@@ -263,6 +266,13 @@ def build_slots(
         "table_org": _table_org(ms),
         "map_deploy": "（部署要图：见平台三维态势视图，随方案导出）",
     }
+    # P3：真实业务约束槽位（确定性，来自 GUI 录入 + 校核，LLM 不得改写）
+    from . import constraints as constraints_mod
+    ccheck = constraints_mod.check_feasibility(mission, mission.get("constraints"), loss=loss)
+    cslots = constraints_mod.constraint_slots(mission.get("constraints"), ccheck)
+    slots.update(cslots)
+    slots["_constraint_check"] = ccheck  # 结构化校核结果随方案落盘（不进模板文本）
+
     slots.update({key: _NARRATIVE_FALLBACK[key] for key in _LLM_SLOTS})
     return slots
 
@@ -495,6 +505,7 @@ def generate(
     text = fill_template(read_template(template), slots)
     validation = validate_document(text, slots)
     provenance = build_provenance(slots, text)
+    constraint_check = slots.pop("_constraint_check", None)  # 不留在 slots 里污染槽位一致性
     return {
         "plan_id": slots["plan_id"],
         "mission_id": mission.get("mission_id", ""),
@@ -505,6 +516,7 @@ def generate(
         "llm": llm_meta,
         "validation": validation,
         "provenance": provenance,
+        "constraint_check": constraint_check,  # P3：约束校核结构化结果
         "generated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
     }
 

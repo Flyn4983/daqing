@@ -12,6 +12,9 @@
 （一）保障任务：确保任务期间装备完好率不低于 {{target_readiness}}，任务完成率不低于 {{target_success}}，战损装备抢救抢修及时率不低于 {{target_repair_timeliness}}。
 （二）保障原则：模块化编组、分级保障、靠前抢修、精准补给、留有余地。
 （三）保障企图：以 {{repair_teams}} 个抢修组、{{arv_count}} 台抢救车、{{supply_veh}} 台器材车编成保障群，配置于 {{support_area}}，对 M 级现地抢修、F 级拖救后送、K 级报废补充。
+（四）上级命令与约束：{{constraint_order}}。抢修优先规则：{{constraint_priority}}。
+（五）资源与能力约束：{{constraint_summary}}。{{constraint_deadline}}。
+（六）约束可行性校核：{{constraint_feasibility}}。
 
 **三、战损预计与保障需求测算**
 （一）战损预计：依据 {{n_runs}} 次蒙特卡洛推演，预计我方战毁 {{pred_k}} 台（战损率 {{pred_attrition}}）、机动受损 {{pred_m}} 台、火力受损 {{pred_f}} 台；战斗损伤率 {{pred_damage_rate}}，任务完成率 {{pred_success}}，完好率 {{pred_readiness}}。

@@ -195,6 +195,26 @@ def validate(payload: dict) -> tuple[dict, list[str]]:
             norm_cw[key] = round(norm_cw[key] / wsum, 3)
     p["cost_weights"] = norm_cw
 
+    # P3：真实业务约束（三源）——硬约束越界抛 ValueError 阻断保存；软约束告警
+    from . import constraints as constraints_mod
+    _explicit = isinstance(p.get("constraints"), dict) and bool(p.get("constraints"))
+    cn, cwarn = constraints_mod.validate(p.get("constraints"))
+    p["constraints"] = cn
+    p["constraints_configured"] = _explicit  # 零漂移：未显式录入约束的老存档不启用硬阻断校核
+    warnings.extend(cwarn)
+
+    # 硬约束交叉校核：录入的保障车辆数不得超过上级可用上限（阻断保存）
+    _cap_pairs = (("repair_veh", "repair_veh_cap", "装甲抢修车"),
+                  ("arv", "arv_cap", "装甲抢救车"),
+                  ("supply_veh", "supply_veh_cap", "器材补给车"))
+    _sv_counts = {v["key"]: int(v.get("count", 0) or 0) for v in norm_sv}
+    for _vk, _ck, _label in _cap_pairs:
+        if _sv_counts.get(_vk, 0) > int(cn[_ck]):
+            raise ValueError(
+                f"硬约束违反：{_label}录入 {_sv_counts[_vk]} 台，"
+                f"超过上级可用上限 {cn[_ck]} 台，请压减或申请增配"
+            )
+
     # 控制参数
     p["objective"] = [
         float((p.get("objective") or [9000, 5000])[0]),

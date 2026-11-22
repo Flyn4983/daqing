@@ -3,6 +3,10 @@
 (function () {
   'use strict';
   var $ = function (id) { return document.getElementById(id); };
+  // P3：7 旋钮中文名（Pareto 约束筛选说明用）
+  var KNOB_LABELS_P3 = { red_repair_teams: '抢修组', red_arv: '抢救车',
+    red_supply_veh: '器材车', carry_level: '携行档', operating_level: '运行档',
+    wave_interval_ticks: '波次节拍', wave_qty: '每波件数' };
   var CAT = null;
   var FORCES_DEFAULT = null;   // 想定默认双方编成（懒加载）
   var FORCE_SIDE = 'red';      // 当前编辑的方别 tab
@@ -123,6 +127,39 @@
              esc(cw.key) + '"></div>';
       });
       h += '<div class="sf-note">三项权重自动归一到 1；成本上限 0=不设限。仅用于方案评估展示，不进入仿真内核，四率权威数字不变。</div>';
+      h += '</div></details>';
+    }
+
+    // P3：真实业务约束（三源：资源现实/指挥权威/战损物理/软约束）
+    var cs = cat.constraint_spec || [];
+    if (cs.length) {
+      var srcNames = cat.constraint_sources || { resource:'资源现实源', command:'指挥权威源', physical:'战损物理源', soft:'软约束' };
+      h += '<details class="sf-group sf-constraints"><summary>真实约束与上级命令（三源 · 硬阻断/软告警）</summary><div class="sf-group-body">';
+      var lastSrc = null;
+      cs.forEach(function (c) {
+        if (c.source !== lastSrc) {
+          lastSrc = c.source;
+          var hard = c.hard ? '硬约束' : '软约束';
+          h += '<div class="sf-subtitle">【' + esc(srcNames[c.source] || c.source) + ' · ' + hard + '】</div>';
+        }
+        var input;
+        if (c.type === 'enum') {
+          input = '<select data-group="constraints" data-key="constraint" data-field="' + esc(c.key) + '">' +
+            (c.options || []).map(function (o) { return '<option' + (o === c.default ? ' selected' : '') + '>' + esc(o) + '</option>'; }).join('') + '</select>';
+        } else if (c.type === 'text') {
+          input = '<textarea rows="2" placeholder="' + esc(c.hint || '') + '" data-group="constraints" data-key="constraint" data-field="' + esc(c.key) + '"></textarea>';
+        } else {
+          var stepv = (c.type === 'int') ? 1 : 'any';
+          input = '<input type="number" min="' + c.min + '" max="' + c.max + '" step="' + stepv +
+                  '" value="' + c.default + '" data-group="constraints" data-key="constraint" data-field="' + esc(c.key) + '">';
+        }
+        h += '<div class="sf-row simple sf-constraint-row"><label title="' + esc(c.hint || '') + '">' + esc(c.name) +
+             (c.unit ? ' <span class="sf-unit">(' + esc(c.unit) + ')</span>' : '') +
+             (c.hard ? ' <span class="sf-hard">硬</span>' : ' <span class="sf-soft">软</span>') + '</label>' + input + '</div>';
+      });
+      h += '<div class="sf-constraint-actions"><button type="button" class="sf-btn mini" id="sf-ccheck">校核当前约束</button>' +
+           '<span class="sf-ccheck-hint">硬约束违反将阻断保存与方案生成；软约束仅提示</span></div>';
+      h += '<div id="sf-ccheck-result" class="sf-ccheck-result" hidden></div>';
       h += '</div></details>';
     }
 
@@ -368,6 +405,7 @@
     p.forces = collectForces();
     p.targets = {};
     p.cost_weights = {};
+    p.constraints = {};
     var meta = {};
     Array.prototype.forEach.call($('sf-form').querySelectorAll('[data-group]'), function (el) {
       var g = el.getAttribute('data-group'), k = el.getAttribute('data-key'),
@@ -375,6 +413,12 @@
       if (g === 'meta') { meta[f] = v; return; }
       if (g === 'targets') { p.targets[f] = v; return; }
       if (g === 'cost_weights') { p.cost_weights[f] = Number(v); return; }
+      if (g === 'constraints') {
+        var cel = $('sf-form').querySelector('[data-group="constraints"][data-field="' + f + '"]');
+        p.constraints[f] = (cel && cel.tagName === 'SELECT') ? v :
+                           (cel && cel.tagName === 'TEXTAREA') ? v : Number(v);
+        return;
+      }
       if (g === 'daily_ops') { p.daily_ops[k] = v; return; }
       if (['equipment', 'ammo', 'fuel', 'support_vehicles', 'resources'].indexOf(g) < 0) return;
       var arr = p[g], row = null;
@@ -408,6 +452,36 @@
     return p;
   }
 
+  /* ---------------- P3：真实约束校核 ---------------- */
+  function renderConstraintCheck(r) {
+    var box = $('sf-ccheck-result');
+    if (!box) return;
+    box.hidden = false;
+    if (r.error) { box.className = 'sf-ccheck-result fail'; box.textContent = '校核失败：' + r.error; return; }
+    var cls = r.overall === 'pass' ? 'pass' : (r.overall === 'warn' ? 'warn' : 'fail');
+    var label = r.overall === 'pass' ? '✓ 全部满足' : (r.overall === 'warn' ? '⚠ 有软约束提示' : '✗ 硬约束违反');
+    var h = '<div class="sf-cc-head ' + cls + '">' + label +
+            ' · 硬约束不满足 ' + (r.n_fail || 0) + ' 项 · 软约束提示 ' + (r.n_warn || 0) + ' 项</div>';
+    h += '<table class="sf-cc-table"><thead><tr><th>来源</th><th>约束</th><th>状态</th><th>说明</th></tr></thead><tbody>';
+    (r.items || []).forEach(function (it) {
+      var st = it.status === 'pass' ? '✓' : (it.status === 'warn' ? '⚠' : '✗');
+      h += '<tr class="cc-' + it.status + '"><td>' + esc(it.source_name || '') + '</td><td>' + esc(it.name) +
+           (it.hard ? ' <b>硬</b>' : '') + '</td><td>' + st + '</td><td>' + esc(it.message || '') + '</td></tr>';
+    });
+    h += '</tbody></table>';
+    if (r.constraint_note) h += '<div class="sf-cc-note">' + esc(r.constraint_note) + '</div>';
+    box.className = 'sf-ccheck-result ' + cls;
+    box.innerHTML = h;
+  }
+
+  function checkConstraints(withLoss) {
+    var payload = collectMission();
+    payload.constraints = payload.constraints || {};
+    payload.with_loss = !!withLoss;
+    post('/api/support/constraints/check', payload).then(renderConstraintCheck)
+      .catch(function (e) { renderConstraintCheck({ error: String(e) }); });
+  }
+
   /* ---------------- 保存 / 推演 / 方案 ---------------- */
   function saveMission() {
     var p = collectMission();
@@ -419,6 +493,7 @@
       setNode('deduce', 'ready');
       $('sf-job-hint').textContent = '录入已保存 · ' + r.mission_id;
       if (r.warnings && r.warnings.length) $('sf-job-hint').title = r.warnings.join('\n');
+      checkConstraints(false);  // P3：保存后自动校核约束（录入侧）
     });
   }
 
@@ -448,6 +523,10 @@
     // P2-5：成本权重回填
     Object.keys(m.cost_weights || {}).forEach(function (f) {
       setVal('cost_weights', 'cost', f, m.cost_weights[f]);
+    });
+    // P3：真实约束回填
+    Object.keys(m.constraints || {}).forEach(function (f) {
+      setVal('constraints', 'constraint', f, m.constraints[f]);
     });
     ['equipment', 'ammo', 'fuel', 'support_vehicles', 'resources'].forEach(function (g) {
       (m[g] || []).forEach(function (r) {
@@ -1132,6 +1211,16 @@
     h += '</div>';
     h += '<div class="sf-pareto-formula">' + esc(r.formula || '') + '</div>';
     h += '<div class="sf-pareto-caveat">' + esc(r.budget_limit_note || '') + '</div>';
+    // P3：真实约束硬筛选说明（若启用）
+    if (r.constraint_bounds && Object.keys(r.constraint_bounds).length) {
+      var bnd = Object.keys(r.constraint_bounds).map(function (k) {
+        return esc(KNOB_LABELS_P3[k] || k) + '≤' + r.constraint_bounds[k];
+      }).join('；');
+      h += '<div class="sf-pareto-constraint"><b>已按 GUI 真实约束筛选</b>：' + bnd +
+           ' · 剔除超编方案 <b>' + (r.n_constraint_filtered || 0) + '</b> 个 · 剩余候选 <b>' +
+           (r.n_candidates != null ? r.n_candidates : '—') + '</b> 个' +
+           '<div class="sf-pareto-caveat">' + esc(r.constraint_note || '') + '</div></div>';
+    }
 
     // 锚点对照
     var anchors = r.anchors || {};
@@ -1483,7 +1572,15 @@
     post('/api/support/plan', { mission_id: ST.missionId, loss_id: ST.lossId,
                                  template: tpl, use_llm: useLlm,
                                  llm_params: collectLlmParams() }).then(function (r) {
-      if (r.error) { setNode('plan', 'error'); alert(r.error); return; }
+      if (r.error) {
+        setNode('plan', 'error');
+        if (r.constraint_check) {
+          renderConstraintCheck(r.constraint_check);  // P3：展示硬阻断详情
+          var box = $('sf-ccheck-result'); if (box) box.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          alert(r.error + '\n违反：' + (r.blocking || []).join('、') + '\n详见约束校核表。');
+        } else alert(r.error);
+        return;
+      }
       $('sf-recon-detail').hidden = true;
       applyPlan(r.plan);
       var v = r.plan.validation || {};
@@ -1724,6 +1821,7 @@
       if (tab) { switchForceSide(tab.getAttribute('data-side')); return; }
       if (e.target.id === 'sf-forces-load') { loadForcesDefault(); return; }
       if (e.target.id === 'sf-forces-clear') { clearForces(); return; }
+      if (e.target.id === 'sf-ccheck') { checkConstraints(false); return; }
     });
     $('sf-form').addEventListener('change', function (e) {
       if (e.target && e.target.id === 'sf-forces-enable') updateForcesSummary();
