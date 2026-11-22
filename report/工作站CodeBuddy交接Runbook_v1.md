@@ -69,9 +69,24 @@ ss -ltnp 2>/dev/null | grep -E ':8000|:8080|:11434|:1234' || echo "未见常见L
 
 ### 步骤 1：拉取代码
 
+> **前置（2FA 必读）**：GitHub 已对 Flyn4983 账号强制启用双因素认证（2FA，截止 2026-11-24）。
+> 自 2021-08 起 GitHub **已禁用"账号+密码"做 git 认证**，开启 2FA 后更是如此——用密码 clone/pull
+> 一律返回 `Authentication failed`。因此工作站**必须用个人访问令牌（PAT）或 SSH key**，二选一：
+>
+> - **方式 A · PAT（推荐，与本机一致）**：在本机 GitHub → Settings → Developer settings →
+>   Personal access tokens → Tokens (classic) → Generate new token，勾选 `repo` 权限生成，
+>   然后把 token 交给工作站 CodeBuddy；clone 时用户名填 `Flyn4983`、密码处**粘贴 token**（不是账号密码）。
+>   可让工作站用 `git config --global credential.helper store` 免重复输入（token 明文落 `~/.git-credentials`，
+>   仅限工作站私有目录、权限设 600）。
+> - **方式 B · SSH key**：工作站 `ssh-keygen -t ed25519`，把公钥加到 GitHub → Settings → SSH and GPG keys，
+>   然后改用 `git clone git@github.com:Flyn4983/daqing.git`（仓库 remote 需相应改成 SSH URL）。
+>
+> 2FA **不影响**已生效的 PAT / SSH key 做 git 操作；它只影响网页登录（登录网页需额外验证码）。
+> 本机已确认用 HTTPS + 凭据管理器中的 PAT，push 不受影响。
+
 ```bash
 cd ~
-# 首次
+# 首次（HTTPS + PAT；若用 SSH key 则改为 git@github.com:Flyn4983/daqing.git）
 git clone https://github.com/Flyn4983/daqing.git
 cd daqing
 # 已 clone 过
@@ -207,6 +222,8 @@ curl -s -o /dev/null -w "loss/template: %{http_code}\n" http://127.0.0.1:8848/ap
 | 现象 | 可能原因 | 处理 |
 |---|---|---|
 | `git pull` 报 CONNECT/SSL 错误 | 工作站网络/代理 | 确认 `git config --get http.proxy`；公司网需配代理或走 SSH |
+| `git clone/pull` 报 `Authentication failed` | 用了账号密码（2FA 后已被禁） | 改用 PAT（用户名 Flyn4983、密码处粘贴 token）或 SSH key，见步骤 1 前置 |
+| 网页登录提示 2FA / 需验证码 | 账号强制 2FA（截止 2026-11-24） | 在 GitHub 网页 Settings 启用验证器/短信 2FA；git 操作用 PAT 不受影响 |
 | `pip install` 某包源码编译失败 | 缺编译工具 | `sudo apt install -y build-essential gfortran libgdal-dev` 后重试 |
 | 启动报端口占用 | 8848 被占 | `ss -ltnp \| grep 8848` 找进程；或换 `--port 8849` |
 | 方案叙述是模板默认文字 | 模型 ID 填错 / 服务未起 / mode=auto 降级 | 核对 `/v1/models` 真实 ID；确认端口；临时设 `mode=real` 看报错 |
