@@ -7,7 +7,7 @@
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath d='M16 2l12 4v9c0 8-5.5 13-12 15C9.5 28 4 23 4 15V6z' fill='%231d6fae'/%3E%3Cpath d='M11 16l4 4 7-8' fill='none' stroke='%237ff0d2' stroke-width='2.5'/%3E%3C/svg%3E">
 <link rel="stylesheet" href="/static/css/base.css?v=c8d4">
 <link rel="stylesheet" href="/static/css/dash.css?v=c930">
-<link rel="stylesheet" href="/static/css/support_flow.css?v=p2b">
+<link rel="stylesheet" href="/static/css/support_flow.css?v=p2c">
 </head>
 <body>
 
@@ -281,6 +281,14 @@
         <button class="sf-btn primary" id="sf-deduce">▶ 开始多次推演</button>
         <button class="sf-btn" id="sf-export-loss" title="导出 CSV">↓ 清单</button>
       </div>
+      <div class="sf-import-bar" id="sf-import-bar">
+        <span class="sf-import-label">战损清单来源：</span>
+        <span class="sf-src-tag" id="sf-src-tag" title="当前战损清单的来源">—</span>
+        <button class="sf-btn mini" id="sf-loss-tpl" title="下载基层填报用 Word 战损清单模板">↓ 上报模板</button>
+        <button class="sf-btn mini" id="sf-loss-import" title="上传人工填报的 Word 战损清单，自动生成抢修方案">↑ 上传Word清单</button>
+        <input type="file" id="sf-loss-file" accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document" hidden>
+        <div class="sf-import-msg" id="sf-import-msg" hidden></div>
+      </div>
       <div class="sf-llm-adv" id="sf-llm-adv">
         <span class="sf-adv-toggle" id="sf-adv-toggle">⚙ LLM 高级参数（27B CPU 调优）▾</span>
         <div class="sf-adv-body" id="sf-adv-body" hidden></div>
@@ -311,6 +319,7 @@
       <div class="sf-run-bar">
         <select id="sf-template" class="sf-select"></select>
         <button class="sf-btn primary" id="sf-gen-plan">生成保障方案</button>
+        <button class="sf-btn repair" id="sf-gen-repair" title="按抢修模板生成抢修方案（仿真/Word清单均可，本地大模型只写叙述）">⚒ 生成抢修方案</button>
         <button class="sf-btn" id="sf-export-plan" title="导出 Markdown">↓ MD</button>
         <button class="sf-btn" id="sf-export-docx" title="导出公文式 Word">↓ Word</button>
       </div>
@@ -775,6 +784,6 @@
 <script src="/static/js/research.js?v=c926"></script>
 <script src="/static/js/insight.js?v=c922"></script>
 <script src="/static/js/main.js?v=c930"></script>
-<script src="/static/js/support_flow.js?v=p2b"></script>
+<script src="/static/js/support_flow.js?v=p2c"></script>
 </body>
 </html>

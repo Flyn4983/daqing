@@ -466,8 +466,22 @@ def load(lid: str) -> dict | None:
 
 
 def latest() -> dict | None:
+    """最近一次**仿真推演**清单。
+
+    人工填报 Word 清单（source=manual_docx）虽落在同一 store，但不代表"最近推演"，
+    跳过它们以免污染按 latest() 取仿真结果的既有链路（如 P1 对账明细）。
+    人工清单始终可通过 loss_id 精确读取（load()）。
+    """
     files = sorted(_STORE.glob("loss_*.json"), key=lambda x: x.stat().st_mtime, reverse=True)
-    return json.loads(files[0].read_text(encoding="utf-8")) if files else None
+    for f in files:
+        try:
+            d = json.loads(f.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        if d.get("source") == "manual_docx":
+            continue
+        return d
+    return None
 
 
 def parts_needed(loss: dict) -> dict[str, int]:

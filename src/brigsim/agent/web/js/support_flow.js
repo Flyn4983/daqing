@@ -520,6 +520,7 @@
       if (!r.loss) { $('sf-loss-table').innerHTML = '<div class="sf-empty">无战损清单</div>'; return; }
       ST.loss = r.loss; ST.lossPage = 0; ST.lossFilter = {};
       if (r.loss.base_seed != null && $('sf-seed')) $('sf-seed').value = r.loss.base_seed;
+      labelLossSource(r.loss);
       renderMetrics();
       renderLossTab();
       setNode('plan', 'ready');
@@ -1390,6 +1391,89 @@
     $('sf-panel-timeline').innerHTML = h;
   }
 
+  /* ---- 人工 Word 战损清单导入 + 抢修方案 ---- */
+  function b64ToBlob(b64, mime) {
+    var bin = atob(b64), bytes = new Uint8Array(bin.length);
+    for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    return new Blob([bytes], { type: mime });
+  }
+  function saveBlob(blob, filename) {
+    var a = document.createElement('a');
+    a.href = URL.createObjectURL(blob); a.download = filename;
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    setTimeout(function () { URL.revokeObjectURL(a.href); }, 1000);
+  }
+  function downloadLossTemplate() {
+    api('/api/support/loss/template').then(function (r) {
+      if (r.error) { alert(r.error); return; }
+      saveBlob(b64ToBlob(r.content_b64, 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'), r.filename);
+      var m = $('sf-import-msg');
+      if (m) { m.hidden = false; m.className = 'sf-import-msg ok'; m.textContent = '已下载上报模板，按表头填写真实战损（删除示例行）后上传。'; }
+    });
+  }
+  function importLossDocx(file) {
+    if (!file) return;
+    var msg = $('sf-import-msg');
+    if (msg) { msg.hidden = false; msg.className = 'sf-import-msg'; msg.textContent = '正在解析 ' + file.name + ' …'; }
+    var reader = new FileReader();
+    reader.onload = function (ev) {
+      var b64 = String(ev.target.result).split(',')[1] || '';
+      post('/api/support/loss/import', {
+        content_b64: b64,
+        roster_size: Number(($('sf-form').querySelector('[data-group="targets"] [data-field="roster_hint"]') || {}).value || 0) || 0,
+        note: '人工填报：' + file.name
+      }).then(function (r) {
+        if (r.error) { if (msg) { msg.className = 'sf-import-msg err'; msg.textContent = '导入失败：' + r.error; } return; }
+        // 复用清单载入路径（loadLoss 内部会标注来源、渲染表格与指标）
+        ST.lossId = r.loss_id;
+        loadLoss(r.loss_id);
+        var tag = $('sf-src-tag');
+        if (tag) { tag.textContent = '人工填报 Word（' + r.n_items + ' 条）'; tag.className = 'sf-src-tag manual'; }
+        if (msg) {
+          msg.className = 'sf-import-msg ok';
+          msg.textContent = '✓ 已导入 ' + r.n_items + ' 条战损记录（' +
+            (r.summary && r.summary.by_grade ? Object.keys(r.summary.by_grade).map(function (g) { return g + ':' + r.summary.by_grade[g]; }).join(' ') : '') +
+            '）。可点右栏「⚒ 生成抢修方案」。';
+          if ((r.warnings || []).length) msg.textContent += ' 注意：' + r.warnings.join('；');
+        }
+        if (typeof setNode === 'function') setNode('loss', 'done');
+      });
+    };
+    reader.onerror = function () { if (msg) { msg.className = 'sf-import-msg err'; msg.textContent = '文件读取失败'; } };
+    reader.readAsDataURL(file);
+  }
+  function labelLossSource(loss) {
+    var tag = $('sf-src-tag');
+    if (!tag || !loss) return;
+    var src = String(loss.source || '');
+    if (src === 'manual_docx') { tag.textContent = '人工填报 Word'; tag.className = 'sf-src-tag manual'; }
+    else if (src === 'estimate') { tag.textContent = '仿真汇总估算'; tag.className = 'sf-src-tag sim'; }
+    else { tag.textContent = src ? ('仿真事件流（' + src + '）') : '仿真推演'; tag.className = 'sf-src-tag sim'; }
+  }
+  function genRepairPlan() {
+    if (!ST.lossId) { alert('请先完成多次推演或上传 Word 战损清单'); return; }
+    var useLlm = $('sf-use-llm').checked;
+    setNode('plan', 'running'); setNode('review', 'idle');
+    $('sf-plan-hint').textContent = '正在生成抢修方案（本地大模型只写叙述）…';
+    post('/api/support/repair-plan', {
+      mission_id: ST.missionId, loss_id: ST.lossId, use_llm: useLlm,
+      llm_params: collectLlmParams(), template: 'repair_plan_v1.md'
+    }).then(function (r) {
+      if (r.error) { setNode('plan', 'error'); alert(r.error); return; }
+      $('sf-recon-detail').hidden = true;
+      applyPlan(r.plan);
+      var v = r.plan.validation || {};
+      $('sf-check').innerHTML = '【抢修方案 · 来源：' + esc(r.loss_source || '战损清单') + '】' +
+        (v.passed
+          ? ' ✓ 数字一致性复核通过：' + v.checked_numeric_slots + ' 个数值槽位来自清单/录入，叙述无编造数字'
+          : ' ✗ 复核未通过：未替换槽位 ' + (v.unfilled_slots || []).length +
+            ' / 叙述含数字 ' + (v.fabricated_numbers || []).length +
+            ' / 关键数字缺失 ' + (v.absent_key_numbers || []).length);
+      var note = $('sf-plan-doc').querySelector('.sf-llm-note');
+      if (note) note.innerHTML += ' · 抢修方案 · 模型 ' + esc((r.plan.llm && r.plan.llm.model) || '本地 Qwen3.8-27B');
+    });
+  }
+
   function genPlan() {
     if (!ST.lossId) { alert('请先完成多次推演生成战损清单'); return; }
     var useLlm = $('sf-use-llm').checked;
@@ -1588,7 +1672,13 @@
     var load = $('sf-load'); if (load) load.addEventListener('click', loadMission);
     var ded = $('sf-deduce'); if (ded) ded.addEventListener('click', deduce);
     var gp = $('sf-gen-plan'); if (gp) gp.addEventListener('click', genPlan);
+    var gr = $('sf-gen-repair'); if (gr) gr.addEventListener('click', genRepairPlan);
     var el = $('sf-export-loss'); if (el) el.addEventListener('click', function () { download('loss'); });
+    var ltp = $('sf-loss-tpl'); if (ltp) ltp.addEventListener('click', downloadLossTemplate);
+    var imp = $('sf-loss-import'); if (imp) imp.addEventListener('click', function () { $('sf-loss-file').click(); });
+    var lf = $('sf-loss-file'); if (lf) lf.addEventListener('change', function (e) {
+      importLossDocx(e.target.files && e.target.files[0]); e.target.value = '';
+    });
     var ep = $('sf-export-plan'); if (ep) ep.addEventListener('click', function () { download('plan'); });
     var ed = $('sf-export-docx'); if (ed) ed.addEventListener('click', function () { download('docx'); });
     // P1 新增交互

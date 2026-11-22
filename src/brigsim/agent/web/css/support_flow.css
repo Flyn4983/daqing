@@ -465,6 +465,30 @@
 .sf-pareto-note-body b { color: #7dd3fc; }
 .sf-pareto-note-meta { font-size: 9px; color: #6f8aa8; margin-top: 4px; }
 
+/* ---- 人工 Word 战损清单导入 + 抢修方案 ---- */
+.sf-import-bar {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 5px;
+  padding: 6px 10px; margin: 0 0 4px;
+  background: rgba(14,165,233,.07);
+  border: 1px solid rgba(56,189,248,.20); border-radius: 5px;
+}
+.sf-import-label { font-size: 10px; color: #7dd3fc; }
+.sf-src-tag {
+  font-size: 10px; font-weight: bold; padding: 1px 6px; border-radius: 3px;
+  color: #93c5fd; background: rgba(59,130,246,.16); border: 1px solid rgba(96,165,250,.28);
+}
+.sf-src-tag.manual { color: #fcd34d; background: rgba(245,158,11,.15); border-color: rgba(251,191,36,.3); }
+.sf-import-msg {
+  flex-basis: 100%; font-size: 10px; line-height: 1.5; color: #cbd5e1; margin-top: 3px;
+}
+.sf-import-msg.ok { color: #6ee7b7; }
+.sf-import-msg.err { color: #fca5a5; }
+.sf-btn.repair {
+  background: linear-gradient(135deg, rgba(245,158,11,.28), rgba(217,119,6,.18));
+  border-color: rgba(251,191,36,.5); color: #fde68a;
+}
+.sf-btn.repair:hover { background: rgba(245,158,11,.35); }
+
 @media (max-width: 1200px) {
   .sf-col-input { flex-basis: 250px; }
   .sf-col-plan { flex-basis: 360px; }

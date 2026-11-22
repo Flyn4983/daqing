@@ -26,7 +26,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from . import battle_loss, force_config, mission_input, optimize_pareto, plan as plan_mod
+from . import battle_loss, force_config, loss_import, mission_input, optimize_pareto, plan as plan_mod, repair_plan
 from .catalog import (CATALOG, PROCESS_NODES, SLOT_DICT, METRIC_GLOSSARY, LLM_PARAM_SPEC,
                       LOSS_FIELD_DICT, COST_WEIGHT_SPEC, REVIEW_STATES, REVIEW_ACTIONS)
 
@@ -701,3 +701,75 @@ def pareto_apply(payload: dict) -> dict:
     plan["plan_id"] = new_id
     return {"plan_id": new_id, "pareto_selection": plan["pareto_selection"],
             "note": "选优参数已作为附节写入新方案（另存），数字槽位与权威指标未改"}
+
+
+# ================= 抢修方案 / 人工 Word 战损清单导入 =================
+
+def loss_template_docx() -> dict:
+    """返回基层填报用《战损清单上报模板.docx》的 base64（前端 Blob 下载）。"""
+    import base64
+    data = loss_import.build_report_template_docx()
+    return {
+        "filename": loss_import.MANUAL_DOCX_TEMPLATE,
+        "content_b64": base64.b64encode(data).decode("ascii"),
+        "format": "docx",
+        "size": len(data),
+        "note": "按表头填写真实战损（示例行请删除），上传后自动生成抢修方案",
+    }
+
+
+def loss_import_docx(payload: dict) -> dict:
+    """解析人工上传的 Word 战损清单 → 落盘为内部清单（source=manual_docx）。
+
+    payload:
+        content_b64 / content: Word base64（或 data URL）；
+        roster_size: 参战总数（可选，缺省 0 → 不臆造战损率分母）；
+        note: 填报说明。
+    """
+    raw = payload.get("content_b64") or payload.get("content") or ""
+    if not raw:
+        return {"error": "缺少 Word 内容（content_b64）"}
+    roster_size = 0
+    try:
+        roster_size = int(payload.get("roster_size", 0) or 0)
+    except (TypeError, ValueError):
+        return {"error": "roster_size 必须是整数"}
+    try:
+        loss = loss_import.parse_loss_docx(
+            raw, roster_size=roster_size, note=str(payload.get("note") or ""))
+    except (ValueError, RuntimeError) as exc:
+        return {"error": str(exc)}
+    lid = loss_import.save_imported(loss)
+    loss["loss_id"] = lid
+    return {
+        "loss_id": lid,
+        "source": loss["source"],
+        "n_items": len(loss["items"]),
+        "summary": loss["summary"],
+        "warnings": loss.get("warnings", []),
+        "items": loss["items"],
+        "note": loss["note"],
+    }
+
+
+def repair_plan_generate(payload: dict) -> dict:
+    """抢修方案生成：仿真清单 / 人工 Word 清单同构接入，LLM 只写叙述。"""
+    mid = str(payload.get("mission_id") or "").strip()
+    lid = str(payload.get("loss_id") or "").strip()
+    mission = mission_input.load(mid) if mid else mission_input.latest()
+    loss = battle_loss.load(lid) if lid else battle_loss.latest()
+    if mission is None or loss is None:
+        return {"error": "需要已录入的任务与战损清单（仿真或人工导入均可）"}
+    llm_params = payload.get("llm_params") or {}
+    if not isinstance(llm_params, dict):
+        llm_params = {}
+    result = repair_plan.generate(
+        mission, loss,
+        rates=loss.get("rates"), metrics=loss.get("metrics"),
+        scenario_info=loss.get("scenario_info") or _scenario_info(mission.get("base_scenario", "")),
+        use_llm=bool(payload.get("use_llm", True)),
+        llm_params=llm_params,
+        template=str(payload.get("template") or repair_plan.DEFAULT_REPAIR_TEMPLATE),
+    )
+    result["plan_id"] = plan_mod.save(result)
+    return {"plan": result, "loss_source": result["loss_source"]}
