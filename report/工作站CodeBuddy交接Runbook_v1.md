@@ -196,7 +196,8 @@ curl -s -o /dev/null -w "loss/template: %{http_code}\n" http://127.0.0.1:8848/ap
 | POST | `/api/support/loss/import` | 上传 Word（`content_b64`），返回 `loss_id`+解析摘要+warnings |
 | POST | `/api/support/repair-plan` | 抢修方案生成（`mission_id`/`loss_id`/`use_llm`/`llm_params`） |
 | GET/POST | `/api/support/loss`、`/api/support/plan` | 读取清单/方案（既有） |
-| GET | `/api/support/pareto/recommend` | 成本约束 Pareto 选优（只读 74 方案） |
+| GET | `/api/support/pareto/recommend` | 成本约束 Pareto 选优（只读 74 方案；GUI 显式录入约束时自动按资源上限硬筛选） |
+| GET/POST | `/api/support/constraints/check` | P3 真实业务约束校核（三源/硬阻断软告警；纯派生不进内核） |
 
 ---
 
@@ -219,6 +220,8 @@ curl -s -o /dev/null -w "loss/template: %{http_code}\n" http://127.0.0.1:8848/ap
 
 | commit | 内容 |
 |---|---|
+| `1db66b8` | P3 真实业务约束 GUI 录入与校核（三源约束/硬阻断软告警/选优硬筛选；权威数字不变） |
+| `31de992` | 新增工作站 CodeBuddy 交接 Runbook |
 | `e55ea15` | 人工 Word 战损清单导入 + 抢修方案生成 + GitHub→ARM 部署链路 |
 | `0056d21` | 成本约束 Pareto 选优（P2 边界补齐） |
 | `7517c2f` | 作战保障全过程 P0-P2 + 双方实力 GUI + ARM 适配 |
