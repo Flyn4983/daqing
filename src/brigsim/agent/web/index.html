@@ -7,7 +7,7 @@
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath d='M16 2l12 4v9c0 8-5.5 13-12 15C9.5 28 4 23 4 15V6z' fill='%231d6fae'/%3E%3Cpath d='M11 16l4 4 7-8' fill='none' stroke='%237ff0d2' stroke-width='2.5'/%3E%3C/svg%3E">
 <link rel="stylesheet" href="/static/css/base.css?v=c8d4">
 <link rel="stylesheet" href="/static/css/dash.css?v=c930">
-<link rel="stylesheet" href="/static/css/support_flow.css?v=p2a">
+<link rel="stylesheet" href="/static/css/support_flow.css?v=p2b">
 </head>
 <body>
 
@@ -324,8 +324,10 @@
         <button class="sf-btn mini" id="sf-archive" title="P1-8：作业档案列表">档案</button>
         <button class="sf-btn mini" id="sf-plan-compare" title="P2-2：多方案版本对比（槽位差异+正文diff）">版本对比</button>
         <button class="sf-btn mini" id="sf-deploy-view" title="P2-6：保障力量编组与部署示意图">部署示意</button>
+        <button class="sf-btn mini" id="sf-pareto-pick" title="成本约束 Pareto 选优：用录入的三维权重在74方案前沿内反推最优保障参数">成本选优</button>
         <button class="sf-btn mini" id="sf-data-dict" title="P2-4：字段/指标口径/槽位字典">数据字典</button>
       </div>
+      <div class="sf-pareto-note" id="sf-pareto-note" hidden></div>
       <div class="sf-narr-editor" id="sf-narr-editor" hidden></div>
       <div class="sf-prov-tip">点方案中带虚线的数字可查看数据溯源（来源/定义/取值）</div>
       <div class="sf-prov-pop" id="sf-prov-pop" hidden></div>
@@ -368,6 +370,12 @@
     <div class="sf-modal-box">
       <div class="sf-modal-head"><b>保障力量编组与部署示意（P2-6）</b><button class="sf-modal-x" data-modal="sf-modal-deploy">×</button></div>
       <div class="sf-modal-body" id="sf-modal-deploy-body"></div>
+    </div>
+  </div>
+  <div class="sf-modal" id="sf-modal-pareto" hidden>
+    <div class="sf-modal-box sf-modal-wide">
+      <div class="sf-modal-head"><b>成本约束 Pareto 选优：给定成本约束 → 反推最优保障参数</b><button class="sf-modal-x" data-modal="sf-modal-pareto">×</button></div>
+      <div class="sf-modal-body" id="sf-modal-pareto-body"></div>
     </div>
   </div>
   <div class="sf-focus-card" id="sf-focus-card" hidden></div>
@@ -767,6 +775,6 @@
 <script src="/static/js/research.js?v=c926"></script>
 <script src="/static/js/insight.js?v=c922"></script>
 <script src="/static/js/main.js?v=c930"></script>
-<script src="/static/js/support_flow.js?v=p2a"></script>
+<script src="/static/js/support_flow.js?v=p2b"></script>
 </body>
 </html>

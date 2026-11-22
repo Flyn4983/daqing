@@ -820,6 +820,7 @@
     annotateNumbersIn($('sf-plan-doc'));
     $('sf-plan-hint').textContent = '方案 ' + p.plan_id;
     if (typeof renderReview === 'function') renderReview(p);  // P2-3 签批状态条
+    renderParetoSelection(p);  // 成本约束 Pareto 选优附节
   }
 
   /* ---- P1-1：模板槽位映射可视化 ---- */
@@ -1043,6 +1044,165 @@
   }
 
   /* ---- P2-6：保障力量编组部署示意（纯 SVG 展示，不改 3D）---- */
+  /* ---- 成本约束 Pareto 选优：给定成本约束→反推最优保障参数（只读派生）---- */
+  var PARETO = null;  // 最近一次选优结果
+
+  function renderParetoSelection(p) {
+    var box = $('sf-pareto-note');
+    if (!box) return;
+    var sel = p && p.pareto_selection;
+    if (!sel || !sel.decision) { box.hidden = true; box.innerHTML = ''; return; }
+    box.hidden = false;
+    var d = sel.decision, w = sel.effective_weights || {};
+    var dec = [['前沿抢修组', d.red_repair_teams, '组'], ['装甲抢救车', d.red_arv, '辆'],
+               ['器材补给车', d.red_supply_veh, '辆'], ['携行档基数', d.carry_level, '档'],
+               ['运行档基数', d.operating_level, '档'], ['前送波次间隔', d.wave_interval_ticks, 'tick'],
+               ['每波每部件', d.wave_qty, '件']];
+    var h = '<div class="sf-pareto-note-head">◆ 成本约束选优附节（既有 Pareto 前沿内按偏好反推，非新权威数字）</div>';
+    h += '<div class="sf-pareto-note-body">推荐参数：' + dec.map(function (x) {
+      return esc(x[0]) + ' <b>' + esc(x[1]) + '</b>' + x[2];
+    }).join(' · ') + '</div>';
+    h += '<div class="sf-pareto-note-meta">评分 ' + esc(sel.score) +
+         ' · 权重 战损' + esc(w.attrition_weight) + '/时效' + esc(w.time_weight) + '/成本' + esc(w.cost_weight) +
+         ' · 来源 ' + esc(sel.source || 'pareto.json') + ' · ' + esc(sel.selected_at || '') + '</div>';
+    box.innerHTML = h;
+  }
+
+  function paretoQuery() {
+    // 从当前录入取成本权重（若已渲染表单），否则交给后端回退到最近录入
+    var weights = null;
+    var form = $('sf-form');
+    if (form) {
+      var w = {};
+      var ok = 0;
+      ['attrition_weight', 'time_weight', 'cost_weight'].forEach(function (f) {
+        var el = form.querySelector('[data-group="cost_weights"][data-field="' + f + '"]');
+        if (el && el.value !== '') { w[f] = Number(el.value); ok++; }
+      });
+      if (ok === 3) weights = w;
+    }
+    var mid = ST.missionId || undefined;
+    var scen = form && form.querySelector('[data-group="meta"][data-field="base_scenario"]');
+    var q = { top_n: 8 };
+    if (weights) q.weights = weights;
+    if (mid) q.mission_id = mid;
+    if (scen && scen.value) q.scenario = scen.value;
+    return q;
+  }
+
+  function openParetoPick() {
+    var box = $('sf-modal-pareto');
+    box.hidden = false;
+    var body = $('sf-modal-pareto-body');
+    body.innerHTML = '<div class="sf-empty">正在读取 Pareto 前沿并按录入权重评分…</div>';
+    var q = paretoQuery();
+    // 保留上次输入的上限
+    if (PARETO && PARETO._ceilingInput != null) q.cost_ceiling = PARETO._ceilingInput;
+    api('/api/support/pareto/recommend?' + new URLSearchParams({
+      top_n: String(q.top_n || 8),
+      mission_id: q.mission_id || '',
+      scenario: q.scenario || ''
+    })).then(function (r) {
+      if (r.error) { body.innerHTML = '<div class="sf-empty bad">' + esc(r.error) + '</div>'; return; }
+      PARETO = r;
+      if (q.cost_ceiling != null) PARETO._ceilingInput = q.cost_ceiling;
+      renderParetoModal(r);
+    });
+  }
+
+  function renderParetoModal(r) {
+    var body = $('sf-modal-pareto-body');
+    var eff = r.effective_weights || {};
+    var ce = r.cost_ceiling;
+    var h = '<div class="sf-pareto-lead">在既有 <b>' + r.n_plans + '</b> 个 Pareto 方案内，按你录入的权重反推最优保障参数；' +
+            '不给新仿真、不改权威数字。' + esc(r.note || '') + '</div>';
+
+    // 权重与硬约束输入区
+    h += '<div class="sf-pareto-ctrl">';
+    h += '<span class="sf-pareto-ctrl-title">评分权重（自动归一）</span> ';
+    [['attrition_weight', '战损', eff.attrition_weight], ['time_weight', '时效', eff.time_weight],
+     ['cost_weight', '成本', eff.cost_weight]].forEach(function (x) {
+      h += '<span class="sf-pareto-w">' + x[1] + ' <b>' + esc(x[2]) + '</b></span>';
+    });
+    h += '<label class="sf-pareto-ce">成本上限(归一化 0-1，0=不限) ' +
+         '<input type="number" id="sf-pareto-ceiling" min="0" max="1" step="0.01" value="' +
+         (ce != null ? ce : '') + '" placeholder="不设限"></label>';
+    h += '<button class="sf-btn mini" id="sf-pareto-apply-ce">应用上限</button>';
+    h += '</div>';
+    h += '<div class="sf-pareto-formula">' + esc(r.formula || '') + '</div>';
+    h += '<div class="sf-pareto-caveat">' + esc(r.budget_limit_note || '') + '</div>';
+
+    // 锚点对照
+    var anchors = r.anchors || {};
+    h += '<div class="sf-pareto-anchor-title">锚点方案对照（同权重下的评分）</div><div class="sf-pareto-anchors">';
+    Object.keys(anchors).forEach(function (k) {
+      var a = anchors[k];
+      h += '<div class="sf-pareto-anchor"><span class="sf-pareto-anchor-name">' + esc(a.label) + '</span>' +
+           '<span class="sf-pareto-anchor-score">评分 ' + esc(a.score) + '</span>' +
+           '<span class="sf-pareto-anchor-meta">成本 ' + esc(a.cost) + ' · 战损 ' + esc(a.attrition_red) + '</span></div>';
+    });
+    h += '</div>';
+
+    // Top-N 表格
+    h += '<div class="sf-pareto-top-title">推荐方案 Top ' + (r.ranked || []).length +
+         '（n_candidates=' + r.n_candidates + '，已按上限过滤 ' + r.n_filtered + ' 个）</div>';
+    h += '<table class="sf-table sf-pareto-table"><thead><tr>' +
+         '<th>#</th><th>评分</th><th>战损</th><th>完好率</th><th>成本</th><th>方案编号</th><th>7维保障参数</th><th>操作</th>' +
+         '</tr></thead><tbody>';
+    (r.ranked || []).forEach(function (p, i) {
+      var dec = [p.red_repair_teams, p.red_arv, p.red_supply_veh, p.carry_level,
+                 p.operating_level, p.wave_interval_ticks, p.wave_qty].join('/');
+      var cls = i === 0 ? 'sf-pareto-best' : '';
+      h += '<tr class="' + cls + '"><td>' + (i + 1) + '</td><td><b>' + esc(p._score) + '</b></td>' +
+           '<td>' + esc(p.attrition_red) + '</td><td>' + esc(p.readiness_red) + '</td>' +
+           '<td>' + esc(p.cost) + '</td><td><code>' + esc(p.rank_tag || ('#' + p._idx)) + '</code></td>' +
+           '<td class="sf-pareto-dec">' + esc(dec) + '</td>' +
+           '<td><button class="sf-btn mini sf-pareto-adopt" data-idx="' + i + '">采用</button></td></tr>';
+    });
+    h += '</tbody></table>';
+    h += '<div class="sf-pareto-foot">来源：<code>' + esc(r.source) + '</code> · ' +
+         '采用后另存为新方案附节，不覆盖原稿、不改数值槽位。</div>';
+    body.innerHTML = h;
+
+    // 事件：应用上限
+    var applyCe = $('sf-pareto-apply-ce');
+    if (applyCe) applyCe.addEventListener('click', function () {
+      var v = $('sf-pareto-ceiling').value;
+      PARETO._ceilingInput = (v === '' ? null : Number(v));
+      var q = paretoQuery();
+      q.cost_ceiling = PARETO._ceilingInput;
+      body.innerHTML = '<div class="sf-empty">正在按新上限重排…</div>';
+      api('/api/support/pareto/recommend?' + new URLSearchParams({
+        top_n: String(q.top_n || 8), mission_id: q.mission_id || '',
+        scenario: q.scenario || '', cost_ceiling: q.cost_ceiling == null ? '' : String(q.cost_ceiling)
+      })).then(function (rr) {
+        if (rr.error) { body.innerHTML = '<div class="sf-empty bad">' + esc(rr.error) + '</div>'; return; }
+        PARETO = rr; PARETO._ceilingInput = q.cost_ceiling;
+        renderParetoModal(rr);
+      });
+    });
+    // 事件：采用方案
+    Array.prototype.forEach.call(body.querySelectorAll('.sf-pareto-adopt'), function (btn) {
+      btn.addEventListener('click', function () {
+        var idx = Number(btn.getAttribute('data-idx'));
+        var sel = (PARETO.ranked || [])[idx];
+        if (!sel) return;
+        btn.textContent = '写入中…'; btn.disabled = true;
+        post('/api/support/pareto/apply', {
+          selection: sel, weights: eff, cost_ceiling: ce,
+          scenario: paretoQuery().scenario, plan_id: ST.planId || undefined
+        }).then(function (ar) {
+          if (ar.error) { btn.textContent = '失败'; return; }
+          // 重新拉取新方案并渲染
+          api('/api/support/plan?plan_id=' + encodeURIComponent(ar.plan_id)).then(function (d) {
+            if (d.plan) { ST.plan = d.plan; ST.planId = d.plan.plan_id; applyPlan(d.plan); }
+            var modal = $('sf-modal-pareto'); if (modal) modal.hidden = true;
+          });
+        });
+      });
+    });
+  }
+
   function openDeployView() {
     var box = $('sf-modal-deploy');
     box.hidden = false;
@@ -1445,6 +1605,7 @@
     var ac = $('sf-arch-compare'); if (ac) ac.addEventListener('click', openCompare);
     var pc = $('sf-plan-compare'); if (pc) pc.addEventListener('click', openPlanCompare);
     var dv = $('sf-deploy-view'); if (dv) dv.addEventListener('click', openDeployView);
+    var pp = $('sf-pareto-pick'); if (pp) pp.addEventListener('click', openParetoPick);
     Array.prototype.forEach.call(document.querySelectorAll('[data-recompute]'), function (b) {
       b.addEventListener('click', function () { recomputeStage(b.getAttribute('data-recompute')); });
     });

@@ -425,6 +425,46 @@
 .sf-deploy-svg { width: 100%; height: auto; max-height: 70vh; border-radius: 6px;
   border: 1px solid rgba(64,180,220,.2); }
 
+/* ---- 成本约束 Pareto 选优 ---- */
+.sf-modal-wide .sf-modal-box { max-width: 1000px; width: 94vw; }
+#sf-modal-pareto-body { max-height: 76vh; }
+.sf-pareto-lead { font-size: 11px; line-height: 1.6; color: #b8c9db; margin-bottom: 10px;
+  padding: 8px 12px; background: rgba(56,189,248,.06); border-left: 3px solid #38bdf8; border-radius: 3px; }
+.sf-pareto-lead b { color: #7dd3fc; }
+.sf-pareto-ctrl { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 8px;
+  font-size: 10px; color: #9fb3c8; }
+.sf-pareto-ctrl-title { color: #e6edf6; font-weight: bold; }
+.sf-pareto-w { padding: 3px 8px; background: #12243a; border-radius: 3px; }
+.sf-pareto-w b { color: #7dd3fc; }
+.sf-pareto-ce { display: inline-flex; align-items: center; gap: 5px; }
+.sf-pareto-ce input { width: 68px; background: #0a1626; color: #e6edf6; border: 1px solid #2a4762;
+  border-radius: 3px; padding: 3px 6px; font-size: 10px; }
+.sf-pareto-formula { font-size: 9px; color: #6f8aa8; line-height: 1.5; margin-bottom: 4px; }
+.sf-pareto-caveat { font-size: 9px; color: #d4a24a; line-height: 1.5; margin-bottom: 10px; }
+.sf-pareto-anchor-title, .sf-pareto-top-title { font-size: 11px; color: #e6edf6; font-weight: bold;
+  margin: 10px 0 6px; }
+.sf-pareto-anchors { display: flex; gap: 8px; flex-wrap: wrap; }
+.sf-pareto-anchor { flex: 1 1 150px; background: #0f1f33; border: 1px solid rgba(64,180,220,.18);
+  border-radius: 4px; padding: 7px 9px; display: flex; flex-direction: column; gap: 2px; }
+.sf-pareto-anchor-name { font-size: 10px; color: #7dd3fc; font-weight: bold; }
+.sf-pareto-anchor-score { font-size: 13px; color: #e6edf6; font-weight: bold; }
+.sf-pareto-anchor-meta { font-size: 9px; color: #6f8aa8; }
+.sf-pareto-table { font-size: 10px; width: 100%; border-collapse: collapse; }
+.sf-pareto-table th { font-size: 9px; position: sticky; top: 0; background: #12243a; padding: 5px 6px;
+  text-align: left; color: #9fb3c8; }
+.sf-pareto-table td { padding: 5px 6px; border-top: 1px solid rgba(64,180,220,.1); white-space: nowrap; }
+.sf-pareto-table tr.sf-pareto-best { background: rgba(56,189,248,.10); }
+.sf-pareto-table tr.sf-pareto-best td { color: #e6edf6; }
+.sf-pareto-dec { font-family: monospace; font-size: 9px; color: #9fb3c8; }
+.sf-pareto-foot { font-size: 9px; color: #6f8aa8; margin-top: 8px; line-height: 1.5; }
+/* 方案附节 */
+.sf-pareto-note { margin: 8px 0; padding: 8px 10px; background: rgba(56,189,248,.06);
+  border: 1px solid rgba(56,189,248,.22); border-left: 3px solid #38bdf8; border-radius: 4px; }
+.sf-pareto-note-head { font-size: 10px; color: #7dd3fc; font-weight: bold; margin-bottom: 4px; }
+.sf-pareto-note-body { font-size: 10px; color: #d6e3f0; line-height: 1.6; }
+.sf-pareto-note-body b { color: #7dd3fc; }
+.sf-pareto-note-meta { font-size: 9px; color: #6f8aa8; margin-top: 4px; }
+
 @media (max-width: 1200px) {
   .sf-col-input { flex-basis: 250px; }
   .sf-col-plan { flex-basis: 360px; }

@@ -26,7 +26,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from . import battle_loss, force_config, mission_input, plan as plan_mod
+from . import battle_loss, force_config, mission_input, optimize_pareto, plan as plan_mod
 from .catalog import (CATALOG, PROCESS_NODES, SLOT_DICT, METRIC_GLOSSARY, LLM_PARAM_SPEC,
                       LOSS_FIELD_DICT, COST_WEIGHT_SPEC, REVIEW_STATES, REVIEW_ACTIONS)
 
@@ -631,4 +631,73 @@ def recompute_from(payload: dict) -> dict:
         return {"stage": "review", "plan_id": plan.get("plan_id", ""),
                 "validation": plan["validation"], "note": "数字一致性复核与溯源已重跑"}
     return {"error": f"环节 {stage} 需重跑仿真，请走'多次推演'；本端点仅支持 rates/plan/review"}
-    return {"error": "what 必须是 loss / plan / plan_docx"}
+
+
+# ---------------- P2 边界补齐：成本约束 Pareto 选优 ----------------
+
+def pareto_recommend(payload: dict) -> dict:
+    """按录入的三维权重在 74 方案 Pareto 前沿内加权选优（只读派生，不重跑仿真）。
+
+    权重优先取 payload.weights；未传则取最近一次录入的 mission.cost_weights；
+    再缺省为等权。cost_ceiling 与方案 cost 同量纲（0-1）；budget_limit(万元)不直接参与。
+    """
+    payload = payload or {}
+    weights = payload.get("weights")
+    scenario = str(payload.get("scenario") or "").strip() or None
+    if not weights:
+        mid = str(payload.get("mission_id") or "").strip()
+        mission = mission_input.load(mid) if mid else mission_input.latest()
+        if mission and mission.get("cost_weights"):
+            weights = mission["cost_weights"]
+    try:
+        ceiling = payload.get("cost_ceiling")
+        ceiling = None if ceiling in (None, "") else float(ceiling)
+    except (TypeError, ValueError):
+        ceiling = None
+    try:
+        top_n = int(payload.get("top_n", 5))
+    except (TypeError, ValueError):
+        top_n = 5
+    return optimize_pareto.recommend(weights, cost_ceiling=ceiling,
+                                     scenario=scenario, top_n=top_n)
+
+
+def pareto_apply(payload: dict) -> dict:
+    """一键采用选优方案：把 Pareto 推荐参数写入新方案的附节字段（另存，不覆盖原稿）。
+
+    只在方案 JSON 增加 pareto_selection 结构化字段（7维决策+得分+锚点对照），
+    不触碰数字槽位/权威指标，不重跑仿真。正文附节由前端渲染展示，不写死进模板正文，
+    以保持"数字槽位确定性"不被污染。
+    """
+    pid = str(payload.get("plan_id") or "").strip()
+    plan = plan_mod.load(pid) if pid else plan_mod.latest()
+    if not plan:
+        return {"error": "无可用方案，请先生成方案"}
+    selection = payload.get("selection")
+    if not isinstance(selection, dict) or not selection:
+        return {"error": "selection 必须是选中的方案对象"}
+    rec = optimize_pareto.recommend(
+        payload.get("weights"),
+        cost_ceiling=payload.get("cost_ceiling"),
+        scenario=payload.get("scenario") or None,
+        top_n=5,
+    )
+    clean = {k: v for k, v in selection.items() if not k.startswith("_")}
+    plan["pareto_selection"] = {
+        "decision": {k: clean.get(k) for k in
+                     ("red_repair_teams", "red_arv", "red_supply_veh", "carry_level",
+                      "operating_level", "wave_interval_ticks", "wave_qty")},
+        "score": clean.get("_score"),
+        "dimension_scores": clean.get("_scores") or {},
+        "effective_weights": rec.get("effective_weights"),
+        "cost_ceiling": rec.get("cost_ceiling"),
+        "anchors": rec.get("anchors"),
+        "source": rec.get("source"),
+        "selected_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "note": "成本约束 Pareto 选优结论（既有前沿内按偏好排序，非新权威数字）",
+    }
+    plan["based_on"] = plan.get("plan_id", "")
+    new_id = plan_mod.save(plan)
+    plan["plan_id"] = new_id
+    return {"plan_id": new_id, "pareto_selection": plan["pareto_selection"],
+            "note": "选优参数已作为附节写入新方案（另存），数字槽位与权威指标未改"}

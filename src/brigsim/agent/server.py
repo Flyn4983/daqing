@@ -1330,6 +1330,13 @@ def _make_handler(engine: AgentEngine, viewer_status: dict | None = None):
                 self._send_json(support_api.template_detail((qs.get("name") or [None])[0]))
             elif path == "/api/support/compare":
                 self._send_json(support_api.compare_scenarios())
+            elif path == "/api/support/pareto/recommend":
+                self._send_json(support_api.pareto_recommend({
+                    "mission_id": (qs.get("mission_id") or [None])[0],
+                    "scenario": (qs.get("scenario") or [None])[0],
+                    "cost_ceiling": (qs.get("cost_ceiling") or [None])[0],
+                    "top_n": (qs.get("top_n") or [5])[0],
+                }))
             elif path == "/api/scene-status":
                 # C6.1：工况切换的回放 rrd 构建状态（前端轮询）
                 scenario = (qs.get("scenario") or [None])[0]
@@ -1450,6 +1457,8 @@ def _make_handler(engine: AgentEngine, viewer_status: dict | None = None):
                     self._send_json(support_api.plan_review(payload))
                 elif path == "/api/support/recompute":
                     self._send_json(support_api.recompute_from(payload))
+                elif path == "/api/support/pareto/apply":
+                    self._send_json(support_api.pareto_apply(payload))
                 elif path == "/api/scene-switch":
                     # C6.1：工况切换驱动 3D 场景重建（live=预览 / replay=重建回放 rrd）
                     params = dict(payload or {})
